@@ -1,0 +1,5 @@
+faster-whisper
+flask
+numpy
+yt-dlp[default]
+qrcode

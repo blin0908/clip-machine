@@ -1,0 +1,891 @@
+"""Clip Machine engine: link/file -> transcript + loudness -> scored moments -> vertical clips.
+
+Everything runs locally. No API keys, no paid services.
+  download  : yt-dlp (YouTube, TikTok, Twitch VODs, X, etc.)
+  transcribe: faster-whisper (local model, word timestamps)
+  score     : loudness spikes + hype language + laughter + pace + hook strength
+  render    : ffmpeg -> 1080x1920 MP4 with word-by-word burned captions
+"""
+from __future__ import annotations
+
+import json
+import math
+import os
+import re
+import shutil
+import subprocess
+import sys
+from collections import Counter
+from dataclasses import dataclass, field, asdict
+from pathlib import Path
+
+import numpy as np
+
+HERE = Path(__file__).resolve().parent
+BIN = HERE / ".venv" / "bin"
+
+
+def _tool(name: str) -> str:
+    for cand in (BIN / name, Path.home() / ".local" / "bin" / name):
+        if cand.exists():
+            return str(cand)
+    found = shutil.which(name)
+    if not found and name in ("ffmpeg", "ffprobe"):
+        try:  # portable fallback installed by Install.command
+            import static_ffmpeg
+            static_ffmpeg.add_paths(weak=True)
+            found = shutil.which(name)
+        except Exception:
+            pass
+    if not found:
+        raise RuntimeError(f"{name} not found. Install it or put it on PATH.")
+    return found
+
+
+FFMPEG = _tool("ffmpeg")
+FFPROBE = _tool("ffprobe")
+YTDLP = _tool("yt-dlp")
+FONT_DIR = "/System/Library/Fonts/Supplemental"
+
+SR = 16000          # analysis sample rate
+HOP = 0.5           # loudness resolution (seconds)
+
+
+def _noop(stage, pct, msg=""):
+    pass
+
+
+# ---------------------------------------------------------------- download
+def fetch(source: str, workdir: Path, progress=_noop) -> tuple[Path, str]:
+    """Return (video_path, title). `source` is a URL or a local file path."""
+    workdir.mkdir(parents=True, exist_ok=True)
+    p = Path(os.path.expanduser(source))
+    if p.exists():
+        progress("download", 100, "Using local file")
+        return p, p.stem
+
+    progress("download", 0, "Starting download")
+    out_tmpl = str(workdir / "source.%(ext)s")
+    cmd = [
+        YTDLP, "--no-playlist", "--newline", "--no-warnings",
+        "--js-runtimes", "node",
+        "-f", "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/bv*[height<=1080]+ba/b[height<=1080]/b",
+        "--merge-output-format", "mp4",
+        "--ffmpeg-location", str(Path(FFMPEG).parent),
+        "--print", "before_dl:TITLE:%(title)s",
+        "-o", out_tmpl, source,
+    ]
+    title = "video"
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    tail = []
+    for line in proc.stdout:
+        line = line.strip()
+        tail = (tail + [line])[-15:]
+        if line.startswith("TITLE:"):
+            title = line[6:].strip() or title
+        m = re.search(r"\[download\]\s+([\d.]+)%", line)
+        if m:
+            progress("download", float(m.group(1)), "Downloading")
+    if proc.wait() != 0:
+        raise RuntimeError("Download failed:\n" + "\n".join(tail[-6:]))
+    vids = sorted(workdir.glob("source.*"), key=lambda f: f.stat().st_size, reverse=True)
+    vids = [v for v in vids if v.suffix in (".mp4", ".mkv", ".webm", ".mov")]
+    if not vids:
+        raise RuntimeError("Download finished but no video file was found.")
+    progress("download", 100, "Downloaded")
+    return vids[0], title
+
+
+def probe(path: Path) -> dict:
+    out = subprocess.run(
+        [FFPROBE, "-v", "error", "-print_format", "json", "-show_format", "-show_streams", str(path)],
+        capture_output=True, text=True, check=True).stdout
+    info = json.loads(out)
+    v = next((s for s in info["streams"] if s["codec_type"] == "video"), None)
+    return {
+        "duration": float(info["format"].get("duration", 0)),
+        "width": int(v["width"]) if v else 0,
+        "height": int(v["height"]) if v else 0,
+        "has_video": v is not None,
+        "fps": _fps(v.get("avg_frame_rate") or v.get("r_frame_rate")) if v else 30,
+    }
+
+
+def _fps(r):
+    try:
+        a, b = (r or "30/1").split("/")
+        return float(a) / float(b or 1) if float(b or 1) else 30.0
+    except Exception:
+        return 30.0
+
+
+# ---------------------------------------------------------------- audio analysis
+def extract_audio(video: Path, wav: Path):
+    subprocess.run([FFMPEG, "-y", "-v", "error", "-i", str(video), "-vn", "-ac", "1",
+                    "-ar", str(SR), "-c:a", "pcm_s16le", str(wav)], check=True)
+
+
+def loudness_curve(wav: Path) -> np.ndarray:
+    """Per-HOP loudness in dB, z-scored against the whole video."""
+    raw = np.fromfile(wav, dtype=np.int16, offset=44).astype(np.float32) / 32768.0
+    hop = int(SR * HOP)
+    n = len(raw) // hop
+    if n == 0:
+        return np.zeros(1)
+    frames = raw[: n * hop].reshape(n, hop)
+    rms = np.sqrt(np.mean(frames ** 2, axis=1) + 1e-10)
+    db = 20 * np.log10(rms)
+    db = np.maximum(db, np.percentile(db, 5))          # ignore dead silence floor
+    sd = db.std() or 1.0
+    return (db - np.median(db)) / sd
+
+
+# ---------------------------------------------------------------- transcription
+_MODEL_CACHE = {}
+
+
+def transcribe(wav: Path, model_size="base", progress=_noop, duration=None) -> list[dict]:
+    from faster_whisper import WhisperModel
+    progress("transcribe", 0, f"Loading speech model ({model_size})")
+    if model_size not in _MODEL_CACHE:
+        _MODEL_CACHE[model_size] = WhisperModel(model_size, device="cpu", compute_type="int8")
+    model = _MODEL_CACHE[model_size]
+    audio = np.fromfile(wav, dtype=np.int16, offset=44).astype(np.float32) / 32768.0
+    segs_iter, info = model.transcribe(audio, word_timestamps=True, vad_filter=True,
+                                       beam_size=1, condition_on_previous_text=False,
+                                       # nudges Whisper to write out "um/uh" instead of silently dropping them
+                                       initial_prompt="Umm, let me think, uh, like, hmm... Okay, so, um, here's what I'm thinking.")
+    total = duration or info.duration or 1
+    segs = []
+    for s in segs_iter:
+        words = [{"w": w.word.strip(), "s": w.start, "e": w.end} for w in (s.words or []) if w.word.strip()]
+        segs.append({"s": s.start, "e": s.end, "text": s.text.strip(), "words": words})
+        progress("transcribe", min(99, 100 * s.end / total), f"Transcribing {fmt_t(s.end)} / {fmt_t(total)}")
+    progress("transcribe", 100, f"Transcribed ({info.language})")
+    return segs
+
+
+# ---------------------------------------------------------------- platform formulas
+# Each platform gets two test lengths: a SHORT cut (the demo/payoff) and a LONG cut (same opening + a second payoff).
+# Length ranges are "Data → Test": observational studies, not platform rules (see FORMULA.md, Nov 13 2026 research).
+# Hard limits and ranking signals are "Official" where the platform documents them.
+# Safe zones (1080x1920 px) are conservative estimates; no platform publishes organic pixel specs. Preview on a phone.
+PLATFORMS = {
+    "all": dict(
+        name="All platforms", short=(12, 18), long=(30, 45), hard_max=140,
+        cap_bottom=700, hook_top=300, right=180, tags=3,
+        note="One export for TikTok, Reels and Shorts: a 12–18s cut and a 30–45s cut with the same opening. "
+             "Captions are kept clear of every app's buttons.",
+        judge=["Stayed to watch (Shorts)", "Sends per reach (Reels)", "Full watches + shares (TikTok)"],
+        publish=[]),
+    "tiktok": dict(
+        name="TikTok", short=(12, 18), long=(20, 30), hard_max=600,
+        cap_bottom=700, hook_top=280, right=180, tags=3,
+        note="Official: For You weighs interactions such as watching in full, skips, time spent, shares and comments. "
+             "In Search, how well the post matches the query matters most. Data: under 15s led plays per follower for small "
+             "accounts, and 15–30s led interactions per play. Use 45–90s only for a real build story.",
+        judge=["Average watch time", "Full watches %", "Shares"],
+        publish=["Write the caption the way someone would search for it (check Creator Search Insights).",
+                 "Use 2–3 relevant tags. #FYP works like any other hashtag (TikTok).",
+                 "Promoting your own product? Turn on commercial disclosure. TikTok says it doesn't affect feed distribution.",
+                 "Use original or cleared audio, and record the real sound up close.",
+                 "Check post visibility and For You eligibility in the app."]),
+    "reels": dict(
+        name="Instagram Reels", short=(12, 18), long=(30, 45), hard_max=180,
+        cap_bottom=620, hook_top=300, right=160, tags=3,
+        note="Official/reported: Mosseri highlighted watch time, likes per reach and sends per reach. Sends matter most for "
+             "people who don't follow you. Skip rate can affect distribution. Reels over 3 min aren't recommended to new audiences. "
+             "Data: 30–60s and under 30s had similar reach rates, so let the creative decide.",
+        judge=["Average watch time", "Sends per reach", "Skip rate"],
+        publish=["Public, recommendation-eligible account. Check Account Status.",
+                 "Turn on highest-quality uploads, and upload the clean export (no other app's watermark).",
+                 "Pick a readable cover frame.",
+                 "Try Trial Reels to test a new concept on non-followers first.",
+                 "Give people a reason to send it to a friend."]),
+    "shorts": dict(
+        name="YouTube Shorts", short=(15, 30), long=(30, 60), hard_max=180,
+        cap_bottom=560, hook_top=260, right=150, tags=2,
+        note="Official: Shorts are matched by watch and search history, topics and sampled audio. YouTube reports "
+             "'chose to view', average view duration and percent viewed. Data: 11–30s led median views in two large samples. "
+             "Use 30–60s for a story. Public views have counted replays since Mar 2025, so judge by engaged views.",
+        judge=["Stayed to watch %", "Engaged views", "Average % viewed"],
+        publish=["Write a title someone who's never heard of you would understand in Search.",
+                 "Set the audience (made for kids or not) and visibility. Uploads from 13–17 year-olds default to private.",
+                 "Over 1 minute with an active Content ID claim = blocked worldwide. Use owned audio on long cuts.",
+                 "Add a related video linking to the full version if you have one.",
+                 "No minimum posting cadence. Post when your audience is active."]),
+    "facebook": dict(
+        name="Facebook Reels", short=(15, 30), long=(30, 60), hard_max=300,
+        cap_bottom=620, hook_top=300, right=160, tags=2,
+        note="Official: all Facebook video uploads are now Reels, with no separate length cap. Original footage and real "
+             "transformations get priority over reposted or lightly edited clips (Mar 2026). No proven length optimum.",
+        judge=["Watch time", "Shares", "Comments"],
+        publish=["Set the Reel audience to Public.",
+                 "Write a caption that explains the payoff to someone who doesn't know the project.",
+                 "Use owned or licensed audio."]),
+    "snapchat": dict(
+        name="Snapchat Spotlight", short=(10, 20), long=None, hard_max=60,
+        cap_bottom=620, hook_top=300, right=160, tags=2,
+        note="Official: Spotlight scores expected watch time, favourites, shares and skips. Since Apr 2026 it favours footage "
+             "shot on Snapchat's own camera, and since Jul 2026 fully AI-generated video isn't recommended. Test 10–20s. "
+             "There's a 5s minimum. Treat it as a separate experiment.",
+        judge=["Watch time", "Favourites", "Shares"],
+        publish=["Spotlight favours footage shot in Snapchat's own camera. For a real test, film a fresh take in the app.",
+                 "Posting is open to ages 16+ in eligible regions.",
+                 "Use owned or licensed audio."]),
+    "x": dict(
+        name="X / Twitter", short=(15, 30), long=(30, 45), hard_max=140,
+        cap_bottom=380, hook_top=160, right=70, tags=1,
+        note="Free accounts are capped at 2:20 and 512 MB. Not covered by the Nov 2026 research, so the lengths are a guess.",
+        judge=["Views", "Reposts", "Watch-through"],
+        publish=["Keep it under 2:20 if you don't have Premium."]),
+}
+for _p in PLATFORMS.values():   # back-compat: the "sweet" range = the main (long if present) version
+    _p["sweet"] = _p["long"] or _p["short"]
+
+# ---------------------------------------------------------------- scoring
+HYPE = {
+    # reaction / arousal (high-arousal emotion is the best-supported sharing driver)
+    "oh my god": 3, "omg": 2, "no way": 3, "what the": 3, "let's go": 3, "lets go": 3,
+    "insane": 2.5, "crazy": 2, "holy": 2.5, "unbelievable": 2.5, "oh no": 2.5, "shut up": 2,
+    "are you serious": 3, "i can't believe": 3, "wow": 1.5, "whoa": 2, "bro": 1, "dude": 1,
+    "clutch": 2, "yes": 0.5, "wait": 1.5, "what": 0.4, "damn": 1.5, "hell": 1, "screaming": 2,
+    # story / curiosity-gap language
+    "here's the thing": 2.5, "the truth": 2, "nobody": 1.2, "secret": 2, "mistake": 1.5,
+    "biggest": 1.2, "worst": 1.5, "best": 0.8, "never": 0.8, "million": 1.5, "money": 1,
+    "you need to": 1.5, "stop": 1, "the reason": 1.5, "plot twist": 3, "honestly": 0.8,
+    "i was wrong": 2.5, "changed my life": 2.5, "the craziest": 3, "scared": 1.5, "died": 1.5,
+    "turns out": 2, "the problem": 1.5, "nobody talks about": 3, "why": 0.6, "how to": 1.2,
+}
+HOOK_RX = re.compile(r"\?|\b(you|your|why|how|what if|imagine|never|stop|nobody|secret|here's|this is|the \w+est)\b|\d", re.I)
+MIDSTART = {"and", "but", "so", "because", "cause", "or", "then", "which", "that", "also", "um", "uh", "like"}
+SPONSOR = ["sponsored by", "use code", "link in the description", "smash that like", "subscribe",
+           "today's sponsor", "promo code", "patreon", "this video is brought"]
+LAUGH = re.compile(r"\b(ha(ha)+|lol|lmao)\b|\[(laugh|laughter|laughing)[^\]]*\]|\((laugh|laughs|laughter|laughing)\)", re.I)
+STOP = set("""the a an and or but if so to of in on at for with is are was were be been it this that
+these those i you he she we they me my your our their his her its not no yes do does did have has had
+just like really very can could would should will gonna wanna yeah okay right know think going
+what when where who why how there here then than them about from into out up down get got one all
+some because also well even still back over only much more most other""".split())
+
+
+WEAK = set("""actually basically literally really pretty maybe probably something everything anything nothing
+things thing stuff little finally start started starting theres about around always never anyway gonna
+because before after again every these those would could should their there where which while being doing
+going getting making saying thinking talking trying looking wanted wants first second right sorta kinda
+other another yourself myself someone everyone people""".split())
+
+
+@dataclass
+class Moment:
+    start: float
+    end: float
+    score: float = 0.0
+    text: str = ""
+    reasons: list = field(default_factory=list)
+    checklist: list = field(default_factory=list)
+    title: str = ""
+    hashtags: list = field(default_factory=list)
+    captions: dict = field(default_factory=dict)
+    words: list = field(default_factory=list)
+
+
+def _units(segs, duration):
+    """Sentence-ish units to snap clip boundaries to. Falls back to 5 s blocks for no-speech video."""
+    units = [s for s in segs if s["e"] > s["s"]]
+    if len(units) < 4:
+        units = [{"s": t, "e": min(duration, t + 5), "text": "", "words": []}
+                 for t in np.arange(0, max(duration - 1, 1), 5.0)]
+    return units
+
+
+def _first_word(text):
+    m = re.match(r"\W*([a-zA-Z']+)", text or "")
+    return m.group(1).lower() if m else ""
+
+
+def _features(s, e, text, words, loud, first_text, plat):
+    lo, hi = int(s / HOP), max(int(e / HOP), int(s / HOP) + 1)
+    seg = loud[lo:hi] if lo < len(loud) else np.zeros(1)
+    if len(seg) == 0:
+        seg = np.zeros(1)
+    top = np.sort(seg)[-max(1, len(seg) // 3):]
+    head = loud[lo: lo + int(3 / HOP)] if lo < len(loud) else np.zeros(1)
+    tail = seg[-max(1, len(seg) // 4):]
+    first1 = loud[lo: lo + int(1 / HOP)] if lo < len(loud) else np.zeros(1)
+    first_words = " ".join(w["w"] for w in words if w["s"] < s + 1.5)
+    low = text.lower()
+    kw_hits = [(k, w) for k, w in HYPE.items() if re.search(r"\b" + re.escape(k) + r"\b", low)]
+    dur = max(e - s, 1)
+    # first ~3 s of speech: the hook window
+    head_words = " ".join(w["w"] for w in words if w["s"] < s + 3.0) or first_text[:60]
+    hook_lang = len(HOOK_RX.findall(head_words)) + sum(w for k, w in HYPE.items() if k in head_words.lower())
+    # dead air: silence between words longer than 0.7 s
+    gaps = [b["s"] - a["e"] for a, b in zip(words, words[1:]) if b["s"] - a["e"] > 0.7]
+    lead = (words[0]["s"] - s) if words else 0
+    lo_sw, hi_sw = plat["sweet"]
+    fit = 1.0 if lo_sw <= dur <= hi_sw else max(0.0, 1 - min(abs(dur - lo_sw), abs(dur - hi_sw)) / 20)
+    return {
+        "energy": float(top.mean()),
+        "peak": float(seg.max()),
+        "swing": float(seg.std()),
+        "hype": sum(w for _, w in kw_hits),
+        "laugh": len(LAUGH.findall(text)),
+        "exclaim": text.count("!"),
+        "pace": len(words) / dur,
+        "hook": float(head.mean() if len(head) else 0) + 0.8 * min(hook_lang, 4),
+        "first1": float(first1.mean() if len(first1) else 0),
+        "payoff": float(tail.mean() - seg.mean()),
+        "ends_clean": 1.0 if re.search(r"[.!?]\W*$", text) else 0.0,
+        "midstart": 1.0 if _first_word(first_text) in MIDSTART else 0.0,
+        "deadair": (sum(gaps) + max(lead, 0)) / dur,
+        "fit": fit,
+        "sponsor": sum(1 for k in SPONSOR if k in low),
+        "_kw": [k for k, _ in sorted(kw_hits, key=lambda x: -x[1])[:4]],
+        "_hook_lang": hook_lang,
+        "_first_hook": bool(HOOK_RX.search(first_words)) or any(k in first_words.lower() for k in HYPE),
+    }
+
+
+# Weights encode the formula. Z-scored features compete inside one video; raw ones are absolute.
+WEIGHTS = {"energy": 1.0, "peak": 0.5, "swing": 0.3, "hype": 0.8, "laugh": 0.8, "exclaim": 0.3,
+           "pace": 0.4, "hook": 1.2, "first1": 0.6, "payoff": 0.5, "ends_clean": 0.5,
+           "midstart": -0.9, "deadair": -0.6, "fit": 0.9, "sponsor": -1.5}
+RAW = {"midstart", "fit", "sponsor", "ends_clean"}   # used as-is, not z-scored
+
+
+def find_moments(segs, loud, duration, n=5, min_len=None, max_len=None, platform="all", progress=_noop,
+                 version="both") -> list[Moment]:
+    base = PLATFORMS.get(platform, PLATFORMS["all"])
+    rng = base["long"] if (version in ("both", "long") and base["long"]) else base["short"]
+    if min_len or max_len:
+        rng = (min_len or rng[0], max_len or rng[1])
+    plat = dict(base, sweet=rng)
+    min_len = rng[0]
+    max_len = min(rng[1] + 2, plat["hard_max"])
+    min_len = min(min_len, max_len - 3)
+    progress("score", 0, "Scoring moments")
+    units = _units(segs, duration)
+    cands = []
+    for i in range(len(units)):
+        for j in range(i, len(units)):
+            words = [w for u in units[i:j + 1] for w in u["words"]]
+            # snap to speech: start just before the first word, end just after the last
+            s = max(0.0, (words[0]["s"] - 0.12) if words else units[i]["s"])
+            e = min(duration, (words[-1]["e"] + 0.35) if words else units[j]["e"])
+            d = e - s
+            if d > max_len:
+                break
+            if d < min_len:
+                continue
+            text = " ".join(u["text"] for u in units[i:j + 1]).strip()
+            cands.append((s, e, text, words, _features(s, e, text, words, loud, units[i]["text"], plat)))
+    if not cands:  # video shorter than min_len: take the whole thing
+        words = [w for u in units for w in u["words"]]
+        text = " ".join(u["text"] for u in units)
+        e = min(duration, plat["hard_max"])
+        cands = [(0.0, e, text, words, _features(0, e, text, words, loud, text, plat))]
+
+    keys = list(WEIGHTS)
+    mat = np.array([[c[4][k] for k in keys] for c in cands], dtype=float)
+    mu, sd = mat.mean(0), mat.std(0)
+    sd[sd == 0] = 1
+    z = (mat - mu) / sd
+    for k in RAW:
+        z[:, keys.index(k)] = mat[:, keys.index(k)]
+    scores = z @ np.array([WEIGHTS[k] for k in keys])
+
+    order = np.argsort(-scores)
+    picked: list[Moment] = []
+    for idx in order:
+        s, e, text, words, f = cands[idx]
+        if any(not (e + 2 <= m.start or s >= m.end + 2) for m in picked):
+            continue
+        zrow = dict(zip(keys, z[idx]))
+        picked.append(Moment(start=round(s, 2), end=round(e, 2), score=float(scores[idx]), text=text,
+                             words=words, reasons=_reasons(zrow, f), checklist=_checklist(zrow, f, e - s, plat)))
+        if len(picked) >= n:
+            break
+
+    if picked:
+        hi, lo = picked[0].score, min(m.score for m in picked)
+        for m in picked:  # 0-100 score relative to this video, nudged by how many checks pass
+            passed = sum(c["ok"] for c in m.checklist) / max(len(m.checklist), 1)
+            rel = (m.score - lo) / (hi - lo) if hi > lo else 1
+            m.score = int(round(45 + 30 * rel + 24 * passed))
+            m.title = _title(m, segs)
+            m.hashtags = _tags(m.text, plat["tags"])
+    progress("score", 100, f"Found {len(picked)} moments")
+    return picked
+
+
+def _reasons(z, f):
+    out = []
+    if z["energy"] > 0.8 or z["peak"] > 1.0:
+        out.append("loud / high-energy spike")
+    if f["_kw"]:
+        out.append("hype words: " + ", ".join(f['_kw']))
+    if f["laugh"]:
+        out.append("laughter")
+    if z["hook"] > 0.8:
+        out.append("strong opening hook")
+    if z["payoff"] > 0.8:
+        out.append("builds to a payoff")
+    if z["pace"] > 1.0:
+        out.append("fast, punchy delivery")
+    if f["sponsor"]:
+        out.append("⚠ may contain an ad read")
+    return out or ["steady, complete thought"]
+
+
+def _checklist(z, f, dur, plat):
+    """Each check carries an evidence label: Official (platform documents it), Data (observational study),
+    Test (sensible hypothesis to A/B on your own account)."""
+    lo, hi = plat["sweet"]
+    items = [
+        {"k": "Something happens in the first second", "ev": "Official + Test",
+         "ok": bool(z["first1"] > 0 or f["_first_hook"]),
+         "tip": "Swipe / skip rate is a documented signal" if (z["first1"] > 0 or f["_first_hook"]) else "Slow first second: open on the action"},
+        {"k": "Hook in the first 3 seconds", "ev": "Official", "ok": bool(z["hook"] > 0 or f["_hook_lang"] >= 2),
+         "tip": "Opens loud or with a question / bold claim" if z["hook"] > 0 else "Weak opener: the headline overlay helps"},
+        {"k": "Starts on a fresh thought", "ev": "Test", "ok": not f["midstart"],
+         "tip": "Doesn't open mid-sentence" if not f["midstart"] else "Opens on 'and/so/but', may feel mid-thought"},
+        {"k": f"Length in {plat['name']} test range ({lo}–{hi}s)", "ev": "Data", "ok": lo - 1 <= dur <= hi + 1, "tip": f"{dur:.0f}s"},
+        {"k": "High emotional energy", "ev": "Data", "ok": bool(z["energy"] > 0 or f["laugh"] or f["hype"] >= 3),
+         "tip": "Above this video's average" if z["energy"] > 0 else "Calmer than average"},
+        {"k": "Builds to a payoff / clean ending", "ev": "Test", "ok": bool(f["ends_clean"] and z["payoff"] > -0.5),
+         "tip": "Full payoff on the first pass. Loop bonuses are unverified."},
+        {"k": "Little dead air", "ev": "Test", "ok": f["deadair"] < 0.12, "tip": f"{f['deadair'] * 100:.0f}% silence (Cut dead air removes it)"},
+        {"k": "No ad read", "ev": "Test", "ok": not f["sponsor"], "tip": "" if not f["sponsor"] else "Contains sponsor language"},
+    ]
+    return [dict(c, ok=bool(c["ok"])) for c in items]
+
+
+def _title(m, segs):
+    sents = [s["text"] for s in segs if s["s"] >= m.start - 0.3 and s["e"] <= m.end + 0.5 and s["text"]]
+    if not sents:
+        return "Wait for it…"
+    def strength(t):
+        low = t.lower()
+        return (sum(w for k, w in HYPE.items() if k in low) + len(HOOK_RX.findall(t)) * 0.7
+                + t.count("!") - abs(len(t) - 45) / 25)
+    best = max(sents, key=strength).strip(" .,-")
+    best = re.sub(r"\b(um+|uh+|erm|hmm+)\b,?\s*", "", best, flags=re.I).strip()
+    best = re.sub(r"^(and|but|so|because|like)[,\s]+", "", best, flags=re.I)
+    best = best[0].upper() + best[1:] if best else best
+    if len(best) > 60:
+        best = best[:60].rsplit(" ", 1)[0].rstrip(",;:-") + "…"
+    return best
+
+
+def _tags(text, k):
+    """Relevant topic tags from the transcript. No #fyp: TikTok says it works like any other hashtag."""
+    words = [w for w in re.findall(r"[a-z]+(?:'[a-z]+)?", text.lower())
+             if len(w) >= 5 and "'" not in w and w not in STOP and w not in WEAK]
+    ranked = sorted(Counter(words).items(), key=lambda x: (-x[1] * (1 + len(x[0]) / 10), x[0]))
+    return ["#" + w for w, _ in ranked[: max(k, 1)]]
+
+
+def _post_copy(m, platform, source_title=""):
+    t, tags = m.title, m.hashtags
+    ctx = f" (from {source_title[:60]})" if source_title else ""
+    return {
+        # TikTok search weighs query match: descriptive words people would type, then a few relevant tags
+        "tiktok": f"{t} " + " ".join(tags[:3]),
+        # Shorts title must make sense in Search to someone who's never heard of you
+        "shorts": t[:100],
+        # Reels: sends drive unconnected reach, so give a reason to send
+        "reels": f"{t}\n\n" + " ".join(tags[:3]),
+        # Facebook: explain the payoff to someone unfamiliar
+        "facebook": f"{t}{ctx}",
+        "snapchat": t[:80],
+        "x": f"{t} " + " ".join(tags[:1]),
+    }
+
+
+def shorten(m: Moment, segs, loud, lo, hi):
+    """Short cut with the SAME opening: end on the strongest sentence end between lo and hi seconds."""
+    if m.end - m.start <= hi + 1:
+        return None
+    ends = [sg["e"] for sg in segs if m.start + lo <= sg["e"] <= min(m.start + hi, m.end)]
+    if not ends:
+        ends = [w["e"] for w in m.words if m.start + lo <= w["e"] <= m.start + hi]
+    if not ends:
+        ends = [m.start + (lo + hi) / 2]
+    def punch(e):  # energy in the last 2 s before the cut = payoff
+        i = int(e / HOP)
+        return float(loud[max(0, i - int(2 / HOP)): i + 1].mean()) if i < len(loud) else 0.0
+    e = max(ends, key=punch)
+    words = [w for w in m.words if w["e"] <= e + 0.05]
+    end = min(m.end, (words[-1]["e"] + 0.35) if words else e)
+    return Moment(start=m.start, end=round(end, 2), score=m.score, text=" ".join(w["w"] for w in words),
+                  title=m.title, words=words)
+
+
+# ---------------------------------------------------------------- dead-air + filler removal
+FILLERS = {"um", "umm", "uh", "uhh", "uhm", "erm", "er", "hmm", "hm", "mm", "mhm", "ah"}
+
+
+def is_filler(w):
+    return re.sub(r"[^a-z]", "", w["w"].lower()) in FILLERS
+
+
+def spoken(words):
+    """Words that should appear in captions/titles (fillers dropped)."""
+    return [w for w in words if not is_filler(w)]
+
+
+def keep_intervals(m: Moment, tighten: bool):
+    """Intervals (relative to clip start) to keep. Cuts pauses > 0.6 s down to ~0.3 s and removes um/uh."""
+    dur = m.end - m.start
+    ws = [w for w in m.words if m.start <= w["s"] <= m.end]
+    if not tighten or len(ws) < 2:
+        return [(0.0, dur)]
+    cut = []
+    for a, b in zip(ws, ws[1:]):
+        gs, ge = a["e"] - m.start + 0.18, b["s"] - m.start - 0.12
+        if ge - gs > 0.35:
+            cut.append((gs, ge))
+    for w in ws:
+        if is_filler(w):
+            cut.append((w["s"] - m.start - 0.02, w["e"] - m.start + 0.04))
+    cut = sorted((max(0.0, a), min(dur, b)) for a, b in cut if b > a)
+    merged = []
+    for a, b in cut:
+        if merged and a <= merged[-1][1] + 0.12:      # merge cuts that leave slivers between them
+            merged[-1] = (merged[-1][0], max(merged[-1][1], b))
+        else:
+            merged.append((a, b))
+    keep, cur = [], 0.0
+    for a, b in merged:
+        if a > cur:
+            keep.append((cur, a))
+        cur = max(cur, b)
+    if cur < dur:
+        keep.append((cur, dur))
+    keep = [(round(a, 3), round(b, 3)) for a, b in keep if b - a > 0.08]
+    return keep or [(0.0, dur)]
+
+
+def remap(t, keep):
+    """Clip-relative time -> output time after cuts."""
+    out = 0.0
+    for a, b in keep:
+        if t < a:
+            return out
+        if t <= b:
+            return out + (t - a)
+        out += b - a
+    return out
+
+
+# ---------------------------------------------------------------- captions
+def _ass_time(t):
+    t = max(t, 0)
+    h, rem = divmod(t, 3600)
+    m, s = divmod(rem, 60)
+    return f"{int(h)}:{int(m):02d}:{s:05.2f}"
+
+
+def _clean(w):
+    return w.replace("\\", "").replace("{", "(").replace("}", ")").upper()
+
+
+def write_ass(m: Moment, path: Path, plat: dict, keep, captions=True, hook=True, cta=""):
+    """Word-by-word captions (3-word groups, active word highlighted) + a top headline for the first 3 s."""
+    R = plat["right"]
+    hdr = f"""[Script Info]
+ScriptType: v4.00+
+PlayResX: 1080
+PlayResY: 1920
+WrapStyle: 0
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Cap,Arial Black,84,&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,-1,0,0,0,100,100,0,0,1,7,3,2,{R},{R},{plat['cap_bottom']},1
+Style: Hook,Arial Black,58,&H00111111,&H00111111,&H00FFFFFF,&H00000000,-1,0,0,0,100,100,0,0,3,20,0,8,{R + 20},{R + 20},{plat['hook_top']},1
+Style: Cta,Arial Black,58,&H00111111,&H00111111,&H0000E6FF,&H00000000,-1,0,0,0,100,100,0,0,3,20,0,8,{R + 20},{R + 20},{plat['hook_top']},1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+"""
+    lines = []
+    if hook and m.title:
+        lines.append(f"Dialogue: 1,{_ass_time(0)},{_ass_time(3.2)},Hook,,0,0,0,,{{\\fad(120,250)}}{m.title.replace('{', '(').replace('}', ')')}")
+    if cta:
+        total = sum(b - a for a, b in keep)
+        lines.append(f"Dialogue: 1,{_ass_time(max(3.4, total - 2.8))},{_ass_time(total)},Cta,,0,0,0,,{{\\fad(150,0)}}{cta.replace('{', '(').replace('}', ')')}")
+    words = spoken([w for w in m.words if m.start - 0.05 <= w["s"] <= m.end]) if captions else []
+    T = lambda t: remap(t - m.start, keep)
+    groups = [words[i:i + 3] for i in range(0, len(words), 3)]
+    for gi, g in enumerate(groups):
+        g_end = groups[gi + 1][0]["s"] if gi + 1 < len(groups) else g[-1]["e"] + 0.3
+        for wi, w in enumerate(g):
+            s = T(w["s"])
+            e = T(g[wi + 1]["s"] if wi + 1 < len(g) else g_end)
+            if e - s > 1.6:
+                e = s + 1.6
+            parts = [(r"{\c&H00F0FF&\fscx112\fscy112}" + _clean(x["w"]) + r"{\c&HFFFFFF&\fscx100\fscy100}")
+                     if k == wi else _clean(x["w"]) for k, x in enumerate(g)]
+            lines.append(f"Dialogue: 0,{_ass_time(s)},{_ass_time(max(e, s + 0.05))},Cap,,0,0,0,,{' '.join(parts)}")
+    path.write_text(hdr + "\n".join(lines) + "\n", encoding="utf-8")
+
+
+def write_srt(m: Moment, path: Path, keep):
+    words = spoken([w for w in m.words if m.start - 0.05 <= w["s"] <= m.end])
+    def ts(t):
+        t = remap(t - m.start, keep)
+        h, r = divmod(t, 3600); mi, s = divmod(r, 60)
+        return f"{int(h):02d}:{int(mi):02d}:{int(s):02d},{int((s % 1) * 1000):03d}"
+    out = [f"{n}\n{ts(g[0]['s'])} --> {ts(g[-1]['e'])}\n{' '.join(x['w'] for x in g)}\n"
+           for n, g in enumerate((words[i:i + 7] for i in range(0, len(words), 7)), 1)]
+    path.write_text("\n".join(out), encoding="utf-8")
+
+
+# ---------------------------------------------------------------- render
+def render(video: Path, m: Moment, out: Path, layout="fit", captions=True, crop_x=0.5, info=None,
+           platform="all", hook=True, tighten=True, cta="", enhance=True):
+    info = info or probe(video)
+    plat = PLATFORMS.get(platform, PLATFORMS["all"])
+    dur = m.end - m.start
+    keep = keep_intervals(m, tighten)
+    src_fps = info.get("fps") or 30
+    fps = int(round(min(max(src_fps, 23), 60)))   # keep the source frame rate (YouTube encoding guidance)
+
+    pre = f"fps={fps}"
+    if enhance and info.get("height") and info["height"] < 720:
+        pre = "hqdn3d=2:1.5:3:3," + pre          # clean up compression noise on low-res sources
+    apre = "anull"
+    if len(keep) > 1:
+        sel = "+".join(f"between(t,{a:.3f},{b:.3f})" for a, b in keep)
+        pre += f",select='{sel}',setpts=N/FRAME_RATE/TB"
+        apre = f"aselect='{sel}',asetpts=N/SR/TB"
+
+    if layout == "crop":
+        cx = min(max(crop_x, 0), 1)
+        vf = f"scale=-2:1920,crop=1080:1920:(iw-1080)*{cx:.3f}:0"
+        if info["width"] and info["height"] and info["width"] / info["height"] < 1080 / 1920:
+            vf = "scale=1080:-2,crop=1080:1920"
+    elif layout == "original":
+        vf = "scale=trunc(iw/2)*2:trunc(ih/2)*2"
+    else:  # fit: full frame over blurred fill
+        vf = ("split[a][b];[a]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,"
+              "boxblur=24:4,eq=brightness=-0.08[bg];[b]scale=1080:1920:force_original_aspect_ratio=decrease[fg];"
+              "[bg][fg]overlay=(W-w)/2:(H-h)/2")
+    if enhance and layout != "original":
+        # light clarity grade: gentle sharpen + a touch of contrast/colour
+        vf += ",unsharp=5:5:0.45:5:5:0,eq=contrast=1.04:saturation=1.07"
+        if len(keep) > 1:
+            # alternate 100% / 108% framing at each cut so jump cuts read as intentional punch-ins
+            edges, t = [], 0.0
+            for a, b in keep:
+                edges.append((t, t + (b - a)))
+                t += b - a
+            zoomed = [f"between(on,{int(a * fps)},{max(int(b * fps) - 1, int(a * fps))})"
+                      for k, (a, b) in enumerate(edges) if k % 2 == 1]
+            if zoomed:
+                vf += (f",zoompan=z='if({'+'.join(zoomed)},1.08,1)':d=1:x='iw/2-(iw/zoom/2)':"
+                       f"y='ih/2-(ih/zoom/2)':s=1080x1920:fps={fps}")
+    ass = out.with_suffix(".ass")
+    overlay = layout != "original" and ((captions and m.words) or (hook and m.title) or cta)
+    if overlay:
+        write_ass(m, ass, plat, keep, captions, hook, cta)
+        vf += f",ass='{_ffesc(str(ass))}':fontsdir='{_ffesc(FONT_DIR)}'"
+
+    if info["has_video"]:
+        cmd = [FFMPEG, "-y", "-v", "error", "-ss", f"{m.start:.3f}", "-t", f"{dur:.3f}", "-i", str(video)]
+        vchain = f"[0:v]{pre},{vf}[v]"
+    else:  # audio-only source: black card
+        cmd = [FFMPEG, "-y", "-v", "error", "-ss", f"{m.start:.3f}", "-t", f"{dur:.3f}", "-i", str(video),
+               "-f", "lavfi", "-i", f"color=c=black:s=1080x1920:r={fps}:d={dur:.3f}"]
+        vchain = f"[1:v]{pre}" + (f",ass='{_ffesc(str(ass))}':fontsdir='{_ffesc(FONT_DIR)}'" if overlay else "") + "[v]"
+    clean = ("highpass=f=80,afftdn=nr=10:nf=-40,equalizer=f=3200:t=q:w=1.2:g=2.5,"
+             "acompressor=threshold=-20dB:ratio=2.5:attack=10:release=150:makeup=2,") if enhance else ""
+    achain = f"[0:a]{apre},{clean}loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[a]"
+    cmd += ["-sws_flags", "lanczos", "-filter_complex", f"{vchain};{achain}", "-map", "[v]", "-map", "[a]",
+            # H.264 High, 8-12 Mbps ceiling, 2 s GOP, AAC 48 kHz: accepted everywhere, well under size caps
+            "-c:v", "libx264", "-profile:v", "high", "-preset", "veryfast", "-crf", "19",
+            "-maxrate", "12M", "-bufsize", "24M", "-g", str(fps * 2), "-r", str(fps), "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-movflags", "+faststart", "-shortest", str(out)]
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode != 0:
+        raise RuntimeError("ffmpeg failed: " + r.stderr[-800:])
+    thumb = out.with_suffix(".jpg")
+    subprocess.run([FFMPEG, "-y", "-v", "error", "-ss", "0.6", "-i", str(out),
+                    "-frames:v", "1", "-vf", "scale=360:-2", str(thumb)])
+    fillers = sum(1 for w in m.words if m.start <= w["s"] <= m.end and is_filler(w)) if tighten else 0
+    return {"final_duration": round(sum(b - a for a, b in keep), 1), "cuts": len(keep) - 1, "fps": fps,
+            "size_mb": round(out.stat().st_size / 1e6, 1), "fillers_cut": fillers, "enhanced": enhance,
+            "_expected": sum(b - a for a, b in keep), "_layout": layout}
+
+
+# ---------------------------------------------------------------- quality gate
+def quality_check(out: Path, stats: dict, m: Moment, captions=True, size_cap_mb=250) -> list[dict]:
+    """Measure the finished file. 'hard' failures trigger a re-render, then the clip is replaced."""
+    checks = []
+    def add(k, ok, detail, hard):
+        checks.append({"k": k, "ok": bool(ok), "detail": detail, "hard": hard})
+    try:
+        info = json.loads(subprocess.run([FFPROBE, "-v", "error", "-print_format", "json", "-show_streams",
+                                          "-show_format", str(out)], capture_output=True, text=True).stdout)
+    except Exception:
+        add("File opens", False, "unreadable output", True)
+        return checks
+    v = next((x for x in info.get("streams", []) if x["codec_type"] == "video"), {})
+    a = next((x for x in info.get("streams", []) if x["codec_type"] == "audio"), {})
+    dur = float(info.get("format", {}).get("duration", 0))
+    vertical = stats.get("_layout") == "original" or (v.get("width"), v.get("height")) == (1080, 1920)
+    add("Upload-ready format", v.get("codec_name") == "h264" and a.get("codec_name") == "aac" and vertical,
+        f"{v.get('codec_name')} {v.get('width')}×{v.get('height')} + {a.get('codec_name')}", True)
+    exp = stats.get("_expected", dur)
+    add("Length matches the edit", abs(dur - exp) < 0.8, f"{dur:.1f}s (expected {exp:.1f}s)", True)
+    add("Under upload size limits", stats.get("size_mb", 0) < size_cap_mb, f"{stats.get('size_mb')} MB", True)
+
+    r = subprocess.run([FFMPEG, "-hide_banner", "-nostats", "-i", str(out),
+                        "-vf", "blackdetect=d=0.5:pix_th=0.10,freezedetect=n=-60dB:d=2",
+                        "-af", "silencedetect=n=-45dB:d=2,ebur128=peak=true", "-f", "null", "-"],
+                       capture_output=True, text=True)
+    log = r.stderr
+    lufs = re.findall(r"I:\s+(-?[\d.]+) LUFS", log)
+    peak = re.findall(r"Peak:\s+(-?[\d.]+|-inf) dBFS", log)
+    black = sum(float(x) for x in re.findall(r"black_duration:([\d.]+)", log))
+    silence = [float(x) for x in re.findall(r"silence_duration: ([\d.]+)", log)]
+    freeze = sum(float(x) for x in re.findall(r"freeze_duration: ([\d.]+)", log))
+    I = float(lufs[-1]) if lufs else None
+    P = float(peak[-1]) if peak and peak[-1] != "-inf" else None
+    add("Even loudness (−14 LUFS ±2)", I is not None and -16.5 <= I <= -11.5, f"{I} LUFS" if I is not None else "not measured", False)
+    add("No clipping", P is None or P <= -0.3, f"true peak {P} dBFS", False)
+    add("No black frames", black < 0.5, f"{black:.1f}s black", True)
+    add("No dead silence", not silence, f"{max(silence):.1f}s silent stretch" if silence else "none over 2s", True)
+    add("Picture keeps moving", freeze < 0.6 * max(dur, 1), f"{freeze:.1f}s frozen" if freeze else "no long freezes", False)
+    sw = spoken([w for w in m.words if m.start <= w["s"] <= m.end])
+    if captions and sw:
+        add("Starts and ends on whole words", sw[0]["s"] - m.start < 0.5 and m.end - sw[-1]["e"] < 0.8,
+            "clean in/out points", False)
+    return checks
+
+
+def _passed(checks):
+    return all(c["ok"] for c in checks if c["hard"])
+
+
+def _ffesc(p):
+    return p.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
+
+
+def fmt_t(t):
+    t = int(t or 0)
+    return f"{t // 3600}:{t % 3600 // 60:02d}:{t % 60:02d}" if t >= 3600 else f"{t // 60}:{t % 60:02d}"
+
+
+# ---------------------------------------------------------------- pipeline
+def run(source, outdir: Path, n=5, min_len=None, max_len=None, layout="fit", captions=True,
+        model="base", crop_x=0.5, platform="all", hook=True, tighten=True, version="both", cta="",
+        enhance=True, progress=_noop) -> dict:
+    """version: 'both' = long cut + a short cut with the same opening; 'short' or 'long' = one cut."""
+    outdir.mkdir(parents=True, exist_ok=True)
+    video, title = fetch(source, outdir, progress)
+    info = probe(video)
+    if info["duration"] < 3:
+        raise RuntimeError("That video is too short to clip.")
+    plat = PLATFORMS.get(platform, PLATFORMS["all"])
+    if not plat["long"] and version != "short":
+        version = "short"
+    custom = bool(min_len or max_len)
+    progress("analyze", 0, "Analysing audio")
+    wav = outdir / "audio.wav"
+    extract_audio(video, wav)
+    loud = loudness_curve(wav)
+    progress("analyze", 100, "Audio analysed")
+    segs = transcribe(wav, model, progress, info["duration"])
+    (outdir / "transcript.json").write_text(json.dumps(segs))
+    pool = find_moments(segs, loud, info["duration"], n + 4, min_len, max_len, platform, progress, version)
+    clips, dropped = [], 0
+
+    def make(mm, path, use_cta):
+        """Render, measure, and if a hard check fails re-render once with safe settings."""
+        st = render(video, mm, path, layout, captions, crop_x, info, platform, hook, tighten, use_cta, enhance)
+        qc = quality_check(path, st, mm, captions)
+        if not _passed(qc):
+            st = render(video, mm, path, layout, captions, crop_x, info, platform, hook, False, use_cta, False)
+            qc = quality_check(path, st, mm, captions)
+            st["retried"] = True
+        return st, qc
+
+    for m in pool:
+        if len(clips) >= n:
+            break
+        i = len(clips) + 1
+        progress("render", 100 * (i - 1) / n, f"Rendering + checking clip {i} of {n}")
+        m.captions = _post_copy(m, platform, title)
+        name = f"clip_{i:02d}"
+        # CTA goes on the long cut only, so the short cut keeps a clean payoff
+        stats, qc = make(m, outdir / f"{name}.mp4", cta if (version != "short" or custom) else "")
+        if not _passed(qc):
+            dropped += 1
+            continue                      # quality gate: replace with the next-best moment
+        write_srt(m, outdir / f"{name}.srt", keep_intervals(m, tighten and not stats.get("retried")))
+        d = asdict(m)
+        d.pop("words")
+        d.update({k: v for k, v in stats.items() if not k.startswith("_")})
+        d.update(file=f"{name}.mp4", thumb=f"{name}.jpg", srt=f"{name}.srt", quality=qc,
+                 duration=stats["final_duration"], range=f"{fmt_t(m.start)}–{fmt_t(m.end)}", short=None)
+        if version == "both" and not custom:
+            sm = shorten(m, segs, loud, *plat["short"])
+            if sm:
+                sst, sqc = make(sm, outdir / f"{name}_short.mp4", "")
+                if _passed(sqc):
+                    write_srt(sm, outdir / f"{name}_short.srt", keep_intervals(sm, tighten and not sst.get("retried")))
+                    d["short"] = dict({k: v for k, v in sst.items() if not k.startswith("_")},
+                                      file=f"{name}_short.mp4", thumb=f"{name}_short.jpg", quality=sqc,
+                                      srt=f"{name}_short.srt", duration=sst["final_duration"],
+                                      range=f"{fmt_t(sm.start)}–{fmt_t(sm.end)}")
+        clips.append(d)
+    progress("render", 100, "Done")
+    wav.unlink(missing_ok=True)
+    result = {"dropped_for_quality": dropped, "title": title, "source": source, "duration": info["duration"], "platform": platform,
+              "platform_name": plat["name"], "platform_note": plat["note"], "judge": plat["judge"],
+              "publish": plat["publish"], "version": version, "clips": clips}
+    (outdir / "result.json").write_text(json.dumps(result, indent=2))
+    return result
+
+
+if __name__ == "__main__":
+    import argparse
+    ap = argparse.ArgumentParser(description="Find the best moments in a video and cut vertical clips.")
+    ap.add_argument("source", help="video URL or local file")
+    ap.add_argument("-n", type=int, default=5, help="number of clips")
+    ap.add_argument("-p", "--platform", choices=list(PLATFORMS), default="all")
+    ap.add_argument("--min", type=int, help="min clip length (default: platform sweet spot)")
+    ap.add_argument("--max", type=int, help="max clip length (default: platform sweet spot)")
+    ap.add_argument("--layout", choices=["fit", "crop", "original"], default="fit")
+    ap.add_argument("--no-captions", action="store_true")
+    ap.add_argument("--no-hook", action="store_true", help="skip the headline overlay")
+    ap.add_argument("--keep-pauses", action="store_true", help="don't cut dead air or um/uh")
+    ap.add_argument("--no-enhance", action="store_true", help="skip audio clean-up, sharpening and punch-ins")
+    ap.add_argument("--model", default="base", help="tiny | base | small | medium")
+    ap.add_argument("--version", choices=["both", "short", "long"], default="both",
+                    help="both = long cut + short cut with the same opening")
+    ap.add_argument("--cta", default="", help="end-card text on the long cut, e.g. 'Which one would you pick?'")
+    ap.add_argument("-o", "--out", default=str(HERE / "jobs" / "cli"))
+    a = ap.parse_args()
+
+    def pr(stage, pct, msg=""):
+        print(f"\r[{stage:10s}] {pct:5.1f}%  {msg[:60]:60s}", end="", flush=True)
+        if pct >= 100:
+            print()
+    res = run(a.source, Path(a.out), a.n, a.min, a.max, a.layout, not a.no_captions, a.model,
+              platform=a.platform, hook=not a.no_hook, tighten=not a.keep_pauses, version=a.version,
+              cta=a.cta, enhance=not a.no_enhance, progress=pr)
+    for c in res["clips"]:
+        print(f"{c['score']:>4}  {c['range']:>13s}  {c['duration']}s  {c['file']}  {c['title']}")
+        if c.get("short"):
+            print(f"      short cut: {c['short']['duration']}s  {c['short']['file']}")
+        q = c["quality"]
+        print(f"      quality: {sum(x['ok'] for x in q)}/{len(q)} checks" + ("  (re-rendered safe)" if c.get("retried") else "")
+              + "  " + "; ".join(f"✗ {x['k']} ({x['detail']})" for x in q if not x["ok"]))
+    if res.get("dropped_for_quality"):
+        print(f"Replaced {res['dropped_for_quality']} clip(s) that failed the quality gate.")
+        print("      " + " · ".join(c["reasons"]))
+        print("      " + "  ".join(("✓ " if x["ok"] else "✗ ") + x["k"] for x in c["checklist"]))
+    print("Output:", a.out)

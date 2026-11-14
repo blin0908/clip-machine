@@ -1,0 +1,503 @@
+{
+ "platforms": {
+  "all": {
+   "name": "All platforms",
+   "short": [
+    12,
+    18
+   ],
+   "long": [
+    30,
+    45
+   ],
+   "hard_max": 140,
+   "cap_bottom": 700,
+   "hook_top": 300,
+   "right": 180,
+   "tags": 3,
+   "note": "One export for TikTok, Reels and Shorts: a 12\u201318s cut and a 30\u201345s cut with the same opening. Captions are kept clear of every app's buttons.",
+   "judge": [
+    "Stayed to watch (Shorts)",
+    "Sends per reach (Reels)",
+    "Full watches + shares (TikTok)"
+   ],
+   "publish": [],
+   "sweet": [
+    30,
+    45
+   ]
+  },
+  "tiktok": {
+   "name": "TikTok",
+   "short": [
+    12,
+    18
+   ],
+   "long": [
+    20,
+    30
+   ],
+   "hard_max": 600,
+   "cap_bottom": 700,
+   "hook_top": 280,
+   "right": 180,
+   "tags": 3,
+   "note": "Official: For You weighs interactions such as watching in full, skips, time spent, shares and comments. In Search, how well the post matches the query matters most. Data: under 15s led plays per follower for small accounts, and 15\u201330s led interactions per play. Use 45\u201390s only for a real build story.",
+   "judge": [
+    "Average watch time",
+    "Full watches %",
+    "Shares"
+   ],
+   "publish": [
+    "Write the caption the way someone would search for it (check Creator Search Insights).",
+    "Use 2\u20133 relevant tags. #FYP works like any other hashtag (TikTok).",
+    "Promoting your own product? Turn on commercial disclosure. TikTok says it doesn't affect feed distribution.",
+    "Use original or cleared audio, and record the real sound up close.",
+    "Check post visibility and For You eligibility in the app."
+   ],
+   "sweet": [
+    20,
+    30
+   ]
+  },
+  "reels": {
+   "name": "Instagram Reels",
+   "short": [
+    12,
+    18
+   ],
+   "long": [
+    30,
+    45
+   ],
+   "hard_max": 180,
+   "cap_bottom": 620,
+   "hook_top": 300,
+   "right": 160,
+   "tags": 3,
+   "note": "Official/reported: Mosseri highlighted watch time, likes per reach and sends per reach. Sends matter most for people who don't follow you. Skip rate can affect distribution. Reels over 3 min aren't recommended to new audiences. Data: 30\u201360s and under 30s had similar reach rates, so let the creative decide.",
+   "judge": [
+    "Average watch time",
+    "Sends per reach",
+    "Skip rate"
+   ],
+   "publish": [
+    "Public, recommendation-eligible account. Check Account Status.",
+    "Turn on highest-quality uploads, and upload the clean export (no other app's watermark).",
+    "Pick a readable cover frame.",
+    "Try Trial Reels to test a new concept on non-followers first.",
+    "Give people a reason to send it to a friend."
+   ],
+   "sweet": [
+    30,
+    45
+   ]
+  },
+  "shorts": {
+   "name": "YouTube Shorts",
+   "short": [
+    15,
+    30
+   ],
+   "long": [
+    30,
+    60
+   ],
+   "hard_max": 180,
+   "cap_bottom": 560,
+   "hook_top": 260,
+   "right": 150,
+   "tags": 2,
+   "note": "Official: Shorts are matched by watch and search history, topics and sampled audio. YouTube reports 'chose to view', average view duration and percent viewed. Data: 11\u201330s led median views in two large samples. Use 30\u201360s for a story. Public views have counted replays since Mar 2025, so judge by engaged views.",
+   "judge": [
+    "Stayed to watch %",
+    "Engaged views",
+    "Average % viewed"
+   ],
+   "publish": [
+    "Write a title someone who's never heard of you would understand in Search.",
+    "Set the audience (made for kids or not) and visibility. Uploads from 13\u201317 year-olds default to private.",
+    "Over 1 minute with an active Content ID claim = blocked worldwide. Use owned audio on long cuts.",
+    "Add a related video linking to the full version if you have one.",
+    "No minimum posting cadence. Post when your audience is active."
+   ],
+   "sweet": [
+    30,
+    60
+   ]
+  },
+  "facebook": {
+   "name": "Facebook Reels",
+   "short": [
+    15,
+    30
+   ],
+   "long": [
+    30,
+    60
+   ],
+   "hard_max": 300,
+   "cap_bottom": 620,
+   "hook_top": 300,
+   "right": 160,
+   "tags": 2,
+   "note": "Official: all Facebook video uploads are now Reels, with no separate length cap. Original footage and real transformations get priority over reposted or lightly edited clips (Mar 2026). No proven length optimum.",
+   "judge": [
+    "Watch time",
+    "Shares",
+    "Comments"
+   ],
+   "publish": [
+    "Set the Reel audience to Public.",
+    "Write a caption that explains the payoff to someone who doesn't know the project.",
+    "Use owned or licensed audio."
+   ],
+   "sweet": [
+    30,
+    60
+   ]
+  },
+  "snapchat": {
+   "name": "Snapchat Spotlight",
+   "short": [
+    10,
+    20
+   ],
+   "long": null,
+   "hard_max": 60,
+   "cap_bottom": 620,
+   "hook_top": 300,
+   "right": 160,
+   "tags": 2,
+   "note": "Official: Spotlight scores expected watch time, favourites, shares and skips. Since Apr 2026 it favours footage shot on Snapchat's own camera, and since Jul 2026 fully AI-generated video isn't recommended. Test 10\u201320s. There's a 5s minimum. Treat it as a separate experiment.",
+   "judge": [
+    "Watch time",
+    "Favourites",
+    "Shares"
+   ],
+   "publish": [
+    "Spotlight favours footage shot in Snapchat's own camera. For a real test, film a fresh take in the app.",
+    "Posting is open to ages 16+ in eligible regions.",
+    "Use owned or licensed audio."
+   ],
+   "sweet": [
+    10,
+    20
+   ]
+  },
+  "x": {
+   "name": "X / Twitter",
+   "short": [
+    15,
+    30
+   ],
+   "long": [
+    30,
+    45
+   ],
+   "hard_max": 140,
+   "cap_bottom": 380,
+   "hook_top": 160,
+   "right": 70,
+   "tags": 1,
+   "note": "Free accounts are capped at 2:20 and 512 MB. Not covered by the Nov 2026 research, so the lengths are a guess.",
+   "judge": [
+    "Views",
+    "Reposts",
+    "Watch-through"
+   ],
+   "publish": [
+    "Keep it under 2:20 if you don't have Premium."
+   ],
+   "sweet": [
+    30,
+    45
+   ]
+  }
+ },
+ "hype": {
+  "oh my god": 3,
+  "omg": 2,
+  "no way": 3,
+  "what the": 3,
+  "let's go": 3,
+  "lets go": 3,
+  "insane": 2.5,
+  "crazy": 2,
+  "holy": 2.5,
+  "unbelievable": 2.5,
+  "oh no": 2.5,
+  "shut up": 2,
+  "are you serious": 3,
+  "i can't believe": 3,
+  "wow": 1.5,
+  "whoa": 2,
+  "bro": 1,
+  "dude": 1,
+  "clutch": 2,
+  "yes": 0.5,
+  "wait": 1.5,
+  "what": 0.4,
+  "damn": 1.5,
+  "hell": 1,
+  "screaming": 2,
+  "here's the thing": 2.5,
+  "the truth": 2,
+  "nobody": 1.2,
+  "secret": 2,
+  "mistake": 1.5,
+  "biggest": 1.2,
+  "worst": 1.5,
+  "best": 0.8,
+  "never": 0.8,
+  "million": 1.5,
+  "money": 1,
+  "you need to": 1.5,
+  "stop": 1,
+  "the reason": 1.5,
+  "plot twist": 3,
+  "honestly": 0.8,
+  "i was wrong": 2.5,
+  "changed my life": 2.5,
+  "the craziest": 3,
+  "scared": 1.5,
+  "died": 1.5,
+  "turns out": 2,
+  "the problem": 1.5,
+  "nobody talks about": 3,
+  "why": 0.6,
+  "how to": 1.2
+ },
+ "sponsor": [
+  "sponsored by",
+  "use code",
+  "link in the description",
+  "smash that like",
+  "subscribe",
+  "today's sponsor",
+  "promo code",
+  "patreon",
+  "this video is brought"
+ ],
+ "stop": [
+  "a",
+  "about",
+  "all",
+  "also",
+  "an",
+  "and",
+  "are",
+  "at",
+  "back",
+  "be",
+  "because",
+  "been",
+  "but",
+  "can",
+  "could",
+  "did",
+  "do",
+  "does",
+  "down",
+  "even",
+  "for",
+  "from",
+  "get",
+  "going",
+  "gonna",
+  "got",
+  "had",
+  "has",
+  "have",
+  "he",
+  "her",
+  "here",
+  "his",
+  "how",
+  "i",
+  "if",
+  "in",
+  "into",
+  "is",
+  "it",
+  "its",
+  "just",
+  "know",
+  "like",
+  "me",
+  "more",
+  "most",
+  "much",
+  "my",
+  "no",
+  "not",
+  "of",
+  "okay",
+  "on",
+  "one",
+  "only",
+  "or",
+  "other",
+  "our",
+  "out",
+  "over",
+  "really",
+  "right",
+  "she",
+  "should",
+  "so",
+  "some",
+  "still",
+  "than",
+  "that",
+  "the",
+  "their",
+  "them",
+  "then",
+  "there",
+  "these",
+  "they",
+  "think",
+  "this",
+  "those",
+  "to",
+  "up",
+  "very",
+  "wanna",
+  "was",
+  "we",
+  "well",
+  "were",
+  "what",
+  "when",
+  "where",
+  "who",
+  "why",
+  "will",
+  "with",
+  "would",
+  "yeah",
+  "yes",
+  "you",
+  "your"
+ ],
+ "weak": [
+  "about",
+  "actually",
+  "after",
+  "again",
+  "always",
+  "another",
+  "anything",
+  "anyway",
+  "around",
+  "basically",
+  "because",
+  "before",
+  "being",
+  "could",
+  "doing",
+  "every",
+  "everyone",
+  "everything",
+  "finally",
+  "first",
+  "getting",
+  "going",
+  "gonna",
+  "kinda",
+  "literally",
+  "little",
+  "looking",
+  "making",
+  "maybe",
+  "myself",
+  "never",
+  "nothing",
+  "other",
+  "people",
+  "pretty",
+  "probably",
+  "really",
+  "right",
+  "saying",
+  "second",
+  "should",
+  "someone",
+  "something",
+  "sorta",
+  "start",
+  "started",
+  "starting",
+  "stuff",
+  "talking",
+  "their",
+  "there",
+  "theres",
+  "these",
+  "thing",
+  "things",
+  "thinking",
+  "those",
+  "trying",
+  "wanted",
+  "wants",
+  "where",
+  "which",
+  "while",
+  "would",
+  "yourself"
+ ],
+ "midstart": [
+  "also",
+  "and",
+  "because",
+  "but",
+  "cause",
+  "like",
+  "or",
+  "so",
+  "that",
+  "then",
+  "uh",
+  "um",
+  "which"
+ ],
+ "fillers": [
+  "ah",
+  "er",
+  "erm",
+  "hm",
+  "hmm",
+  "mhm",
+  "mm",
+  "uh",
+  "uhh",
+  "uhm",
+  "um",
+  "umm"
+ ],
+ "weights": {
+  "energy": 1.0,
+  "peak": 0.5,
+  "swing": 0.3,
+  "hype": 0.8,
+  "laugh": 0.8,
+  "exclaim": 0.3,
+  "pace": 0.4,
+  "hook": 1.2,
+  "first1": 0.6,
+  "payoff": 0.5,
+  "ends_clean": 0.5,
+  "midstart": -0.9,
+  "deadair": -0.6,
+  "fit": 0.9,
+  "sponsor": -1.5
+ },
+ "raw": [
+  "ends_clean",
+  "fit",
+  "midstart",
+  "sponsor"
+ ]
+}

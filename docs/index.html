@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0b0b0f">
+<meta name="description" content="Free AI clipper. Finds the best moments in a long video and cuts captioned vertical clips for TikTok, Reels and Shorts, entirely in your browser.">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Clips">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-180.png">
+<title>Clip Machine</title>
+<style>
+:root{--bg:#0b0b0f;--card:#16161d;--line:#26262f;--text:#f2f2f5;--mute:#9a9aa8;--acc:#ffe600;--acc-ink:#111;--bad:#ff5c5c;--good:#3ddc84;--r:16px}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;padding:max(16px,env(safe-area-inset-top)) 16px calc(40px + env(safe-area-inset-bottom))}
+main{max-width:720px;margin:0 auto}
+h1{font-size:30px;letter-spacing:-.02em;margin:8px 0 2px;font-weight:800}
+h1 span{color:var(--acc)}
+h2{font-size:18px;margin:22px 0 10px}
+.sub{color:var(--mute);margin:0 0 6px;font-size:15px}
+.badges{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0 18px}
+.badges span{font-size:12px;border:1px solid var(--line);border-radius:99px;padding:4px 10px;color:var(--mute)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:16px;margin-bottom:14px}
+.card.tight{padding:12px 14px;margin-bottom:10px}
+.busy{opacity:.45;pointer-events:none}
+label.t{display:block;font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--mute);margin:16px 0 8px;font-weight:600}
+label.t:first-child{margin-top:0}
+button{font:inherit;border:0;border-radius:12px;cursor:pointer}
+.file{display:block;text-align:center;border:1.5px dashed #3a3a46;border-radius:14px;padding:22px 14px;color:var(--text);font-size:15px;cursor:pointer;font-weight:600}
+.file small{display:block;color:var(--mute);font-weight:400;margin-top:4px}
+.file input{display:none}
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.chip{background:#1f1f27;color:var(--text);padding:9px 13px;font-size:14px;border:1px solid var(--line)}
+.chip[aria-pressed=true]{background:var(--acc);color:var(--acc-ink);border-color:var(--acc);font-weight:700}
+.chip:disabled{opacity:.35}
+.txt{width:100%;background:#0f0f14;border:1px solid var(--line);color:var(--text);border-radius:12px;padding:12px;font-size:16px}
+details summary{cursor:pointer;color:var(--mute);font-size:14px;list-style:none}
+details summary::-webkit-details-marker{display:none}
+#more summary{margin-top:16px}
+#more summary:before{content:"⚙︎ "}
+.go{width:100%;background:var(--acc);color:var(--acc-ink);font-weight:800;padding:16px;font-size:17px;margin-top:18px}
+.go:disabled{opacity:.4}
+.pnote{color:var(--mute);font-size:13px;margin:10px 0 0}
+.bar{height:10px;background:#22222b;border-radius:99px;overflow:hidden;margin:10px 0 6px}
+.bar i{display:block;height:100%;width:0;background:var(--acc);transition:width .4s}
+.msg{color:var(--mute);font-size:14px}
+.err{color:var(--bad);white-space:pre-wrap;font-size:14px}
+.top{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px}
+.when{color:var(--mute);font-size:13px;font-variant-numeric:tabular-nums}
+.ghost{background:#22222b;color:var(--text);padding:8px 12px;font-size:13px}
+.clips{display:grid;grid-template-columns:1fr;gap:14px}
+@media(min-width:620px){.clips{grid-template-columns:1fr 1fr}}
+.clip{background:var(--card);border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
+.clip video{width:100%;aspect-ratio:9/16;background:#000;display:block;object-fit:contain}
+.clip .b{padding:12px 14px 14px}
+.score{background:var(--acc);color:var(--acc-ink);font-weight:800;border-radius:8px;padding:2px 8px;font-size:14px}
+.ttl{font-weight:700;margin:4px 0 6px}
+.why{color:var(--mute);font-size:13px;margin:0 0 10px}
+.check{list-style:none;padding:0;margin:0 0 10px;font-size:13px}
+.check li{padding:3px 0}
+.check li.ok b{color:var(--good)}
+.check li.no{color:var(--mute)}
+.check li.no b{color:var(--bad)}
+.check span{color:var(--mute)}
+.ev{font-size:10px;text-transform:uppercase;letter-spacing:.06em;border:1px solid #3a3a46;border-radius:6px;padding:1px 5px;margin-left:4px;white-space:nowrap}
+.qc{margin:0 0 8px}
+.qbadge{display:inline-block;background:rgba(61,220,132,.15);color:var(--good);border:1px solid rgba(61,220,132,.4);border-radius:8px;padding:2px 8px;font-size:13px;font-weight:700}
+.qbadge.warn{background:rgba(255,200,0,.12);color:#ffd24d;border-color:rgba(255,200,0,.4)}
+.meta{color:var(--mute);font-size:12px;margin-bottom:10px}
+.acts{display:flex;gap:8px}
+.acts>*{flex:1;text-align:center;text-decoration:none;padding:11px 6px;font-size:14px;font-weight:700;border-radius:10px}
+.acts>.dl{flex:1.6}
+.dl{background:var(--acc);color:var(--acc-ink)}
+.sec{background:#22222b;color:var(--text)}
+.copyrow{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.copyrow button{flex:1 1 45%;padding:9px;font-size:13px;font-weight:600;border-radius:10px}
+.vtabs{display:flex;gap:6px;margin-bottom:10px}
+.vtabs button{flex:1;background:#1f1f27;color:var(--text);border:1px solid var(--line);padding:8px;font-size:13px;font-weight:700;border-radius:10px}
+.vtabs button[aria-pressed=true]{background:var(--acc);color:var(--acc-ink);border-color:var(--acc)}
+.pub{margin:8px 0 0;padding-left:18px;font-size:13px}
+.pub li{margin:4px 0}
+.judge{font-size:13px;color:var(--mute);margin-top:8px}
+.logf{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
+.logf input,.logf select{background:#0f0f14;border:1px solid var(--line);color:var(--text);border-radius:10px;padding:9px;font-size:15px;min-width:0}
+.logf .wide{grid-column:1/-1}
+.logf button{padding:11px;font-weight:700}
+.ltable{width:100%;border-collapse:collapse;font-size:12px}
+.ltable th,.ltable td{text-align:left;padding:6px 4px;border-top:1px solid var(--line);vertical-align:top}
+.ltable th{color:var(--mute);font-weight:600}
+.lwrap{overflow-x:auto}
+.st{font-size:12px;color:var(--mute)}
+.x{background:none;color:var(--mute);padding:4px 8px}
+.hide{display:none}
+.foot{color:var(--mute);font-size:13px;margin-top:28px}
+.foot a{color:var(--text)}
+.toast{position:fixed;left:50%;bottom:calc(24px + env(safe-area-inset-bottom));transform:translateX(-50%);background:#fff;color:#000;padding:10px 16px;border-radius:99px;font-size:14px;font-weight:600;opacity:0;transition:opacity .2s;pointer-events:none;z-index:9}
+.toast.on{opacity:1}
+</style>
+</head>
+<body>
+<main>
+  <h1>Clip<span>Machine</span></h1>
+  <p class="sub">Drop in a long video. It finds the strongest moments and cuts captioned vertical clips for TikTok, Reels and Shorts.</p>
+  <div class="badges"><span>Free</span><span>No watermark</span><span>No account</span><span>Runs on your device: your video is never uploaded</span></div>
+
+  <section class="card" id="setup">
+    <label class="file"><input type="file" id="file" accept="video/*,audio/*"><span id="fname">Choose a video</span><small>MP4 or MOV from your camera roll or computer. English speech.</small></label>
+
+    <label class="t">Posting to</label>
+    <div class="chips" data-k="platform"><button class="chip" data-v="all" aria-pressed="true">All platforms</button><button class="chip" data-v="tiktok">TikTok</button><button class="chip" data-v="reels">IG Reels</button><button class="chip" data-v="shorts">YT Shorts</button><button class="chip" data-v="facebook">Facebook</button><button class="chip" data-v="snapchat">Snapchat</button><button class="chip" data-v="x">X</button></div>
+    <p class="pnote" id="pnote"></p>
+
+    <label class="t">How many moments</label>
+    <div class="chips" data-k="n"><button class="chip" data-v="1">1</button><button class="chip" data-v="3" aria-pressed="true">3</button><button class="chip" data-v="5">5</button><button class="chip" data-v="8">8</button></div>
+
+    <label class="t">Cuts per moment</label>
+    <div class="chips" data-k="version"><button class="chip" data-v="both" aria-pressed="true" id="vboth">Short + long</button><button class="chip" data-v="short" id="vshort">Short only</button><button class="chip" data-v="long" id="vlong">Long only</button></div>
+
+    <label class="t">Export</label>
+    <div class="chips" data-k="quality"><button class="chip" data-v="fast" aria-pressed="true">Fast · 720p</button><button class="chip" data-v="hd">Full HD · 1080p (slower)</button></div>
+
+    <details id="more">
+      <summary>More options</summary>
+      <label class="t">Framing</label>
+      <div class="chips" data-k="layout"><button class="chip" data-v="fit" aria-pressed="true">Full frame + blur</button><button class="chip" data-v="crop">Zoom crop (center)</button></div>
+      <label class="t">Edits</label>
+      <div class="chips" data-k="enhance"><button class="chip" data-v="1" aria-pressed="true">Enhance: clean audio, sharpen, punch-ins</button><button class="chip" data-v="0">No enhancement</button></div>
+      <div class="chips" data-k="tighten" style="margin-top:8px"><button class="chip" data-v="1" aria-pressed="true">Cut dead air + um/uh</button><button class="chip" data-v="0">Keep pauses</button></div>
+      <div class="chips" data-k="captions" style="margin-top:8px"><button class="chip" data-v="1" aria-pressed="true">Word-by-word captions</button><button class="chip" data-v="0">No captions</button></div>
+      <div class="chips" data-k="hook" style="margin-top:8px"><button class="chip" data-v="1" aria-pressed="true">Headline for first 3s</button><button class="chip" data-v="0">No headline</button></div>
+      <label class="t" for="cta">End-card question (long cut only)</label>
+      <input id="cta" class="txt" maxlength="80" placeholder="e.g. Which one would you pick?">
+      <label class="t">Speech model</label>
+      <div class="chips" data-k="model"><button class="chip" data-v="Xenova/whisper-tiny.en">Fastest (~40 MB)</button><button class="chip" data-v="Xenova/whisper-base.en" aria-pressed="true">Balanced (~80 MB)</button></div>
+    </details>
+
+    <button class="go" id="go" disabled>Find the moments</button>
+  </section>
+
+  <section class="card hide" id="prog">
+    <div class="top"><strong id="plabel">Working…</strong><span class="when" id="ppct">0%</span></div>
+    <div class="bar"><i id="pbar"></i></div>
+    <div class="top"><span class="msg" id="pmsg"></span><button class="ghost" id="cancel">Cancel</button></div>
+  </section>
+
+  <section id="out"></section>
+
+  <h2>Results log</h2>
+  <div class="card">
+    <p class="pnote" style="margin-top:0">Judge each cut by its job. Log the numbers at 24 hours and 7 days, and compare clips at the same age. Saved on this device only.</p>
+    <div id="logtbl" class="msg">No results logged yet.</div>
+    <button class="sec ghost" id="csv" style="margin-top:10px">Export CSV</button>
+  </div>
+
+  <p class="foot">Every clip passes a quality gate: format, length, loudness, clipping, black frames, silence and frozen picture. Clips that fail are re-rendered or replaced. Want to clip straight from a YouTube link? Get the <a href="https://github.com/blin0908/clip-machine#mac-app">free Mac app</a>. · <a href="https://github.com/blin0908/clip-machine">Source &amp; research</a> · Only clip videos you have the rights to.</p>
+</main>
+<div class="toast" id="toast"></div>
+<script type="module" src="app.js"></script>
+</body>
+</html>

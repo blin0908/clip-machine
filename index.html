@@ -1,0 +1,360 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0b0b0f">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Clips">
+<link rel="manifest" href="/manifest.json">
+<link rel="apple-touch-icon" href="/icon.svg">
+<title>Clip Machine</title>
+<style>
+:root{--bg:#0b0b0f;--card:#16161d;--line:#26262f;--text:#f2f2f5;--mute:#9a9aa8;--acc:#ffe600;--acc-ink:#111;--bad:#ff5c5c;--good:#3ddc84;--r:16px}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+body{margin:0;background:var(--bg);color:var(--text);font:16px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;padding:max(16px,env(safe-area-inset-top)) 16px calc(40px + env(safe-area-inset-bottom))}
+main{max-width:720px;margin:0 auto}
+h1{font-size:28px;letter-spacing:-.02em;margin:8px 0 2px;font-weight:800}
+h1 span{color:var(--acc)}
+.sub{color:var(--mute);margin:0 0 20px;font-size:14px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:16px;margin-bottom:14px}
+label.t{display:block;font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--mute);margin:14px 0 8px;font-weight:600}
+label.t:first-child{margin-top:0}
+.row{display:flex;gap:8px}
+input[type=url]{flex:1;min-width:0;background:#0f0f14;border:1px solid var(--line);color:var(--text);border-radius:12px;padding:14px;font-size:16px}
+input[type=url]:focus{outline:2px solid var(--acc);border-color:transparent}
+button{font:inherit;border:0;border-radius:12px;cursor:pointer}
+.ghost{background:#22222b;color:var(--text);padding:0 14px}
+.go{width:100%;background:var(--acc);color:var(--acc-ink);font-weight:800;padding:16px;font-size:17px;margin-top:18px}
+.go:disabled{opacity:.5}
+.chips{display:flex;flex-wrap:wrap;gap:8px}
+.chip{background:#1f1f27;color:var(--text);padding:9px 13px;font-size:14px;border:1px solid var(--line)}
+.chip[aria-pressed=true]{background:var(--acc);color:var(--acc-ink);border-color:var(--acc);font-weight:700}
+.or{display:flex;align-items:center;gap:10px;color:var(--mute);font-size:13px;margin:12px 0}
+.or:before,.or:after{content:"";flex:1;height:1px;background:var(--line)}
+.file{display:block;text-align:center;border:1px dashed #3a3a46;border-radius:12px;padding:13px;color:var(--mute);font-size:14px;cursor:pointer}
+.file input{display:none}
+input[type=range]{width:100%;accent-color:var(--acc)}
+details summary{cursor:pointer;color:var(--mute);font-size:14px;margin-top:16px;list-style:none}
+details summary::-webkit-details-marker{display:none}
+details summary:before{content:"⚙︎ "}
+.bar{height:10px;background:#22222b;border-radius:99px;overflow:hidden;margin:10px 0 6px}
+.bar i{display:block;height:100%;width:0;background:var(--acc);transition:width .4s}
+.msg{color:var(--mute);font-size:14px}
+.err{color:var(--bad);white-space:pre-wrap;font-size:14px}
+.clips{display:grid;grid-template-columns:1fr;gap:14px}
+@media(min-width:620px){.clips{grid-template-columns:1fr 1fr}}
+.clip{background:var(--card);border:1px solid var(--line);border-radius:var(--r);overflow:hidden}
+.clip video{width:100%;aspect-ratio:9/16;background:#000;display:block;object-fit:contain}
+.clip .b{padding:12px 14px 14px}
+.top{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px}
+.score{background:var(--acc);color:var(--acc-ink);font-weight:800;border-radius:8px;padding:2px 8px;font-size:14px}
+.when{color:var(--mute);font-size:13px;font-variant-numeric:tabular-nums}
+.ttl{font-weight:700;margin:4px 0 6px}
+.why{color:var(--mute);font-size:13px;margin:0 0 10px}
+.tags{color:#8fb4ff;font-size:13px;margin-bottom:12px;word-break:break-word}
+.acts{display:flex;gap:8px}
+.acts a,.acts button{flex:1;text-align:center;text-decoration:none;padding:11px;font-size:14px;font-weight:700;border-radius:10px}
+.dl{background:var(--acc);color:var(--acc-ink)}
+.sec{background:#22222b;color:var(--text)}
+.hist{list-style:none;padding:0;margin:0}
+.hist li{display:flex;justify-content:space-between;gap:10px;align-items:center;padding:10px 0;border-top:1px solid var(--line);font-size:14px}
+.hist li:first-child{border-top:0}
+.hist a{color:var(--text);text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1}
+.st{font-size:12px;color:var(--mute);white-space:nowrap}
+.x{background:none;color:var(--mute);padding:4px 8px}
+h2{font-size:18px;margin:22px 0 10px}
+.hide{display:none}
+.qc{margin:0 0 8px}
+.qc summary{margin:0;list-style:none}
+.qbadge{display:inline-block;background:rgba(61,220,132,.15);color:var(--good);border:1px solid rgba(61,220,132,.4);border-radius:8px;padding:2px 8px;font-size:13px;font-weight:700}
+.qbadge.warn{background:rgba(255,200,0,.12);color:#ffd24d;border-color:rgba(255,200,0,.4)}
+.txt{width:100%;background:#0f0f14;border:1px solid var(--line);color:var(--text);border-radius:12px;padding:12px;font-size:16px}
+.ev{font-size:10px;text-transform:uppercase;letter-spacing:.06em;border:1px solid #3a3a46;border-radius:6px;padding:1px 5px;margin-left:4px;color:var(--mute);white-space:nowrap}
+.vtabs{display:flex;gap:6px;margin-bottom:10px}
+.vtabs button{flex:1;background:#1f1f27;color:var(--text);border:1px solid var(--line);padding:8px;font-size:13px;font-weight:700;border-radius:10px}
+.vtabs button[aria-pressed=true]{background:var(--acc);color:var(--acc-ink);border-color:var(--acc)}
+.pub{margin:4px 0 0;padding-left:18px;font-size:13px;color:var(--text)}
+.pub li{margin:4px 0}
+.judge{font-size:13px;color:var(--mute);margin-top:8px}
+.logf{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}
+.logf input,.logf select{background:#0f0f14;border:1px solid var(--line);color:var(--text);border-radius:10px;padding:9px;font-size:15px;min-width:0}
+.logf .wide{grid-column:1/-1}
+.ltable{width:100%;border-collapse:collapse;font-size:12px}
+.ltable th,.ltable td{text-align:left;padding:6px 4px;border-top:1px solid var(--line);vertical-align:top}
+.ltable th{color:var(--mute);font-weight:600}
+.lwrap{overflow-x:auto}
+.csv{display:inline-block;margin-top:10px;padding:9px 14px;border-radius:10px;text-decoration:none;font-size:13px;font-weight:700}
+.pnote{color:var(--mute);font-size:13px;margin:10px 0 0}
+.check{list-style:none;padding:0;margin:0 0 10px;font-size:13px}
+.check li{padding:3px 0}
+.check li.ok b{color:var(--good)}
+.check li.no{color:var(--mute)}
+.check li.no b{color:var(--bad)}
+.check span{color:var(--mute)}
+.meta{color:var(--mute);font-size:12px;margin-bottom:10px}
+.copyrow{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.copyrow button{flex:1 1 45%;padding:9px;font-size:13px;font-weight:600;border-radius:10px}
+.toast{position:fixed;left:50%;bottom:calc(24px + env(safe-area-inset-bottom));transform:translateX(-50%);background:#fff;color:#000;padding:10px 16px;border-radius:99px;font-size:14px;font-weight:600;opacity:0;transition:opacity .2s;pointer-events:none}
+.toast.on{opacity:1}
+</style>
+</head>
+<body>
+<main>
+  <h1>Clip<span>Machine</span></h1>
+  <p class="sub">Paste a link. It finds the explosive moments and cuts ready-to-post vertical clips. Free, runs on your Mac.</p>
+
+  <form class="card" id="f">
+    <label class="t" for="url">Video link</label>
+    <div class="row">
+      <input id="url" type="url" inputmode="url" placeholder="https://youtube.com/watch?v=…" autocomplete="off">
+      <button type="button" class="ghost" id="paste">Paste</button>
+    </div>
+    <div class="or">or</div>
+    <label class="file"><input type="file" id="file" accept="video/*,audio/*"><span id="fname">Upload a video from your phone</span></label>
+
+    <label class="t">Posting to</label>
+    <div class="chips" data-k="platform"><button type="button" class="chip" data-v="all" aria-pressed="true">All platforms</button><button type="button" class="chip" data-v="tiktok">TikTok</button><button type="button" class="chip" data-v="shorts">YT Shorts</button><button type="button" class="chip" data-v="reels">IG Reels</button><button type="button" class="chip" data-v="facebook">Facebook</button><button type="button" class="chip" data-v="snapchat">Snapchat</button><button type="button" class="chip" data-v="x">X</button></div>
+    <p class="pnote" id="pnote"></p>
+
+    <label class="t">How many clips</label>
+    <div class="chips" data-k="n"><button type="button" class="chip" data-v="3">3</button><button type="button" class="chip" data-v="5" aria-pressed="true">5</button><button type="button" class="chip" data-v="8">8</button><button type="button" class="chip" data-v="12">12</button></div>
+
+    <label class="t">Cuts per moment</label>
+    <div class="chips" data-k="version"><button type="button" class="chip" data-v="both" aria-pressed="true" id="vboth">Short + long</button><button type="button" class="chip" data-v="short" id="vshort">Short only</button><button type="button" class="chip" data-v="long" id="vlong">Long only</button></div>
+    <p class="pnote">Both cuts use the same opening, so you can see whether the extra context holds attention.</p>
+
+    <label class="t">Clip length</label>
+    <div class="chips" data-k="len"><button type="button" class="chip" data-v="auto-auto" aria-pressed="true" id="autolen">Auto · platform test range</button><button type="button" class="chip" data-v="12-30">Custom · 12–30s</button><button type="button" class="chip" data-v="20-60">Custom · 20–60s</button><button type="button" class="chip" data-v="45-90">Build story · 45–90s</button></div>
+
+    <label class="t">Framing</label>
+    <div class="chips" data-k="layout"><button type="button" class="chip" data-v="fit" aria-pressed="true">Full frame + blur</button><button type="button" class="chip" data-v="crop">Zoom crop</button><button type="button" class="chip" data-v="original">Keep original</button></div>
+    <div id="cropbox" class="hide">
+      <label class="t" for="cx">Crop focus <span id="cxv">center</span></label>
+      <input type="range" id="cx" min="0" max="1" step="0.05" value="0.5">
+    </div>
+
+    <details>
+      <summary>More options</summary>
+      <label class="t">Viral formula extras</label>
+      <div class="chips" data-k="hook"><button type="button" class="chip" data-v="1" aria-pressed="true">Headline for first 3s</button><button type="button" class="chip" data-v="0">No headline</button></div>
+      <div class="chips" data-k="tighten" style="margin-top:8px"><button type="button" class="chip" data-v="1" aria-pressed="true">Cut dead air + um/uh</button><button type="button" class="chip" data-v="0">Keep pauses</button></div>
+      <div class="chips" data-k="enhance" style="margin-top:8px"><button type="button" class="chip" data-v="1" aria-pressed="true">Enhance (clean audio, sharpen, punch-ins)</button><button type="button" class="chip" data-v="0">No enhancement</button></div>
+      <label class="t" for="cta">End-card call to action (long cut only)</label>
+      <input id="cta" type="text" maxlength="80" placeholder="e.g. Which one would you pick?" class="txt">
+      <p class="pnote">Ask one relevant question. The short cut stays clean so its payoff isn't interrupted.</p>
+      <label class="t">Captions</label>
+      <div class="chips" data-k="captions"><button type="button" class="chip" data-v="1" aria-pressed="true">Word-by-word captions</button><button type="button" class="chip" data-v="0">No captions</button></div>
+      <label class="t">Accuracy vs speed</label>
+      <div class="chips" data-k="model"><button type="button" class="chip" data-v="tiny">Fastest</button><button type="button" class="chip" data-v="base" aria-pressed="true">Balanced</button><button type="button" class="chip" data-v="small">Most accurate</button></div>
+    </details>
+
+    <button class="go" id="go" type="submit">Find the moments</button>
+  </form>
+
+  <section class="card hide" id="prog">
+    <div class="top"><strong id="plabel">Working…</strong><span class="when" id="ppct">0%</span></div>
+    <div class="bar"><i id="pbar"></i></div>
+    <div class="msg" id="pmsg"></div>
+  </section>
+
+  <section id="out"></section>
+
+  <h2>Results log</h2>
+  <div class="card">
+    <p class="pnote" style="margin-top:0">Judge each cut by its job. Log the numbers at 24 hours and 7 days, and compare clips at the same age.</p>
+    <div id="logtbl" class="msg">No results logged yet.</div>
+    <a class="sec csv" href="/api/log.csv">Export CSV</a>
+  </div>
+
+  <h2>Recent</h2>
+  <div class="card"><ul class="hist" id="hist"><li class="msg">Nothing yet.</li></ul></div>
+</main>
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+const opts = {n:"5", len:"auto-auto", layout:"fit", captions:"1", model:"base", platform:"all", hook:"1", tighten:"1", version:"both", enhance:"1"};
+let PLAT = {};
+fetch("/api/platforms").then(r => r.json()).then(p => { PLAT = p; showPlat(); });
+function showPlat(){ const p = PLAT[opts.platform]; if (!p) return;
+  $("#pnote").textContent = p.note;
+  const s = `${p.short[0]}–${p.short[1]}s`, l = p.long ? `${p.long[0]}–${p.long[1]}s` : null;
+  $("#autolen").textContent = "Auto · " + (l ? `${s} + ${l}` : s);
+  $("#vshort").textContent = `Short only · ${s}`;
+  $("#vboth").disabled = $("#vlong").disabled = !l;
+  $("#vlong").textContent = l ? `Long only · ${l}` : "Long only";
+  if (!l && opts.version !== "short") document.querySelector('#vshort').click();
+}
+const PN = {tiktok:"TikTok", shorts:"YT Shorts", reels:"Reels", facebook:"Facebook", snapchat:"Snapchat", x:"X"};
+let current = null, timer = null;
+
+document.querySelectorAll(".chips").forEach(g => g.addEventListener("click", e => {
+  const b = e.target.closest(".chip"); if (!b) return;
+  g.querySelectorAll(".chip").forEach(c => c.setAttribute("aria-pressed", c === b));
+  opts[g.dataset.k] = b.dataset.v;
+  if (g.dataset.k === "platform") showPlat();
+  if (g.dataset.k === "layout") $("#cropbox").classList.toggle("hide", b.dataset.v !== "crop");
+}));
+$("#cx").oninput = e => { const v = +e.target.value; $("#cxv").textContent = v < .35 ? "left" : v > .65 ? "right" : "center"; };
+$("#paste").onclick = async () => { try { $("#url").value = (await navigator.clipboard.readText()).trim(); } catch { $("#url").focus(); toast("Long-press the box to paste"); } };
+$("#file").onchange = e => { const f = e.target.files[0]; $("#fname").textContent = f ? "📎 " + f.name : "Upload a video from your phone"; if (f) $("#url").value = ""; };
+
+function toast(t){ const el=$("#toast"); el.textContent=t; el.classList.add("on"); clearTimeout(el._t); el._t=setTimeout(()=>el.classList.remove("on"),1800); }
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+$("#f").onsubmit = async e => {
+  e.preventDefault();
+  const url = $("#url").value.trim(), file = $("#file").files[0];
+  if (!url && !file) return toast("Paste a link or pick a video");
+  const [mn, mx] = opts.len.split("-");
+  const fields = {n:opts.n, min:mn, max:mx, layout:opts.layout, captions:opts.captions, model:opts.model, crop_x:$("#cx").value, platform:opts.platform, hook:opts.hook, tighten:opts.tighten, version:opts.version, cta:$("#cta").value.trim(), enhance:opts.enhance};
+  $("#go").disabled = true;
+  try {
+    let r;
+    if (file) {
+      const fd = new FormData(); Object.entries(fields).forEach(([k,v]) => fd.append(k,v)); fd.append("file", file);
+      showProg("Uploading…", 0, "Sending video to your Mac");
+      r = await upload(fd);
+    } else {
+      r = await fetch("/api/jobs", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({url, ...fields})}).then(x => x.json());
+    }
+    if (r.error) throw new Error(r.error);
+    $("#url").value = ""; $("#file").value = ""; $("#fname").textContent = "Upload a video from your phone";
+    watch(r.id);
+  } catch (err) { toast(err.message || "Something went wrong"); $("#prog").classList.add("hide"); }
+  $("#go").disabled = false;
+};
+
+function upload(fd){
+  return new Promise((ok, bad) => {
+    const x = new XMLHttpRequest(); x.open("POST", "/api/jobs");
+    x.upload.onprogress = e => e.lengthComputable && showProg("Uploading…", e.loaded / e.total * 100, "Sending video to your Mac");
+    x.onload = () => { try { ok(JSON.parse(x.responseText)); } catch { bad(new Error("Upload failed")); } };
+    x.onerror = () => bad(new Error("Upload failed")); x.send(fd);
+  });
+}
+
+function showProg(label, pct, msg){
+  $("#prog").classList.remove("hide"); $("#plabel").textContent = label;
+  $("#ppct").textContent = Math.round(pct) + "%"; $("#pbar").style.width = pct + "%"; $("#pmsg").textContent = msg || "";
+}
+
+function watch(id){
+  current = id; clearInterval(timer); $("#out").innerHTML = "";
+  const tick = async () => {
+    const j = await fetch("/api/jobs/" + id).then(r => r.json()).catch(() => null);
+    if (!j || current !== id) return;
+    if (j.status === "done") { clearInterval(timer); $("#prog").classList.add("hide"); render(j); history(); }
+    else if (j.status === "error") { clearInterval(timer); $("#prog").classList.add("hide"); $("#out").innerHTML = `<div class="card err">⚠ ${esc(j.msg)}</div>`; history(); }
+    else showProg(j.status === "queued" ? "Waiting…" : "Working…", j.pct, j.msg);
+  };
+  tick(); timer = setInterval(tick, 1200);
+  history();
+}
+
+function render(j){
+  const r = j.result, base = "/files/" + j.id + "/";
+  if (!r.clips.length) { $("#out").innerHTML = `<div class="card msg">No clear moments found. Try shorter clip lengths.</div>`; return; }
+  const order = r.platform && r.platform !== "all" ? [r.platform] : ["tiktok","reels","shorts","facebook"];
+  const pubPlats = r.platform && r.platform !== "all" ? [r.platform] : ["tiktok","reels","shorts","facebook"];
+  const pub = pubPlats.map(k => PLAT[k] && PLAT[k].publish.length ? `<details class="card" style="margin:0 0 10px"><summary style="margin:0">Before you post on <b>${esc(PLAT[k].name)}</b></summary><ul class="pub">${PLAT[k].publish.map(x => `<li>${esc(x)}</li>`).join("")}</ul><div class="judge">Judge it by: ${PLAT[k].judge.map(esc).join(" · ")}</div></details>` : "").join("");
+  const cutBody = (c, v) => qualityHTML(v) + `
+        <div class="meta">${v.size_mb ?? "?"} MB · ${v.fps ?? "?"} fps · ${v.duration}s${v.cuts ? ` · ${v.cuts} cut${v.cuts > 1 ? "s" : ""}` : ""}${v.fillers_cut ? ` · ${v.fillers_cut} um/uh removed` : ""}${v.enhanced ? " · enhanced" : ""}</div>
+        <div class="acts"><a class="dl" href="${base + v.file}?dl=1" download>Save ${c.short ? (v === c ? "long" : "short") + " cut" : "clip"}</a></div>`;
+  $("#out").innerHTML = `<h2>${esc(r.title)}</h2>${r.platform_note ? `<p class="pnote">Formatted for <b>${esc(r.platform_name)}</b>. ${esc(r.platform_note)}</p>` : ""}${pub}${r.dropped_for_quality ? `<p class="pnote">Quality gate replaced ${r.dropped_for_quality} clip${r.dropped_for_quality > 1 ? "s" : ""} that failed a hard check.</p>` : ""}<div class="clips">` + r.clips.map((c, i) => `
+    <article class="clip" data-i="${i}">
+      <video src="${base + (c.short ? c.short.file : c.file)}" poster="${base + (c.short ? c.short.thumb : c.thumb)}" controls playsinline preload="none"></video>
+      <div class="b">
+        ${c.short ? `<div class="vtabs"><button data-cut="short" aria-pressed="true">Short · ${c.short.duration}s</button><button data-cut="long" aria-pressed="false">Long · ${c.duration}s</button></div>` : ""}
+        <div class="top"><span class="score">${c.score}</span><span class="when">${esc(c.range)}</span></div>
+        <div class="ttl">${esc(c.title)}</div>
+        <p class="why">${c.reasons.map(esc).join(" · ")}</p>
+        <ul class="check">${(c.checklist || []).map(x => `<li class="${x.ok ? "ok" : "no"}"><b>${x.ok ? "✓" : "✗"}</b> ${esc(x.k)}${x.ev ? `<span class="ev">${esc(x.ev)}</span>` : ""}${x.tip ? ` <span>${esc(x.tip)}</span>` : ""}</li>`).join("")}</ul>
+        <div class="cutbox">${cutBody(c, c.short || c)}</div>
+        <div class="copyrow">${c.captions ? order.filter(k => c.captions[k]).map(k => `<button class="sec" data-copy="${esc(c.captions[k])}">Copy ${PN[k]} caption</button>`).join("") : `<button class="sec" data-copy="${esc(c.title + " " + c.hashtags.join(" "))}">Copy caption</button>`}</div>
+        <details style="margin-top:10px"><summary style="margin:0">Log a post</summary>
+          <form class="logf" data-clip="${i}">
+            <select name="platform">${Object.keys(PN).map(k => `<option value="${k}" ${k === (r.platform !== "all" ? r.platform : "tiktok") ? "selected" : ""}>${PN[k]}</option>`).join("")}</select>
+            <select name="cut">${c.short ? `<option value="short">Short cut</option><option value="long">Long cut</option>` : `<option value="single">Clip</option>`}</select>
+            <input name="posted" type="date" aria-label="Posted on">
+            <select name="checkpoint"><option>24h</option><option>7d</option></select>
+            <input name="views" inputmode="numeric" placeholder="Views" class="wide">
+            <input name="metric1" placeholder="metric 1"><input name="metric2" placeholder="metric 2">
+            <input name="metric3" placeholder="metric 3" class="wide">
+            <input name="notes" placeholder="Notes: what you changed (one variable at a time)" class="wide">
+            <button class="dl wide" type="submit" style="padding:11px;font-weight:700">Save result</button>
+          </form>
+        </details>
+      </div>
+    </article>`).join("") + `</div>`;
+  $("#out")._job = j;
+  $("#out").querySelectorAll(".logf").forEach(setMetricLabels);
+  $("#out").scrollIntoView({behavior:"smooth"});
+}
+function qualityHTML(v){
+  const q = v.quality || []; if (!q.length) return "";
+  const ok = q.filter(x => x.ok).length, warn = q.length - ok;
+  return `<details class="qc"><summary><span class="qbadge ${warn ? "warn" : ""}">${warn ? "⚠" : "✓"} Quality ${ok}/${q.length}</span>${v.retried ? ' <span class="st">re-rendered in safe mode</span>' : ""}</summary>
+    <ul class="check">${q.map(x => `<li class="${x.ok ? "ok" : "no"}"><b>${x.ok ? "✓" : "✗"}</b> ${esc(x.k)} <span>${esc(x.detail)}</span></li>`).join("")}</ul></details>`;
+}
+function setMetricLabels(f){
+  const p = PLAT[f.platform.value]; if (!p) return;
+  ["metric1","metric2","metric3"].forEach((n, i) => f[n].placeholder = p.judge[i] || n);
+}
+$("#out").addEventListener("change", e => { const f = e.target.closest(".logf"); if (f && e.target.name === "platform") setMetricLabels(f); });
+$("#out").addEventListener("submit", async e => {
+  const f = e.target.closest(".logf"); if (!f) return; e.preventDefault();
+  const j = $("#out")._job, c = j.result.clips[+f.dataset.clip], p = PLAT[f.platform.value];
+  const body = Object.fromEntries(new FormData(f));
+  ["metric1","metric2","metric3"].forEach((n, i) => { if (body[n]) body[n] = `${p.judge[i] || n}: ${body[n]}`; });
+  Object.assign(body, {job: j.id, clip: c.file, title: c.title});
+  await fetch("/api/log", {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body)});
+  toast("Result saved"); f.reset(); setMetricLabels(f); loadLog();
+});
+$("#out").addEventListener("click", e => {
+  const b = e.target.closest("[data-cut]"); if (!b) return;
+  const art = b.closest(".clip"), j = $("#out")._job, c = j.result.clips[+art.dataset.i], base = "/files/" + j.id + "/";
+  const v = b.dataset.cut === "short" ? c.short : c;
+  art.querySelectorAll("[data-cut]").forEach(x => x.setAttribute("aria-pressed", x === b));
+  const vid = art.querySelector("video"); vid.src = base + v.file; vid.poster = base + v.thumb;
+  art.querySelector(".cutbox").innerHTML = qualityHTML(v) + `
+        <div class="meta">${v.size_mb ?? "?"} MB · ${v.fps ?? "?"} fps · ${v.duration}s${v.cuts ? ` · ${v.cuts} pause${v.cuts > 1 ? "s" : ""} cut` : ""}</div>
+        <div class="acts"><a class="dl" href="${base + v.file}?dl=1" download>Save ${b.dataset.cut} cut</a></div>`;
+});
+async function loadLog(){
+  const rows = await fetch("/api/log").then(r => r.json()).catch(() => []);
+  $("#logtbl").innerHTML = rows.length ? `<div class="lwrap"><table class="ltable"><tr><th>Platform</th><th>Clip</th><th>At</th><th>Views</th><th>Metrics</th><th></th></tr>` +
+    rows.slice().reverse().map(r => `<tr><td>${esc(PN[r.platform] || r.platform)}<br><span class="st">${esc(r.posted)}</span></td><td>${esc(r.title).slice(0, 40)}<br><span class="st">${esc(r.cut)}</span></td><td>${esc(r.checkpoint)}</td><td>${esc(r.views)}</td><td>${[r.metric1, r.metric2, r.metric3].filter(Boolean).map(esc).join("<br>")}${r.notes ? `<br><span class="st">${esc(r.notes)}</span>` : ""}</td><td><button class="x" data-dellog="${r.id}" aria-label="Delete">✕</button></td></tr>`).join("") + `</table></div>`
+    : "No results logged yet.";
+}
+$("#logtbl").addEventListener("click", async e => { const d = e.target.closest("[data-dellog]"); if (d && confirm("Delete this entry?")) { await fetch("/api/log/" + d.dataset.dellog, {method:"DELETE"}); loadLog(); } });
+loadLog();
+$("#out").addEventListener("click", async e => {
+  const b = e.target.closest("[data-copy]"); if (!b) return;
+  const t = b.dataset.copy;
+  try { await navigator.clipboard.writeText(t); } catch {
+    const a = document.createElement("textarea"); a.value = t; document.body.appendChild(a); a.select(); document.execCommand("copy"); a.remove();
+  }
+  toast("Caption copied");
+});
+
+async function history(){
+  const list = await fetch("/api/jobs").then(r => r.json()).catch(() => []);
+  $("#hist").innerHTML = list.length ? list.map(j => `
+    <li><a href="#${j.id}" data-id="${j.id}">${esc(j.label)}</a>
+    <span class="st">${j.status === "running" ? Math.round(j.pct) + "%" : j.status}</span>
+    ${["done","error"].includes(j.status) ? `<button class="x" data-del="${j.id}" aria-label="Delete">✕</button>` : ""}</li>`).join("")
+    : `<li class="msg">Nothing yet.</li>`;
+  if (!current) { const live = list.find(j => j.status === "running" || j.status === "queued"); if (live) watch(live.id); }
+}
+$("#hist").addEventListener("click", async e => {
+  const a = e.target.closest("[data-id]"), d = e.target.closest("[data-del]");
+  if (a) { e.preventDefault(); watch(a.dataset.id); }
+  if (d && confirm("Delete these clips?")) { await fetch("/api/jobs/" + d.dataset.del, {method:"DELETE"}); if (current === d.dataset.del) $("#out").innerHTML = ""; history(); }
+});
+history();
+</script>
+</body>
+</html>
