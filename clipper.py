@@ -152,6 +152,17 @@ def loudness_curve(wav: Path) -> np.ndarray:
     return (db - np.median(db)) / sd
 
 
+def quiet_map(wav: Path, step=0.05) -> dict:
+    """Level every 50 ms in dB (the studio draws its waveform from this) + the 'quiet' threshold."""
+    raw = np.fromfile(wav, dtype=np.int16).astype(np.float32) / 32768.0
+    hop = int(round(SR * step)); n = len(raw) // hop
+    if n == 0:
+        return {"step": step, "thr": -60.0, "db": []}
+    db = 10 * np.log10(np.mean(raw[: n * hop].reshape(n, hop) ** 2, axis=1) + 1e-12)
+    speech = float(np.sort(db)[int(n * 0.7)])
+    return {"step": step, "thr": round(speech - 25, 2), "db": [round(float(x), 1) for x in db]}
+
+
 def audio_peak_db(wav: Path) -> float:
     raw = np.fromfile(wav, dtype=np.int16)
     return float(20 * np.log10(max(int(np.abs(raw).max()) if raw.size else 0, 1) / 32768))
@@ -608,45 +619,108 @@ def _clean(w):
     return w.replace("\\", "").replace("{", "(").replace("}", ")").upper()
 
 
+def _ass_safe(text):
+    """Headline / end-card text: braces would start an override tag, a backslash an escape (\\N = line break),
+    and a newline would start a new subtitle event."""
+    return re.sub(r"[\r\n]+", " ", str(text)).replace("\\", "/").replace("{", "(").replace("}", ")")
+
+
 CAPTION_STYLES = ("pop", "clean", "boxed")
+FORMATS = {"9:16": (9, 16), "4:5": (4, 5), "1:1": (1, 1), "16:9": (16, 9)}
+SIZES = {"s": 0.82, "m": 1.0, "l": 1.2}
+_rnd = lambda x: int(math.floor(x + 0.5))   # JavaScript's Math.round, so both engines place captions identically
 
 
-def write_ass(m: Moment, path: Path, plat: dict, keep, captions=True, hook=True, cta="", style="pop"):
-    """Word-by-word captions (3-word groups, active word highlighted) + a top headline for the first 3 s."""
-    R = plat["right"]
+def frame_size(fmt="9:16", short=1080):
+    a, b = FORMATS.get(fmt, (9, 16))
+    even = lambda x: _rnd(x / 2) * 2
+    return (short, even(short * b / a)) if a <= b else (even(short * a / b), short)
+
+
+def ass_colour(hexs, fallback="#FFF000"):
+    """'#ffd400' -> '&H0000D4FF&' (ASS stores blue, green, red)."""
+    h = hexs if isinstance(hexs, str) and re.fullmatch(r"#?[0-9a-fA-F]{6}", hexs or "") else fallback
+    h = h.lstrip("#")
+    return f"&H{h[4:6]}{h[2:4]}{h[0:2]}&".upper()
+
+
+def caption_layout(plat, fmt="9:16", size="m", pos="bottom"):
+    PX, PY = frame_size(fmt)
+    tall = fmt == "9:16"
+    scale = min(1, max(0.62, PY / 1920 * 1.45)) * SIZES.get(size, 1)
+    hook_top = plat["hook_top"] if tall else _rnd(PY * 0.07)
+    lr = plat["right"] if tall else _rnd(PX * 0.07)
+    align = 8 if pos == "top" else 5 if pos == "middle" else 2
+    mv = hook_top + _rnd(PY * 0.11) if pos == "top" else 0 if pos == "middle" else plat["cap_bottom"] if tall else _rnd(PY * 0.1)
+    return dict(PX=PX, PY=PY, align=align, marginV=mv, marginLR=lr, hookTop=hook_top, scale=scale)
+
+
+def clean_look(d, base=None):
+    """Validate the per-cut look a client sends (studio edits): unknown or bad values fall back to base."""
+    base = dict(base or {})
+    d = d if isinstance(d, dict) else {}
+    out = {"format": base.get("format", "9:16"), "hl": base.get("hl", "#FFF000"), "size": base.get("size", "m"),
+           "pos": base.get("pos", "bottom"), "cy": base.get("cy", 0.5)}
+    if d.get("format") in FORMATS: out["format"] = d["format"]
+    if isinstance(d.get("hl"), str) and re.fullmatch(r"#[0-9a-fA-F]{6}", d["hl"]): out["hl"] = d["hl"].upper()
+    if d.get("size") in SIZES: out["size"] = d["size"]
+    if d.get("pos") in ("bottom", "middle", "top"): out["pos"] = d["pos"]
+    for k in ("cx", "cy"):
+        try:
+            v = float(d[k])
+            if math.isfinite(v): out[k] = min(1.0, max(0.0, v))
+        except (KeyError, TypeError, ValueError):
+            pass
+    if d.get("style") in CAPTION_STYLES: out["style"] = d["style"]
+    if d.get("layout") in ("fit", "crop"): out["layout"] = d["layout"]
+    for k in ("tighten", "captions", "hook"):
+        if isinstance(d.get(k), bool): out[k] = d[k]
+    return out
+
+
+def write_ass(m: Moment, path: Path, plat: dict, keep, captions=True, hook=True, cta="", style="pop", look=None):
+    """Word-by-word captions (3-word groups, active word highlighted) + a top headline for the first 3 s.
+    look: {format, hl, size, pos} from the studio (same layout rules as the web app's buildASS)."""
+    look = look or {}
+    L = caption_layout(plat, look.get("format", "9:16"), look.get("size", "m"), look.get("pos", "bottom"))
+    k = L["scale"]; R = L["marginLR"]
+    n = lambda x: _rnd(x * k)
+    hk = min(1, k / SIZES.get(look.get("size", "m"), 1)); nh = lambda x: _rnd(x * hk)
+    tail = f"{L['align']},{R},{R},{L['marginV']},1"
     style = style if style in CAPTION_STYLES else "pop"
     cap_style = {
-        "pop":   f"Style: Cap,{CAP_FONT},84,&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,0,0,0,0,100,100,0,0,1,7,3,2,{R},{R},{plat['cap_bottom']},1",
-        "clean": f"Style: Cap,{CAP_FONT},70,&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,4,2,2,{R},{R},{plat['cap_bottom']},1",
-        "boxed": f"Style: Cap,{CAP_FONT},72,&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,3,16,0,2,{R},{R},{plat['cap_bottom']},1",
+        "pop":   f"Style: Cap,{CAP_FONT},{n(84)},&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,0,0,0,0,100,100,0,0,1,{n(7)},{n(3)},{tail}",
+        "clean": f"Style: Cap,{CAP_FONT},{n(70)},&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,{n(4)},{n(2)},{tail}",
+        "boxed": f"Style: Cap,{CAP_FONT},{n(72)},&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,3,{n(16)},0,{tail}",
     }[style]
+    HL = ass_colour(look.get("hl"))
     hdr = f"""[Script Info]
 ScriptType: v4.00+
-PlayResX: 1080
-PlayResY: 1920
+PlayResX: {L['PX']}
+PlayResY: {L['PY']}
 WrapStyle: 0
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 {cap_style}
-Style: Hook,{CAP_FONT},58,&H00111111,&H00111111,&H00FFFFFF,&H00000000,0,0,0,0,100,100,0,0,3,20,0,8,{R + 20},{R + 20},{plat['hook_top']},1
-Style: Cta,{CAP_FONT},58,&H00111111,&H00111111,&H0000E6FF,&H00000000,0,0,0,0,100,100,0,0,3,20,0,8,{R + 20},{R + 20},{plat['hook_top']},1
+Style: Hook,{CAP_FONT},{nh(58)},&H00111111,&H00111111,&H00FFFFFF,&H00000000,0,0,0,0,100,100,0,0,3,{nh(20)},0,8,{R + 20},{R + 20},{L['hookTop']},1
+Style: Cta,{CAP_FONT},{nh(58)},&H00111111,&H00111111,&H0000E6FF,&H00000000,0,0,0,0,100,100,0,0,3,{nh(20)},0,8,{R + 20},{R + 20},{L['hookTop']},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
     lines = []
     if hook and m.title:
-        lines.append(f"Dialogue: 1,{_ass_time(0)},{_ass_time(3.2)},Hook,,0,0,0,,{{\\fad(120,250)}}{m.title.replace('{', '(').replace('}', ')')}")
+        lines.append(f"Dialogue: 1,{_ass_time(0)},{_ass_time(3.2)},Hook,,0,0,0,,{{\\fad(120,250)}}{_ass_safe(m.title)}")
     if cta:
         total = sum(b - a for a, b in keep)
-        lines.append(f"Dialogue: 1,{_ass_time(max(3.4, total - 2.8))},{_ass_time(total)},Cta,,0,0,0,,{{\\fad(150,0)}}{cta.replace('{', '(').replace('}', ')')}")
+        lines.append(f"Dialogue: 1,{_ass_time(max(3.4, total - 2.8))},{_ass_time(total)},Cta,,0,0,0,,{{\\fad(150,0)}}{_ass_safe(cta)}")
     words = spoken([w for w in m.words if m.start - 0.05 <= w["s"] <= m.end]) if captions else []
     T = lambda t: remap(t - m.start, keep)
     per = 4 if style == "clean" else 3
     groups = [words[i:i + per] for i in range(0, len(words), per)]
-    hi, lo = ((r"{\c&H00F0FF&}", r"{\c&HFFFFFF&}") if style == "boxed"
-              else (r"{\c&H00F0FF&\fscx112\fscy112}", r"{\c&HFFFFFF&\fscx100\fscy100}"))
+    hi, lo = (("{\\c" + HL + "}", r"{\c&HFFFFFF&}") if style == "boxed"
+              else ("{\\c" + HL + r"\fscx112\fscy112}", r"{\c&HFFFFFF&\fscx100\fscy100}"))
     for gi, g in enumerate(groups):
         g_end = groups[gi + 1][0]["s"] if gi + 1 < len(groups) else g[-1]["e"] + 0.3
         if style == "clean":   # one event per phrase, no per-word highlight
@@ -677,8 +751,10 @@ def write_srt(m: Moment, path: Path, keep):
 
 # ---------------------------------------------------------------- render
 def render(video: Path, m: Moment, out: Path, layout="fit", captions=True, crop_x=0.5, info=None,
-           platform="all", hook=True, tighten=True, cta="", enhance=True, style="pop"):
+           platform="all", hook=True, tighten=True, cta="", enhance=True, style="pop", look=None):
     info = info or probe(video)
+    look = look or {}
+    W, H = frame_size(look.get("format", "9:16"))
     plat = PLATFORMS.get(platform, PLATFORMS["all"])
     dur = m.end - m.start
     keep = keep_intervals(m, tighten)
@@ -694,20 +770,23 @@ def render(video: Path, m: Moment, out: Path, layout="fit", captions=True, crop_
         pre += f",select='{sel}',setpts=N/FRAME_RATE/TB"
         apre = f"aselect='{sel}',asetpts=N/SR/TB"
 
+    # light clarity grade: gentle sharpen + a touch of contrast/colour
+    sharpen = ",unsharp=5:5:0.45:5:5:0,eq=contrast=1.04:saturation=1.07" if enhance and layout != "original" else ""
     if layout == "crop":
-        cx = min(max(crop_x, 0), 1)
-        vf = f"scale=-2:1920,crop=1080:1920:(iw-1080)*{cx:.3f}:0"
-        if info["width"] and info["height"] and info["width"] / info["height"] < 1080 / 1920:
-            vf = "scale=1080:-2,crop=1080:1920"
+        cx = min(max(float(look.get("cx", crop_x)), 0), 1)
+        cy = min(max(float(look.get("cy", 0.5)), 0), 1)
+        vf = f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H}:(iw-ow)*{cx:.3f}:(ih-oh)*{cy:.3f}" + sharpen
     elif layout == "original":
         vf = "scale=trunc(iw/2)*2:trunc(ih/2)*2"
-    else:  # fit: full frame over blurred fill
-        vf = ("split[a][b];[a]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,"
-              "boxblur=24:4,eq=brightness=-0.08[bg];[b]scale=1080:1920:force_original_aspect_ratio=decrease[fg];"
+    else:  # fit: full frame over a blurred fill
+        # the fill is blurred at 1/8 size and scaled up (looks the same, ~3.5x faster than blurring 1080x1920),
+        # and only the visible video is sharpened, since sharpening a blur is wasted work
+        bw, bh = _rnd(W / 16) * 2, _rnd(H / 16) * 2
+        vf = (f"split[a][b];[a]scale={bw}:{bh}:force_original_aspect_ratio=increase,crop={bw}:{bh},boxblur=3:2,"
+              f"scale={W}:{H}:flags=bilinear,eq=brightness=-0.08[bg];"
+              f"[b]scale={W}:{H}:force_original_aspect_ratio=decrease{sharpen}[fg];"
               "[bg][fg]overlay=(W-w)/2:(H-h)/2")
     if enhance and layout != "original":
-        # light clarity grade: gentle sharpen + a touch of contrast/colour
-        vf += ",unsharp=5:5:0.45:5:5:0,eq=contrast=1.04:saturation=1.07"
         if len(keep) > 1:
             # alternate 100% / 108% framing at each cut so jump cuts read as intentional punch-ins
             edges, t = [], 0.0
@@ -718,43 +797,48 @@ def render(video: Path, m: Moment, out: Path, layout="fit", captions=True, crop_
                       for k, (a, b) in enumerate(edges) if k % 2 == 1]
             if zoomed:
                 vf += (f",zoompan=z='if({'+'.join(zoomed)},1.08,1)':d=1:x='iw/2-(iw/zoom/2)':"
-                       f"y='ih/2-(ih/zoom/2)':s=1080x1920:fps={fps}")
+                       f"y='ih/2-(ih/zoom/2)':s={W}x{H}:fps={fps}")
     ass = out.with_suffix(".ass")
     overlay = layout != "original" and ((captions and m.words) or (hook and m.title) or cta)
     if overlay:
-        write_ass(m, ass, plat, keep, captions, hook, cta, style)
+        write_ass(m, ass, plat, keep, captions, hook, cta, style, look)
         vf += f",ass='{_ffesc(str(ass))}':fontsdir='{_ffesc(FONT_DIR)}'"
 
     if info["has_video"]:
-        cmd = [FFMPEG, "-y", "-v", "error", "-ss", f"{m.start:.3f}", "-t", f"{dur:.3f}", "-i", str(video)]
+        cmd = [FFMPEG, "-y", "-hide_banner", "-v", "info", "-ss", f"{m.start:.3f}", "-t", f"{dur:.3f}", "-i", str(video)]
         vchain = f"[0:v]{pre},{vf},setsar=1[v]"   # square pixels: scale/crop rounding otherwise leaves SAR 10240:10239
     clean = ("highpass=f=80,afftdn=nr=10:nf=-40,equalizer=f=3200:t=q:w=1.2:g=2.5,"
              "acompressor=threshold=-20dB:ratio=2.5:attack=10:release=150:makeup=2,") if enhance else ""
     if info["has_video"]:
         achain = f"[0:a]{apre},{clean}loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[a]"
     else:  # audio-only source (podcast, voice memo): audiogram = moving waveform on a dark card + captions
-        cmd = [FFMPEG, "-y", "-v", "error", "-ss", f"{m.start:.3f}", "-t", f"{dur:.3f}", "-i", str(video),
-               "-f", "lavfi", "-i", f"color=c=0x101018:s=1080x1920:r={fps}:d={dur:.3f}"]
+        cmd = [FFMPEG, "-y", "-hide_banner", "-v", "info", "-ss", f"{m.start:.3f}", "-t", f"{dur:.3f}", "-i", str(video),
+               "-f", "lavfi", "-i", f"color=c=0x101018:s={W}x{H}:r={fps}:d={dur:.3f}"]
         subs = f",ass='{_ffesc(str(ass))}':fontsdir='{_ffesc(FONT_DIR)}'" if overlay else ""
-        vchain = (f"[0:a]{apre},asplit[am][aw];[aw]showwaves=s=1080x420:mode=cline:rate={fps}:colors=0xFFE600,"
-                  f"format=yuva420p[w];[1:v][w]overlay=0:(H-h)/2-260:shortest=1{subs},setsar=1[v]")
+        vchain = (f"[0:a]{apre},asplit[am][aw];[aw]showwaves=s={W}x{_rnd(H * 0.22)}:mode=cline:rate={fps}:colors=0xF2C230,"
+                  f"format=yuva420p[w];[1:v][w]overlay=0:(H-h)/2-{_rnd(260 * H / 1920)}:shortest=1{subs},setsar=1[v]")
         achain = f"[am]{clean}loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[a]"
-    cmd += ["-sws_flags", "lanczos", "-filter_complex", f"{vchain};{achain}", "-map", "[v]", "-map", "[a]",
+    # quality detectors ride along on the render (final picture + final audio), so the clip isn't decoded twice
+    taps = (";[v]split[vo][vq];[vq]blackdetect=d=0.5:pix_th=0.10,freezedetect=n=-60dB:d=2,nullsink"
+            ";[a]asplit[ao][aq];[aq]silencedetect=n=-45dB:d=2,ebur128=peak=true,anullsink")
+    cmd += ["-nostats", "-sws_flags", "lanczos", "-filter_complex", f"{vchain};{achain}{taps}", "-map", "[vo]", "-map", "[ao]",
             # H.264 High, 8-12 Mbps ceiling, 2 s GOP, AAC 48 kHz: accepted everywhere, well under size caps
             "-c:v", "libx264", "-profile:v", "high", "-preset", "veryfast", "-crf", "19",
             "-maxrate", "12M", "-bufsize", "24M", "-g", str(fps * 2), "-r", str(fps), "-pix_fmt", "yuv420p",
             "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-movflags", "+faststart", "-shortest", str(out)]
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode != 0:
-        raise RuntimeError("ffmpeg failed: " + r.stderr[-800:])
+        raise RuntimeError("ffmpeg failed: " + "\n".join(l for l in r.stderr.splitlines() if not re.search(r"\bt: ", l))[-800:])
+    detect_log = "\n".join(l for l in r.stderr.splitlines()
+                           if re.search(r"black_|freeze_|silence_|I:\s|Peak:", l) and not re.search(r"\bt: ", l))
     thumb = out.with_suffix(".jpg")
     subprocess.run([FFMPEG, "-y", "-v", "error", "-ss", "0.6", "-i", str(out),
                     "-frames:v", "1", "-vf", "scale=360:-2", str(thumb)])
     fillers = sum(1 for w in m.words if m.start <= w["s"] <= m.end and is_filler(w)) if tighten else 0
     return {"final_duration": round(sum(b - a for a, b in keep), 1), "cuts": len(keep) - 1, "fps": fps,
             "size_mb": round(out.stat().st_size / 1e6, 1), "fillers_cut": fillers, "enhanced": enhance,
-            "_audiogram": not info["has_video"],
-            "_expected": sum(b - a for a, b in keep), "_layout": layout}
+            "_audiogram": not info["has_video"], "W": W, "H": H,
+            "_expected": sum(b - a for a, b in keep), "_layout": layout, "_detect_log": detect_log}
 
 
 # ---------------------------------------------------------------- quality gate
@@ -772,7 +856,7 @@ def quality_check(out: Path, stats: dict, m: Moment, captions=True, size_cap_mb=
     v = next((x for x in info.get("streams", []) if x["codec_type"] == "video"), {})
     a = next((x for x in info.get("streams", []) if x["codec_type"] == "audio"), {})
     dur = float(info.get("format", {}).get("duration", 0))
-    vertical = stats.get("_layout") == "original" or (v.get("width"), v.get("height")) == (1080, 1920)
+    vertical = stats.get("_layout") == "original" or (v.get("width"), v.get("height")) == (stats.get("W", 1080), stats.get("H", 1920))
     square = v.get("sample_aspect_ratio", "1:1") in ("1:1", "0:1", "N/A")
     add("Upload-ready format", v.get("codec_name") == "h264" and a.get("codec_name") == "aac" and vertical and square,
         f"{v.get('codec_name')} {v.get('width')}×{v.get('height')} + {a.get('codec_name')}"
@@ -781,11 +865,12 @@ def quality_check(out: Path, stats: dict, m: Moment, captions=True, size_cap_mb=
     add("Length matches the edit", abs(dur - exp) < 0.8, f"{dur:.1f}s (expected {exp:.1f}s)", True)
     add("Under upload size limits", stats.get("size_mb", 0) < size_cap_mb, f"{stats.get('size_mb')} MB", True)
 
-    r = subprocess.run([FFMPEG, "-hide_banner", "-nostats", "-i", str(out),
-                        "-vf", "blackdetect=d=0.5:pix_th=0.10,freezedetect=n=-60dB:d=2",
-                        "-af", "silencedetect=n=-45dB:d=2,ebur128=peak=true", "-f", "null", "-"],
-                       capture_output=True, text=True)
-    log = r.stderr
+    log = stats.get("_detect_log")
+    if log is None:   # measured during the render normally; decode the file only if that's missing
+        log = subprocess.run([FFMPEG, "-hide_banner", "-nostats", "-i", str(out),
+                              "-vf", "blackdetect=d=0.5:pix_th=0.10,freezedetect=n=-60dB:d=2",
+                              "-af", "silencedetect=n=-45dB:d=2,ebur128=peak=true", "-f", "null", "-"],
+                             capture_output=True, text=True).stderr
     lufs = re.findall(r"I:\s+(-?[\d.]+) LUFS", log)
     peak = re.findall(r"Peak:\s+(-?[\d.]+|-inf) dBFS", log)
     black = sum(float(x) for x in re.findall(r"black_duration:([\d.]+)", log))
@@ -812,6 +897,12 @@ def _passed(checks):
     return all(c["ok"] for c in checks if c["hard"])
 
 
+def _content_fail(checks):
+    """True when every hard failure is about the source itself (silence, black picture), not the edit or encode."""
+    hard = [c for c in checks if c["hard"] and not c["ok"]]
+    return bool(hard) and all(c["k"] in ("No dead silence", "No black frames") for c in hard)
+
+
 def _ffesc(p):
     """Escape a path for use inside an ffmpeg filter argument (works for Windows 'C:\\…' paths too)."""
     return p.replace("\\", "/").replace(":", "\\:").replace("'", "\\'")
@@ -825,8 +916,10 @@ def fmt_t(t):
 # ---------------------------------------------------------------- pipeline
 def run(source, outdir: Path, n=5, min_len=None, max_len=None, layout="fit", captions=True,
         model="base", crop_x=0.5, platform="all", hook=True, tighten=True, version="both", cta="",
-        enhance=True, style="pop", progress=_noop) -> dict:
-    """version: 'both' = long cut + a short cut with the same opening; 'short' or 'long' = one cut."""
+        enhance=True, style="pop", progress=_noop, look=None) -> dict:
+    """version: 'both' = long cut + a short cut with the same opening; 'short' or 'long' = one cut.
+    look: {format, hl, size, pos} caption/frame choices (defaults: 9:16, yellow, medium, lower third)."""
+    look = clean_look(look)
     outdir.mkdir(parents=True, exist_ok=True)
     video, title = fetch(source, outdir, progress)
     info = probe(video)
@@ -844,6 +937,7 @@ def run(source, outdir: Path, n=5, min_len=None, max_len=None, layout="fit", cap
     loud = loudness_curve(wav)
     if audio_peak_db(wav) < -55:
         raise RuntimeError("The audio is silent, so there's nothing to clip. Check the file has sound.")
+    (outdir / "quiet.json").write_text(json.dumps(quiet_map(wav)))
     progress("analyze", 100, "Audio analysed")
     segs = transcribe(wav, model, progress, info["duration"])
     (outdir / "transcript.json").write_text(json.dumps(segs))
@@ -852,12 +946,12 @@ def run(source, outdir: Path, n=5, min_len=None, max_len=None, layout="fit", cap
 
     def make(mm, path, use_cta):
         """Render, measure, and if a hard check fails re-render once with safe settings."""
-        st = render(video, mm, path, layout, captions, crop_x, info, platform, hook, tighten, use_cta, enhance, style)
+        st = render(video, mm, path, layout, captions, crop_x, info, platform, hook, tighten, use_cta, enhance, style, look)
         qc = quality_check(path, st, mm, captions)
         for safe_tighten in ((tighten, False) if tighten else (False,)):
-            if _passed(qc):
+            if _passed(qc) or _content_fail(qc):   # safe mode can't fix a silent or black source: don't re-render
                 break
-            st = render(video, mm, path, layout, captions, crop_x, info, platform, hook, safe_tighten, use_cta, False, style)
+            st = render(video, mm, path, layout, captions, crop_x, info, platform, hook, safe_tighten, use_cta, False, style, look)
             qc = quality_check(path, st, mm, captions)
             st["retried"] = True
             st["_tighten"] = safe_tighten
@@ -879,6 +973,8 @@ def run(source, outdir: Path, n=5, min_len=None, max_len=None, layout="fit", cap
         d = asdict(m)
         d.pop("words")
         d.update({k: v for k, v in stats.items() if not k.startswith("_")})
+        cut_look = dict(look, style=style, layout=layout, cx=crop_x, tighten=tighten, captions=captions, hook=hook)
+        d.update(look=cut_look, cta=cta if (version != "short" or custom) else "")
         d.update(file=f"{name}.mp4", thumb=f"{name}.jpg", srt=f"{name}.srt", quality=qc,
                  duration=stats["final_duration"], range=f"{fmt_t(m.start)}–{fmt_t(m.end)}", short=None)
         if version == "both" and not custom:
@@ -888,7 +984,7 @@ def run(source, outdir: Path, n=5, min_len=None, max_len=None, layout="fit", cap
                 if _passed(sqc):
                     write_srt(sm, outdir / f"{name}_short.srt", keep_intervals(sm, sst.get("_tighten", tighten)))
                     d["short"] = dict({k: v for k, v in sst.items() if not k.startswith("_")},
-                                      file=f"{name}_short.mp4", thumb=f"{name}_short.jpg", quality=sqc,
+                                      file=f"{name}_short.mp4", thumb=f"{name}_short.jpg", quality=sqc, look=cut_look, cta="",
                                       start=sm.start, end=sm.end, title=sm.title,
                                       srt=f"{name}_short.srt", duration=sst["final_duration"],
                                       range=f"{fmt_t(sm.start)}–{fmt_t(sm.end)}")
@@ -896,8 +992,9 @@ def run(source, outdir: Path, n=5, min_len=None, max_len=None, layout="fit", cap
     progress("render", 100, "Done")
     wav.unlink(missing_ok=True)
     (outdir / "session.json").write_text(json.dumps({
-        "video": str(video), "settings": dict(layout=layout, captions=captions, crop_x=crop_x, platform=platform, hook=hook,
-                                              tighten=tighten, enhance=enhance, style=style, cta=cta, version=version)}))
+        "video": str(video), "has_video": info["has_video"], "duration": info["duration"],
+        "settings": dict(layout=layout, captions=captions, crop_x=crop_x, platform=platform, hook=hook,
+                         tighten=tighten, enhance=enhance, style=style, cta=cta, version=version, **look)}))
     result = {"dropped_for_quality": dropped, "title": title, "source": source, "duration": info["duration"], "platform": platform,
               "platform_name": plat["name"], "platform_note": plat["note"], "judge": plat["judge"],
               "publish": plat["publish"], "version": version, "clips": clips}
@@ -906,7 +1003,7 @@ def run(source, outdir: Path, n=5, min_len=None, max_len=None, layout="fit", cap
 
 
 def edit_cut(outdir: Path, idx: int, cut: str, start: float, end: float, title: str, words: list,
-             style: str | None = None, progress=_noop) -> dict:
+             style: str | None = None, progress=_noop, look=None, cta=None) -> dict:
     """Re-render one cut after a manual edit (trim, caption fixes, headline, style) and re-run the quality gate.
     The previous file is only replaced if the new render passes every hard check."""
     sess = json.loads((outdir / "session.json").read_text())
@@ -916,10 +1013,18 @@ def edit_cut(outdir: Path, idx: int, cut: str, start: float, end: float, title: 
     if not video.exists():
         raise RuntimeError("The source video is gone (deleted or moved), so this clip can't be re-rendered.")
     info = probe(video)
-    clip = res["clips"][idx]
-    target = clip if cut == "long" else clip.get("short")
-    if target is None:
-        raise RuntimeError("That clip has no short cut.")
+    if cut == "new":                      # a clip picked from the transcript: rendered as a new long-style clip
+        clip = None
+        taken = {c["file"] for c in res["clips"]}
+        k = len(res["clips"]) + 1
+        while f"clip_{k:02d}.mp4" in taken:
+            k += 1
+        target = {"file": f"clip_{k:02d}.mp4", "thumb": f"clip_{k:02d}.jpg", "srt": f"clip_{k:02d}.srt"}
+    else:
+        clip = res["clips"][idx]
+        target = clip if cut == "long" else clip.get("short")
+        if target is None:
+            raise RuntimeError("That clip has no short cut.")
     if not (math.isfinite(float(start)) and math.isfinite(float(end))):
         raise RuntimeError("Bad trim points.")
     start, end = max(0.0, float(start)), min(info["duration"], float(end))
@@ -931,17 +1036,26 @@ def edit_cut(outdir: Path, idx: int, cut: str, start: float, end: float, title: 
     except Exception:
         raise RuntimeError("The caption edits were malformed, so nothing was changed.")
     m = Moment(start=start, end=end, title=str(title)[:90], words=ws)
-    style = style if style in CAPTION_STYLES else st_.get("style", "pop")
-    use_cta = st_.get("cta", "") if (cut == "long" and st_.get("version") != "short") else ""
+    base = dict(st_, **(target.get("look") or {}))
+    lk = clean_look(look, base)
+    style = style if style in CAPTION_STYLES else lk.get("style", st_.get("style", "pop"))
+    layout = lk.get("layout", base.get("layout", "fit"))
+    captions = lk.get("captions", base.get("captions", True))
+    hook = lk.get("hook", base.get("hook", True))
+    tighten = lk.get("tighten", base.get("tighten", True))
+    if cta is not None:
+        use_cta = str(cta)[:80]
+    else:
+        use_cta = st_.get("cta", "") if (cut == "long" and st_.get("version") != "short") else ""
     tmp = outdir / f"_edit_{target['file']}"
-    progress("render", 10, "Re-rendering")
-    args = (video, m, tmp, st_["layout"], st_["captions"], st_["crop_x"], info, st_["platform"], st_["hook"])
-    stats = render(*args, st_["tighten"], use_cta, st_["enhance"], style)
-    qc = quality_check(tmp, stats, m, st_["captions"])
-    if not _passed(qc):
+    progress("render", 10, "Rendering" if cut == "new" else "Re-rendering")
+    args = (video, m, tmp, layout, captions, lk.get("cx", base.get("crop_x", 0.5)), info, st_["platform"], hook)
+    stats = render(*args, tighten, use_cta, st_["enhance"], style, lk)
+    qc = quality_check(tmp, stats, m, captions)
+    if not _passed(qc) and not _content_fail(qc):
         progress("render", 60, "Re-rendering in safe mode")
-        stats = render(*args, st_["tighten"], use_cta, False, style)
-        qc = quality_check(tmp, stats, m, st_["captions"])
+        stats = render(*args, False, use_cta, False, style, lk)
+        qc = quality_check(tmp, stats, m, captions)
         stats["retried"] = True
     if not _passed(qc):
         tmp.unlink(missing_ok=True)
@@ -954,12 +1068,18 @@ def edit_cut(outdir: Path, idx: int, cut: str, start: float, end: float, title: 
     for x in (".ass", ".jpg"):
         if tmp.with_suffix(x).exists():
             tmp.with_suffix(x).replace(final.with_suffix(x))
-    write_srt(m, outdir / target["srt"], keep_intervals(m, st_["tighten"]))
+    write_srt(m, outdir / target["srt"], keep_intervals(m, tighten))
     (outdir / target["file"]).with_suffix(".words.json").write_text(json.dumps(ws))   # caption fixes survive a reload
     target.update({k: v for k, v in stats.items() if not k.startswith("_")})
     target.update(quality=qc, duration=stats["final_duration"], start=round(start, 2), end=round(end, 2),
-                  range=f"{fmt_t(start)}–{fmt_t(end)}", style=style, edited=True)
+                  range=f"{fmt_t(start)}–{fmt_t(end)}", style=style, edited=True, rev=target.get("rev", 0) + 1, cta=use_cta,
+                  look=dict(lk, style=style, layout=layout, captions=captions, hook=hook, tighten=tighten))
     target["title"] = m.title
+    if cut == "new":
+        m.hashtags = []
+        target.update(score=None, custom=True, reasons=["Picked from the transcript"], checklist=[], short=None,
+                      captions=_post_copy(m, st_["platform"], res.get("title", "")))
+        res["clips"].append(target)
     (outdir / "result.json").write_text(json.dumps(res, indent=2))
     progress("render", 100, "Done")
     return res
@@ -1005,8 +1125,10 @@ if __name__ == "__main__":
         q = c["quality"]
         print(f"      quality: {sum(x['ok'] for x in q)}/{len(q)} checks" + ("  (re-rendered safe)" if c.get("retried") else "")
               + "  " + "; ".join(f"✗ {x['k']} ({x['detail']})" for x in q if not x["ok"]))
-    if res.get("dropped_for_quality"):
-        print(f"Replaced {res['dropped_for_quality']} clip(s) that failed the quality gate.")
         print("      " + " · ".join(c["reasons"]))
         print("      " + "  ".join(("✓ " if x["ok"] else "✗ ") + x["k"] for x in c["checklist"]))
+    if res.get("dropped_for_quality"):
+        print(f"Replaced {res['dropped_for_quality']} clip(s) that failed the quality gate.")
+    if not res["clips"]:
+        print("No moment passed the quality gate. Try another video, or --keep-pauses.")
     print("Output:", a.out)

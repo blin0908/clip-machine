@@ -15,18 +15,18 @@ import uuid
 from pathlib import Path
 from queue import Queue
 
-from flask import Flask, abort, jsonify, request, send_from_directory, make_response
+from flask import Flask, abort, jsonify, request, send_file, send_from_directory, make_response
 
 import clipper
 
 HERE = Path(__file__).resolve().parent
-JOBS = HERE / "jobs"
-JOBS.mkdir(exist_ok=True)
+JOBS = Path(os.environ.get("CLIP_JOBS") or HERE / "jobs")      # CLIP_JOBS / CLIP_KEY: tests run an isolated server
+JOBS.mkdir(parents=True, exist_ok=True)
 PORT = int(os.environ.get("CLIP_PORT", 8765))
 KEY_FILE = HERE / ".access_key"
-if not KEY_FILE.exists():
+if not os.environ.get("CLIP_KEY") and not KEY_FILE.exists():
     KEY_FILE.write_text(secrets.token_urlsafe(8))
-KEY = KEY_FILE.read_text().strip()
+KEY = os.environ.get("CLIP_KEY") or KEY_FILE.read_text().strip()
 
 app = Flask(__name__, static_folder=None)
 app.config["MAX_CONTENT_LENGTH"] = 4 * 1024 ** 3  # 4 GB uploads
@@ -63,10 +63,20 @@ def worker():
             queue.task_done()
             continue
         jid = item
-        job = jobs[jid]
+        job = jobs.get(jid)
+        if not job:                           # removed while it waited
+            queue.task_done()
+            continue
+        if job.get("cancel"):
+            job.update(status="error", msg="Cancelled")
+            save(jid)
+            queue.task_done()
+            continue
         job["status"] = "running"
 
         def progress(stage, pct, msg=""):
+            if job.get("cancel"):
+                raise RuntimeError("Cancelled")
             lo, hi = STAGES.get(stage, (0, 100))
             job["pct"] = round(lo + (hi - lo) * pct / 100, 1)
             job["msg"] = msg
@@ -77,7 +87,8 @@ def worker():
                               crop_x=o["crop_x"], platform=o.get("platform", "all"),
                               hook=o.get("hook", True), tighten=o.get("tighten", True),
                               version=o.get("version", "both"), cta=o.get("cta", ""),
-                              enhance=o.get("enhance", True), style=o.get("style", "pop"), progress=progress)
+                              enhance=o.get("enhance", True), style=o.get("style", "pop"), progress=progress,
+                              look={k: o[k] for k in ("format", "hl", "size", "pos") if k in o})
             job.update(status="done", pct=100, msg="Done", result=res)
             # the source is kept so clips can be edited and re-rendered; deleting the job frees the space
         except Exception as e:
@@ -97,7 +108,7 @@ def run_edit(jid, p):
         job.update(pct=pct, msg=msg)
     try:
         res = clipper.edit_cut(JOBS / jid, p["clip"], p["cut"], p["start"], p["end"], p["title"], p["words"],
-                               p.get("style"), progress)
+                               p.get("style"), progress, look=p.get("look"), cta=p.get("cta"))
         job.update(status="done", pct=100, msg="Edit saved", result=res, edit_error=None, edit_rev=job.get("edit_rev", 0) + 1)
     except Exception as e:
         traceback.print_exc()
@@ -117,20 +128,24 @@ def load_history():
         if f.exists():
             try:
                 j = json.loads(f.read_text())
-                if j.get("status") in ("queued", "running"):
-                    j.update(status="error", msg="Interrupted (server restarted)")
+                if j.get("status") in ("queued", "running", "editing"):
+                    if j.get("result"):   # an edit was interrupted: the finished clips are still there
+                        j.update(status="done", pct=100, msg="Done", edit_error="The edit was interrupted (server restarted). Try it again.")
+                    else:
+                        j.update(status="error", msg="Interrupted (server restarted)")
                 jobs[d.name] = j
             except Exception:
                 pass
 
 
-def new_job(source, form):
+def new_job(source, form, upload_dir=None):
     jid = time.strftime("%m%d-%H%M%S-") + uuid.uuid4().hex[:4]
     (JOBS / jid).mkdir()
     def num(k, d, lo, hi):
         try:
-            return max(lo, min(hi, float(form.get(k, d))))
-        except ValueError:
+            v = float(form.get(k, d))
+            return max(lo, min(hi, v)) if math.isfinite(v) else d
+        except (TypeError, ValueError):   # missing, null or junk → the default
             return d
     opts = {
         "source": source,
@@ -148,7 +163,11 @@ def new_job(source, form):
         "captions": str(form.get("captions", "1")) in ("1", "true", "on"),
         "model": form.get("model", "base") if form.get("model") in ("tiny", "base", "small", "medium") else "base",
         "crop_x": num("crop_x", 0.5, 0, 1),
+        **clipper.clean_look({k: form.get(k) for k in ("format", "hl", "size", "pos")}),
     }
+    opts.pop("cy", None)
+    if upload_dir:
+        opts["upload_dir"] = upload_dir   # recorded before the job is queued, so a restart can still clean it up
     jobs[jid] = {"id": jid, "status": "queued", "pct": 0, "msg": "Waiting in line", "opts": opts,
                  "label": form.get("label") or source, "created": time.time()}
     save(jid)
@@ -167,9 +186,7 @@ def create():
         f.save(dest)
         form = dict(request.form)
         form["label"] = f.filename
-        jid = new_job(str(dest), form)
-        jobs[jid]["opts"]["upload_dir"] = str(jid_dir)
-        return jsonify(id=jid)
+        return jsonify(id=new_job(str(dest), form, str(jid_dir)))
     data = request.get_json(silent=True) or dict(request.form)
     url = (data.get("url") or "").strip()
     if not url.startswith(("http://", "https://")):
@@ -185,16 +202,68 @@ def edit(jid):
     d = request.get_json(silent=True) or {}
     try:
         clip = int(d.get("clip", -1)); cut = d.get("cut")
-        assert 0 <= clip < len(job["result"]["clips"]) and cut in ("long", "short")
+        assert cut == "new" or (0 <= clip < len(job["result"]["clips"]) and cut in ("long", "short"))
         assert all(math.isfinite(float(d[k])) for k in ("start", "end")) and float(d["end"]) > float(d["start"])
         payload = {"clip": clip, "cut": cut, "start": float(d["start"]), "end": float(d["end"]),
                    "title": str(d.get("title", ""))[:90], "words": list(d.get("words") or [])[:5000],
-                   "style": d.get("style")}
+                   "style": d.get("style"), "look": clipper.clean_look(d.get("look")) if isinstance(d.get("look"), dict) else None,
+                   "cta": str(d["cta"])[:80] if isinstance(d.get("cta"), str) else None}
     except Exception:
         return jsonify(error="Bad edit request."), 400
     job.update(status="queued", msg="Edit waiting in line", edit_error=None)
     queue.put(("edit", jid, payload))
     return jsonify(ok=True)
+
+
+@app.post("/api/jobs/<jid>/cancel")
+def cancel(jid):
+    job = jobs.get(jid)
+    if not job:
+        abort(404)
+    if job["status"] in ("queued", "running"):
+        job["cancel"] = True
+    return jsonify(ok=True)
+
+
+def _session(jid):
+    try:
+        return json.loads((JOBS / jid / "session.json").read_text())
+    except Exception:
+        abort(404)
+
+
+@app.get("/api/jobs/<jid>/transcript")
+def transcript(jid):
+    """Every word with its timing + the 50 ms level map: the studio's transcript, timeline and waveform."""
+    if jid not in jobs:
+        abort(404)
+    try:
+        segs = json.loads((JOBS / jid / "transcript.json").read_text())
+    except Exception:
+        abort(404)
+    words = [{"w": w["w"], "s": w["s"], "e": w["e"]} for sg in segs for w in sg.get("words", [])]
+    try:
+        quiet = json.loads((JOBS / jid / "quiet.json").read_text())
+    except Exception:
+        quiet = None
+    sess = _session(jid)
+    return jsonify(words=words, quiet=quiet, has_video=sess.get("has_video", True), duration=sess.get("duration"))
+
+
+@app.get("/api/jobs/<jid>/source")
+def source(jid):
+    """The source video, for the studio's live preview (supports seeking: range requests)."""
+    if jid not in jobs:
+        abort(404)
+    video = Path(_session(jid)["video"])
+    if not video.exists():
+        abort(404)
+    return send_file(video, conditional=True)
+
+
+@app.get("/api/info")
+def info():
+    return jsonify(desktop=True, models=["tiny", "base", "small"], formats=list(clipper.FORMATS))
 
 
 @app.get("/api/jobs")
@@ -291,19 +360,41 @@ def platforms():
     return jsonify(clipper.PLATFORMS)
 
 
+UI_FILES = {"formula.js", "formula.json", "app.js", "studio.js", "zip.js", "asr-worker.js", "sw.js", "icon-180.png", "icon-512.png"}
+
+
 @app.get("/formula.js")
 @app.get("/formula.json")
-def formula_files():
-    # the desktop page reuses the web app's caption/trim logic (docs/ in the repo, web/ in the release zip)
+@app.get("/app.js")
+@app.get("/studio.js")
+@app.get("/zip.js")
+@app.get("/asr-worker.js")
+@app.get("/sw.js")
+@app.get("/icon-180.png")
+@app.get("/icon-512.png")
+@app.get("/fonts/<path:sub>")
+@app.get("/vendor/<path:sub>")
+def ui_files(sub=None):
+    # the browser UI lives in docs/ in the repo (web/ in the release zip); the desktop app serves the same pages
     name = request.path.lstrip("/")
+    if not (name in UI_FILES or name.startswith(("fonts/", "vendor/"))):
+        abort(404)
     for d in (HERE / "docs", HERE / "web"):
-        if (d / name).exists():
+        if (d / name).is_file():
             return send_from_directory(d, name)
     abort(404)
 
 
 @app.get("/")
 def index():
+    for d in (HERE / "docs", HERE / "web"):
+        if (d / "index.html").exists() and (d / "studio.js").exists():
+            return send_from_directory(d, "index.html")
+    return send_from_directory(HERE, "index.html")
+
+
+@app.get("/classic")
+def classic():
     return send_from_directory(HERE, "index.html")
 
 

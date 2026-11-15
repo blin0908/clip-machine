@@ -420,7 +420,7 @@ function watchEdit(id, clipIdx){
 async function loadLog(){
   const rows = await fetch("/api/log").then(r => r.json()).catch(() => []);
   $("#logtbl").innerHTML = rows.length ? `<div class="lwrap"><table class="ltable"><tr><th>Platform</th><th>Clip</th><th>At</th><th>Views</th><th>Metrics</th><th></th></tr>` +
-    rows.slice().reverse().map(r => `<tr><td>${esc(PN[r.platform] || r.platform)}<br><span class="st">${esc(r.posted)}</span></td><td>${esc(r.title).slice(0, 40)}<br><span class="st">${esc(r.cut)}</span></td><td>${esc(r.checkpoint)}</td><td>${esc(r.views)}</td><td>${[r.metric1, r.metric2, r.metric3].filter(Boolean).map(esc).join("<br>")}${r.notes ? `<br><span class="st">${esc(r.notes)}</span>` : ""}</td><td><button class="x" data-dellog="${r.id}" aria-label="Delete">✕</button></td></tr>`).join("") + `</table></div>`
+    rows.slice().reverse().map(r => `<tr><td>${esc(PN[r.platform] || r.platform)}<br><span class="st">${esc(r.posted)}</span></td><td>${esc(String(r.title ?? "").slice(0, 40))}<br><span class="st">${esc(r.cut)}</span></td><td>${esc(r.checkpoint)}</td><td>${esc(r.views)}</td><td>${[r.metric1, r.metric2, r.metric3].filter(Boolean).map(esc).join("<br>")}${r.notes ? `<br><span class="st">${esc(r.notes)}</span>` : ""}</td><td><button class="x" data-dellog="${r.id}" aria-label="Delete">✕</button></td></tr>`).join("") + `</table></div>`
     : "No results logged yet.";
 }
 $("#logtbl").addEventListener("click", async e => { const d = e.target.closest("[data-dellog]"); if (d && confirm("Delete this entry?")) { await fetch("/api/log/" + d.dataset.dellog, {method:"DELETE"}); loadLog(); } });

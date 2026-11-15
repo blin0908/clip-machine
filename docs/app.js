@@ -1,23 +1,61 @@
 import { FFmpeg } from "./vendor/ffmpeg/index.js";
 import { toBlobURL } from "./vendor/util/index.js";
 import * as X from "./formula.js";
+import { zip, slug } from "./zip.js";
+import { createStudio } from "./studio.js";
 
 const $ = s => document.querySelector(s);
+const $$ = s => [...document.querySelectorAll(s)];
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const fmtTC = t => { t = Math.max(0, t || 0); return `${X.fmtT(t)}.${Math.floor((t % 1) * 10)}`; };
+const icon = id => `<svg class="i" aria-hidden="true"><use href="#i-${id}"/></svg>`;
 const CORE = "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/esm";
 const PN = { tiktok: "TikTok", reels: "Reels", shorts: "YT Shorts", facebook: "Facebook", snapchat: "Snapchat", x: "X" };
-const opts = { platform: "all", n: "3", version: "both", quality: "fast", model: "Xenova/whisper-base.en",
-               captions: "1", hook: "1", tighten: "1", enhance: "1", layout: "fit", style: "pop" };
-let wakeLock = null, results = [], S = null, busy = false, srcFile = null;   // S = current session (source, transcript, settings)
+const DEF = { platform: "all", n: "3", version: "both", quality: "fast", model: "Xenova/whisper-base.en", format: "9:16",
+              captions: "1", hook: "1", tighten: "1", enhance: "1", layout: "fit", style: "pop", hl: "#FFF000", size: "m", pos: "bottom" };
+const opts = { ...DEF };
+// DESK = set when this page is served by the desktop app: videos and links are processed by its native engine
+// (faster-whisper + ffmpeg on this computer) instead of in the browser.
+let DESK = null;
+// A session = one source video: its file, transcript, settings and clips. The queue is the list of sessions.
+let sessions = [], active = null, running = false, wakeLock = null, nextId = 1;
+let selUid = null, filterKept = false, sortBy = "score";
 
-// ---------------------------------------------------------------- UI wiring
-document.querySelectorAll(".chips").forEach(g => g.addEventListener("click", e => {
-  const b = e.target.closest(".chip"); if (!b || b.disabled) return;
-  g.querySelectorAll(".chip").forEach(c => c.setAttribute("aria-pressed", c === b));
-  opts[g.dataset.k] = b.dataset.v;
-  if (g.dataset.k === "platform") showPlat();
+// ---------------------------------------------------------------- small UI helpers
+function toast(t) { const el = $("#toast"); el.textContent = t; el.classList.add("on"); clearTimeout(el._t); el._t = setTimeout(() => el.classList.remove("on"), 2400); }
+async function copyText(t) {
+  try { await navigator.clipboard.writeText(t); }
+  catch { const a = document.createElement("textarea"); a.value = t; document.body.appendChild(a); a.select(); document.execCommand("copy"); a.remove(); }
+}
+function download(blob, name) { const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 60000); }
+const typing = e => e.target.closest?.("input, textarea, select, [contenteditable]") && !(e.target.type === "color");
+
+// ---------------------------------------------------------------- settings (chips, presets)
+function setChip(k, v, save = true) {
+  const g = document.querySelector(`.chips[data-k="${k}"]`);
+  if (!g) return;
+  const b = g.querySelector(`.chip[data-v="${CSS.escape(v)}"]`);
+  if (k === "hl") {                               // a swatch, or the custom colour well
+    if (!/^#[0-9a-f]{6}$/i.test(v)) return;
+    g.querySelectorAll(".chip[data-v]").forEach(c => c.setAttribute("aria-pressed", c === b));
+    $("#hlc").parentElement.dataset.on = !b;
+    $("#hlc").value = v.toLowerCase();
+    opts.hl = v.toUpperCase();
+  } else {
+    if (!b || b.disabled) return;
+    g.querySelectorAll(".chip").forEach(c => c.setAttribute("aria-pressed", c === b));
+    opts[k] = v;
+  }
+  if (k === "platform") showPlat();
+  lookSummary();
+  if (save) { saveLast(); markCustom(); }
+}
+$$(".chips[data-k]").forEach(g => g.addEventListener("click", e => {
+  const b = e.target.closest(".chip[data-v]"); if (!b || b.disabled) return;
+  setChip(g.dataset.k, b.dataset.v);
 }));
-function toast(t) { const el = $("#toast"); el.textContent = t; el.classList.add("on"); clearTimeout(el._t); el._t = setTimeout(() => el.classList.remove("on"), 2000); }
+$("#hlc").addEventListener("input", e => setChip("hl", e.target.value));
+$("#cta").addEventListener("input", () => { saveLast(); markCustom(); });
 function showPlat() {
   const p = X.F.platforms[opts.platform];
   $("#pnote").textContent = p.note;
@@ -26,15 +64,65 @@ function showPlat() {
   $("#vshort").textContent = `Short only · ${s}`;
   $("#vlong").textContent = l ? `Long only · ${l}` : "Long only";
   $("#vboth").disabled = $("#vlong").disabled = !l;
-  if (!l && opts.version !== "short") $("#vshort").click();
+  if (!l && opts.version !== "short") setChip("version", "short", false);
 }
-$("#file").onchange = e => { const f = e.target.files[0]; $("#fname").textContent = f ? `📎 ${f.name} (${(f.size / 1e6).toFixed(0)} MB)` : "Choose a video"; $("#go").disabled = !f; if (f) preloadASR(); };
-$("#cancel").onclick = () => linkAbort ? linkAbort.abort() : location.reload();
+function lookSummary() { $("#lookSum").textContent = opts.captions === "1" ? `${opts.style} · ${opts.size.toUpperCase()} · ${opts.format}` : `no captions · ${opts.format}`; }
 
+const PKEY = "clipmachine.presets", LKEY = "clipmachine.last";
+const store = { get(k, d) { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } },
+                set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} } };
+const BUILTIN = {
+  "Default · vertical, all platforms": {},
+  "Podcast → YouTube Shorts": { platform: "shorts", n: "5", version: "both", style: "pop", layout: "fit" },
+  "Talking head → TikTok, filled": { platform: "tiktok", n: "5", layout: "crop", style: "pop", size: "l" },
+  "Feed square · 1:1": { platform: "all", format: "1:1", style: "boxed", version: "short" },
+  "Landscape highlights · 16:9": { platform: "x", format: "16:9", style: "clean", version: "long", layout: "fit" },
+};
+const snapshot = () => ({ ...opts, cta: $("#cta").value.trim().slice(0, 80) });
+function applySettings(s) {
+  const all = { ...DEF, ...s };
+  for (const k of Object.keys(DEF)) setChip(k, all[k], false);
+  $("#cta").value = s.cta || "";
+  showPlat(); lookSummary();
+}
+let saveT;
+function saveLast() { clearTimeout(saveT); saveT = setTimeout(() => store.set(LKEY, snapshot()), 300); }
+function fillPresets(sel = "") {
+  const saved = store.get(PKEY, {});
+  $("#preset").innerHTML = `<option value="">Custom settings</option><optgroup label="Starters">${Object.keys(BUILTIN).map(n => `<option value="b:${esc(n)}">${esc(n)}</option>`).join("")}</optgroup>` +
+    (Object.keys(saved).length ? `<optgroup label="Saved">${Object.keys(saved).map(n => `<option value="s:${esc(n)}">${esc(n)}</option>`).join("")}</optgroup>` : "");
+  $("#preset").value = sel;
+  $("#pdel").disabled = !sel.startsWith("s:");
+}
+function markCustom() { if ($("#preset").value) { $("#preset").value = ""; $("#pdel").disabled = true; } }
+$("#preset").onchange = e => {
+  const v = e.target.value; if (!v) return;
+  const s = v.startsWith("b:") ? BUILTIN[v.slice(2)] : store.get(PKEY, {})[v.slice(2)];
+  if (s) { applySettings(s); store.set(LKEY, snapshot()); toast(`Preset applied: ${v.slice(2)}`); }
+  $("#pdel").disabled = !v.startsWith("s:");
+};
+$("#psave").onclick = () => { $("#psaveForm").classList.toggle("hide"); if (!$("#psaveForm").classList.contains("hide")) $("#pname").focus(); };
+$("#psaveForm").onsubmit = e => {
+  e.preventDefault();
+  const n = $("#pname").value.trim().slice(0, 40); if (!n) return $("#pname").focus();
+  const saved = store.get(PKEY, {}); saved[n] = snapshot(); store.set(PKEY, saved);
+  fillPresets("s:" + n); $("#psaveForm").classList.add("hide"); $("#pname").value = "";
+  toast(`Saved preset "${n}"`);
+};
+$("#pdel").onclick = () => {
+  const v = $("#preset").value; if (!v.startsWith("s:")) return;
+  const saved = store.get(PKEY, {}); delete saved[v.slice(2)]; store.set(PKEY, saved); fillPresets(""); toast("Preset deleted");
+};
+
+// ---------------------------------------------------------------- progress
 function setStage(label, pct, msg = "") {
   $("#prog").classList.remove("hide");
-  $("#plabel").textContent = label; $("#ppct").textContent = Math.round(pct) + "%";
+  const many = sessions.filter(s => s.batch).length;
+  const pre = running && many > 1 ? `Video ${sessions.filter(s => s.batch && (s.status === "done" || s.status === "error")).length + 1} of ${many} · ` : "";
+  $("#plabel").textContent = pre + label; $("#ppct").textContent = Math.round(pct) + "%";
   $("#pbar").style.width = Math.max(0, Math.min(100, pct)) + "%"; $("#pmsg").textContent = msg;
+  const s = sessions.find(x => x.status === "running");
+  if (s) { s.pct = pct; s.msg = label.replace(/…$/, ""); paintQueueItem(s); }
 }
 const STAGES = { load: [0, 8], audio: [8, 14], asr: [14, 60], score: [60, 62], render: [62, 100] };
 const stage = (k, pct, label, msg) => { const [a, b] = STAGES[k]; setStage(label, a + (b - a) * pct / 100, msg); };
@@ -42,12 +130,13 @@ const stage = (k, pct, label, msg) => { const [a, b] = STAGES[k]; setStage(label
 const perf = { t: 0, rows: [], start() { this.rows = []; this.t = performance.now(); window.__perf = this.rows; },
   lap(k) { const n = performance.now(); this.rows.push({ k, ms: Math.round(n - this.t) }); this.t = n; } };
 
-// ---------------------------------------------------------------- ffmpeg helpers
-// One engine = one ffmpeg.wasm worker, which is single-threaded. E0 probes, reads audio and re-renders edits; on
-// multi-core computers extra engines render different moments at the same time (each keeps its own files + log).
-const newEngine = () => ({ ff: null, logs: [], cache: new Map() });
+// ---------------------------------------------------------------- ffmpeg engines
+// One engine = one ffmpeg.wasm worker (single-threaded). E0 probes, reads audio and renders; on multi-core
+// computers extra engines render other moments at the same time, and a separate edit engine re-renders studio
+// edits while a batch keeps going. Each engine has one source mounted at /in.
+const newEngine = () => ({ ff: null, logs: [], cache: new Map(), mounted: null, file: null });
 const E0 = newEngine();
-let core = null, font = null;
+let EE = null, core = null, font = null;
 const getCore = () => core ||= Promise.all([toBlobURL(`${CORE}/ffmpeg-core.js`, "text/javascript"), toBlobURL(`${CORE}/ffmpeg-core.wasm`, "application/wasm")])
   .catch(e => { core = null; throw e; });
 const getFont = () => font ||= fetch("./fonts/Montserrat-Black.ttf").then(r => r.arrayBuffer()).catch(e => { font = null; throw e; });
@@ -61,34 +150,85 @@ async function loadEngine(E, quiet = false) {
   await ff.createDir("/fonts");
   await ff.writeFile("/fonts/Montserrat-Black.ttf", new Uint8Array((await getFont()).slice(0)));   // a copy: writeFile hands its buffer to the worker
   await ff.createDir("/in");
-  E.ff = ff;
+  E.ff = ff; E.mounted = null;
   return ff;
 }
-const getFFmpeg = quiet => loadEngine(E0, quiet);
-// How many clips to render at once: several on desktop Chrome/Firefox/Edge, one where memory is tight
-// (Safari and every iOS browser hit a WebAssembly memory ceiling; phones in general have little to spare).
+async function mountSrc(E, sess) {
+  if (E.mounted === sess.id) return;
+  try { await E.ff.unmount("/in"); } catch {}
+  await E.ff.mount("WORKERFS", { files: [sess.file] }, "/in");
+  E.mounted = sess.id; E.file = sess.file;
+}
+const UA = navigator.userAgent;
+const IS_IOS = /iPhone|iPad|iPod/.test(UA) || (/Macintosh/.test(UA) && navigator.maxTouchPoints > 1);   // every iOS browser is WebKit
+const IS_WEBKIT = IS_IOS || (/AppleWebKit/.test(UA) && !/Chrome|Chromium|Edg|Firefox|Android/.test(UA));
+const TIGHT = IS_WEBKIT || /Android|Mobi/i.test(UA);          // little WebAssembly memory to spare: one engine only
+// How many clips to render at once: several on desktop Chrome/Firefox/Edge, one where memory is tight.
 function renderSlots() {
-  if (IS_WEBKIT || /Android|Mobi/i.test(UA)) return 1;
+  if (TIGHT) return 1;
   const cores = navigator.hardwareConcurrency || 2, gb = navigator.deviceMemory || 4;
   return Math.max(1, Math.min(3, Math.floor(cores / 2), Math.floor(gb / 2)));
 }
-async function spareEngine() {               // an extra engine with the current source mounted
+const editEngine = () => TIGHT ? E0 : (EE ||= newEngine());
+async function spareEngine(sess) {
   const E = newEngine();
   await withTimeout(loadEngine(E, true), 40000);
-  await E.ff.mount("WORKERFS", { files: [srcFile] }, "/in");
+  await mountSrc(E, sess);
   return E;
 }
 // Safari/WebKit can run out of WebAssembly memory after transcribing a longer video: the video engine then
 // stalls without an error (tested: WebKit fails above ~1 min of speech on an 8 GB Mac; Chrome and Firefox don't).
-const UA = navigator.userAgent;
-const IS_IOS = /iPhone|iPad|iPod/.test(UA) || (/Macintosh/.test(UA) && navigator.maxTouchPoints > 1);   // every iOS browser is WebKit
-const IS_WEBKIT = IS_IOS || (/AppleWebKit/.test(UA) && !/Chrome|Chromium|Edg|Firefox|Android/.test(UA));
 const OOM = "This browser ran out of memory for video editing. " + (IS_IOS
   ? "On iPhone and iPad every browser uses Safari's engine, which tops out around a minute of video. Use a shorter video, or a computer with Chrome or the free desktop app."
   : "Safari is the usual cause with videos over about a minute. Try Chrome, Edge or Firefox, a shorter video, or the free desktop app.");
 const DESKTOP_URL = "https://github.com/blin0908/clip-machine/releases/latest";
-// Turn "the (free) desktop app" in an already-escaped message into a download link.
 const linkDesktop = html => html.replace(/(the (?:free )?desktop app)/, `<a href="${DESKTOP_URL}" target="_blank" rel="noopener">$1</a>`);
+const withTimeout = (p, ms) => Promise.race([p, new Promise((_, bad) => setTimeout(() => bad(new Error(OOM)), ms))]);
+async function writeFS(path, data, E = E0) { E.cache.set(path, data); await E.ff.writeFile(path, data); }
+async function resetFFmpeg(E = E0) {      // a fresh engine with the source re-mounted, to recover a stalled worker
+  try { E.ff?.terminate(); } catch {}
+  E.ff = null;
+  const file = E.file, id = E.mounted;
+  await withTimeout((async () => {
+    await loadEngine(E, true);
+    if (file) { await E.ff.mount("WORKERFS", { files: [file] }, "/in"); E.mounted = id; E.file = file; }
+    for (const [p, d] of E.cache) await E.ff.writeFile(p, d);
+  })(), 40000);
+}
+async function run(args, onTime, retry = true, E = E0) {
+  E.logs = [];
+  // stalled = the engine never printed a single line within 60 s (WebKit's out-of-memory signature). A long silence
+  // mid-run is NOT treated as a stall: slow browsers (Firefox, older phones) can go quiet while loading caption fonts.
+  const t0 = Date.now(); let last = 0, stalled = false;
+  const h = ({ time }) => { last = Date.now(); if (onTime && time > 0) onTime(time / 1e6); };
+  const lg = () => { last = Date.now(); };
+  const ff = E.ff;
+  if (!ff) throw new Error("Cancelled.");
+  ff.on("progress", h); ff.on("log", lg);
+  const wd = setInterval(() => {
+    const now = Date.now();
+    if (!last && now - t0 > 60000) { stalled = true; clearInterval(wd); try { ff.terminate(); } catch {} }
+  }, 3000);
+  try {
+    const code = await ff.exec(args);
+    return { code, log: E.logs.join("\n") };
+  } catch (e) {
+    if (!stalled) throw e;
+    if (!retry) throw new Error(OOM);
+    await resetFFmpeg(E);
+    return run(args, onTime, false, E);
+  } finally {
+    clearInterval(wd); try { ff.off("progress", h); ff.off("log", lg); } catch {}
+  }
+}
+function probeLog(log) {
+  const d = log.match(/Duration: (\d+):(\d+):([\d.]+)/);
+  const v = log.split("\n").filter(l => !/attached pic/.test(l)).join("\n").match(/Video: (\w+).*?, (\d{2,5})x(\d{2,5})/);  // cover art isn't video
+  const fps = log.match(/([\d.]+) fps/);
+  return { duration: d ? +d[1] * 3600 + +d[2] * 60 + +d[3] : 0, vcodec: v?.[1], width: v ? +v[2] : 0, height: v ? +v[3] : 0,
+           fps: fps ? +fps[1] : 30, hasVideo: !!v, acodec: (log.match(/Audio: (\w+)/) || [])[1],
+           square: !/SAR (?!1:1)\d+:\d+/.test(log.match(/Video: .*/)?.[0] || "") };
+}
 
 // ---------------------------------------------------------------- paste a link
 // A web page can only download a video file whose server allows it (CORS). Video sites don't, so those go to the desktop app.
@@ -130,9 +270,6 @@ function linkProg(pct, msg) {                 // inline bar under the link box; 
   if (pct == null) pct = Math.min(95, (parseFloat(bar.style.width) || 0) + (95 - (parseFloat(bar.style.width) || 0)) * 0.02);
   bar.style.width = pct + "%"; el.setAttribute("aria-valuenow", Math.round(pct)); $("#lmsg").textContent = msg;
 }
-function useFile(f) {
-  const dt = new DataTransfer(); dt.items.add(f); $("#file").files = dt.files; $("#file").onchange({ target: $("#file") });
-}
 function setTab(link) {
   $("#tabFile").setAttribute("aria-selected", !link); $("#tabLink").setAttribute("aria-selected", link);
   $("#paneFile").classList.toggle("hide", link); $("#paneLink").classList.toggle("hide", !link);
@@ -164,14 +301,15 @@ $("#linkForm").onsubmit = async e => {
     if (/\s/.test($("#link").value.trim()) || !/^https?:$/.test(u.protocol) || !/\.|^localhost$|^\[/.test(u.hostname)) throw 0;
   } catch { linkNote("That doesn't look like a link.", "Copy the full address from your browser or the app's Share button, then paste it here."); return; }
   $("#link").value = raw;
+  if (DESK) { addSources([{ link: u.href }]); $("#link").value = ""; setTab(false); toast("Link added. The desktop app downloads it when you press Find the moments."); return; }
   const site = siteOf(u.hostname);
   if (site) { linkNote(`${site} links need the free desktop app.`, `${site} doesn't let websites download its videos. The desktop app downloads it on your own computer and makes the clips. It's free too, and works on Mac, Windows and Linux.`); return; }
   $("#lnote").classList.add("hide"); $("#lbar").style.width = "0%"; $("#lprog").classList.remove("hide");
-  $("#link").disabled = $("#linkGo").disabled = $("#tabFile").disabled = $("#go").disabled = true;
+  $("#link").disabled = $("#linkGo").disabled = $("#tabFile").disabled = true;
   try {
     const f = await fetchVideo(u.href, linkProg);
-    useFile(f); setTab(false);
-    toast("Video loaded. Pick your settings, then tap Find the moments.");
+    addFiles([f]); setTab(false); $("#link").value = "";
+    toast("Video added. Pick your settings, then Find the moments.");
   } catch (err) {
     if (err.name === "AbortError") toast("Download cancelled.");
     else if (err.kind === "page") linkNote(err.message, "Paste a link that goes straight to an .mp4 or .mov file, or use the desktop app, which handles links to most video sites.");
@@ -180,80 +318,121 @@ $("#linkForm").onsubmit = async e => {
   } finally {
     $("#lprog").classList.add("hide");
     $("#link").disabled = $("#linkGo").disabled = $("#tabFile").disabled = false;
-    $("#go").disabled = !$("#file").files[0];
   }
 };
-const withTimeout = (p, ms) => Promise.race([p, new Promise((_, bad) => setTimeout(() => bad(new Error(OOM)), ms))]);
-async function writeFS(path, data, E = E0) { E.cache.set(path, data); await E.ff.writeFile(path, data); }
-async function resetFFmpeg(E = E0) {      // a fresh engine with the source re-mounted, to recover a stalled worker
-  try { E.ff?.terminate(); } catch {}
-  E.ff = null;
-  await withTimeout((async () => {
-    await loadEngine(E, true);
-    if (srcFile) await E.ff.mount("WORKERFS", { files: [srcFile] }, "/in");
-    for (const [p, d] of E.cache) await E.ff.writeFile(p, d);
-  })(), 40000);
+
+// ---------------------------------------------------------------- queue
+const isMedia = f => /^(video|audio)\//.test(f.type) || /\.(mp4|mov|m4v|mkv|webm|avi|mp3|m4a|wav|aac|ogg|flac)$/i.test(f.name);
+function addFiles(list) {
+  const files = [...list].filter(isMedia);
+  if (!files.length) { if (list.length) toast("Those aren't video or audio files."); return; }
+  addSources(files.map(f => ({ file: f })));
 }
-async function run(args, onTime, retry = true, E = E0) {
-  E.logs = [];
-  // stalled = the engine never printed a single line within 60 s (WebKit's out-of-memory signature). A long silence
-  // mid-run is NOT treated as a stall: slow browsers (Firefox, older phones) can go quiet while loading caption fonts.
-  const t0 = Date.now(); let last = 0, stalled = false;
-  const h = ({ time }) => { last = Date.now(); if (onTime && time > 0) onTime(time / 1e6); };
-  const lg = () => { last = Date.now(); };
-  const ff = E.ff;
-  ff.on("progress", h); ff.on("log", lg);
-  const wd = setInterval(() => {
-    const now = Date.now();
-    if (!last && now - t0 > 60000) { stalled = true; clearInterval(wd); try { ff.terminate(); } catch {} }
-  }, 3000);
-  try {
-    const code = await ff.exec(args);
-    return { code, log: E.logs.join("\n") };
-  } catch (e) {
-    if (!stalled) throw e;
-    if (!retry) throw new Error(OOM);
-    await resetFFmpeg(E);
-    return run(args, onTime, false, E);
-  } finally {
-    clearInterval(wd); try { ff.off("progress", h); ff.off("log", lg); } catch {}
+const shortLink = u => { try { const x = new URL(u); return (x.hostname.replace(/^www\./, "") + x.pathname + x.search).slice(0, 60); } catch { return u.slice(0, 60); } };
+function addSources(srcs) {
+  const added = srcs.map(({ file = null, link = null }) => ({ id: nextId++, file, link, name: file ? file.name : shortLink(link),
+    title: file ? file.name.replace(/\.[^.]+$/, "") : shortLink(link), status: running ? "queued" : "ready", pct: 0, msg: "", clips: [], batch: running, url: null }));
+  sessions.push(...added);
+  if (!active || (!active.clips.length && active.status !== "running")) setActive(added[0]);
+  paintQueue(); paintGo(); preloadASR();
+  if (running) toast(`${added.length} video${added.length > 1 ? "s" : ""} added to the queue`);
+}
+$("#file").onchange = e => { addFiles(e.target.files); e.target.value = ""; };
+$("#emptyAdd").onclick = () => $("#file").click();
+function setActive(s) {
+  if (active === s) { paintQueue(); renderBoard(); return; }
+  active = s; selUid = null; txState.dirty = true;
+  paintQueue(); renderBoard();
+  if (!$("#pTx").hidden) renderTranscript();
+  if (s?.remote && !s.loaded && !s.loading) {             // a past desktop job: fetch its clips and transcript
+    s.loading = true;
+    api(`api/jobs/${encodeURIComponent(s.jid)}`).then(j => loadRemote(s, j)).catch(e => { s.status = "error"; s.err = friendly(e); })
+      .finally(() => { s.loading = false; paintQueue(); if (active === s) { renderBoard(); if (!$("#pTx").hidden) renderTranscript(); } });
   }
 }
-function probeLog(log) {
-  const d = log.match(/Duration: (\d+):(\d+):([\d.]+)/);
-  const v = log.split("\n").filter(l => !/attached pic/.test(l)).join("\n").match(/Video: (\w+).*?, (\d{2,5})x(\d{2,5})/);  // cover art isn't video
-  const fps = log.match(/([\d.]+) fps/);
-  return { duration: d ? +d[1] * 3600 + +d[2] * 60 + +d[3] : 0, vcodec: v?.[1], width: v ? +v[2] : 0, height: v ? +v[3] : 0,
-           fps: fps ? +fps[1] : 30, hasVideo: !!v, acodec: (log.match(/Audio: (\w+)/) || [])[1],
-           square: !/SAR (?!1:1)\d+:\d+/.test(log.match(/Video: .*/)?.[0] || "") };
+function qStatus(s) {
+  if (s.status === "running") return s.msg || "Working";
+  if (s.status === "queued") return "Queued";
+  if (s.status === "error") return "Error: " + (s.err || "").slice(0, 60);
+  if (s.remote && !s.loaded) return s.loading ? "Loading…" : "Saved on this computer";
+  if (s.status === "done") return `${s.clips.length} clip${s.clips.length === 1 ? "" : "s"}${s.info ? " · " + X.fmtT(s.capped || s.info.duration) : ""}`;
+  return s.file ? `Ready · ${mb(s.file.size)} MB` : "Ready · link";
 }
+function paintQueue() {
+  const q = $("#queue");
+  q.innerHTML = sessions.map(s => `<div class="qi" role="button" tabindex="0" data-sid="${s.id}" data-st="${s.status}" aria-current="${s === active}">
+      <span class="n" title="${esc(s.name)}">${esc(s.name)}</span>
+      <span class="s"><span class="dot"></span><span class="qs">${esc(qStatus(s))}</span></span>
+      ${s.status === "running" || s.status === "queued" ? "" : `<button class="x" data-rm="${s.id}" aria-label="Remove ${esc(s.name)}">${icon("x")}</button>`}
+      ${s.status === "running" ? `<span class="qb"><i style="width:${s.pct || 0}%"></i></span>` : ""}</div>`).join("");
+  $("#fname").textContent = sessions.length ? "Add more videos" : "Add videos";
+}
+function paintQueueItem(s) {
+  const el = document.querySelector(`.qi[data-sid="${s.id}"]`); if (!el) return;
+  el.querySelector(".qs").textContent = qStatus(s);
+  const b = el.querySelector(".qb i"); if (b) b.style.width = (s.pct || 0) + "%";
+}
+function paintGo() {
+  const n = sessions.filter(s => s.status === "ready").length;
+  $("#go").disabled = running || !n;
+  $("#goLabel").textContent = running ? "Working…" : n > 1 ? `Find the moments · ${n} videos` : "Find the moments";
+}
+$("#queue").addEventListener("click", e => {
+  const rm = e.target.closest("[data-rm]");
+  if (rm) { removeSession(+rm.dataset.rm); return; }
+  const it = e.target.closest(".qi"); if (it) setActive(sessions.find(s => s.id === +it.dataset.sid));
+});
+$("#queue").addEventListener("keydown", e => { if ((e.key === "Enter" || e.key === " ") && e.target.classList.contains("qi")) { e.preventDefault(); e.target.click(); } });
+function removeSession(id) {
+  const s = sessions.find(x => x.id === id); if (!s || s.status === "running" || s.status === "queued") return;
+  if (s.clips.some(c => c.kept) && !confirm(`Remove "${s.name}" and its kept clips?`)) return;
+  for (const c of s.clips) revokeClip(c);
+  if (s.url) URL.revokeObjectURL(s.url);
+  sessions = sessions.filter(x => x !== s);
+  if (EE?.mounted === s.id) EE.mounted = null;
+  if (active === s) { active = null; setActive(sessions.at(-1) || null); }
+  paintQueue(); paintGo(); renderBoard();
+}
+const srcURL = s => s.remote ? `api/jobs/${encodeURIComponent(s.jid)}/source` : (s.url ||= URL.createObjectURL(s.file));
+
+// drag & drop anywhere
+let dragDepth = 0;
+const hasFiles = e => [...(e.dataTransfer?.types || [])].includes("Files");
+addEventListener("dragenter", e => { if (!hasFiles(e)) return; e.preventDefault(); dragDepth++; $("#dropzone").classList.remove("hide"); });
+addEventListener("dragover", e => { if (hasFiles(e)) e.preventDefault(); });
+addEventListener("dragleave", e => { if (!hasFiles(e)) return; if (--dragDepth <= 0) { dragDepth = 0; $("#dropzone").classList.add("hide"); } });
+addEventListener("drop", e => { if (!hasFiles(e)) return; e.preventDefault(); dragDepth = 0; $("#dropzone").classList.add("hide"); addFiles(e.dataTransfer.files); });
 
 // ---------------------------------------------------------------- transcription
 // The speech worker keeps its model loaded between videos (and starts loading it when a file is picked), except on
 // Safari/iOS, where the worker is dropped after each run to leave WebAssembly memory for the video engine.
-let asrW = null;
+let asrW = null, asrReject = null;
 const asrWorker = () => asrW ||= new Worker(new URL("./asr-worker.js", import.meta.url), { type: "module" });
 const dropASR = () => { try { asrW?.terminate(); } catch {} asrW = null; };
-function preloadASR() { if (!IS_WEBKIT) asrWorker().postMessage({ type: "preload", model: opts.model }); }
+function preloadASR() { if (!IS_WEBKIT && !DESK) asrWorker().postMessage({ type: "preload", model: opts.model }); }
 function transcribe(pcm, windows, model) {
   return new Promise((resolve, reject) => {
     const w = asrWorker();
     let dev = "";
+    asrReject = reject;
     w.onmessage = ({ data: d }) => {
       if (d.type === "load") stage("asr", 0, d.loaded < d.total ? "Loading speech model…" : "Preparing speech model…",
         d.loaded < d.total ? `${(d.loaded / 1e6).toFixed(0)} / ${(d.total / 1e6).toFixed(0)} MB (cached after first use)` : "Takes a moment on the first video only.");
       if (d.type === "device") { dev = d.device === "webgpu" ? " · GPU" : ""; perf.lap(`model load (${d.device})`); }
       if (d.type === "progress") stage("asr", 100 * d.done / d.total, "Transcribing…", `${X.fmtT(d.upto)} done${dev}`);
-      if (d.type === "done") { if (IS_WEBKIT) dropASR(); resolve(d.words); }
-      if (d.type === "error") { dropASR(); reject(new Error("Speech model: " + d.message)); }
+      if (d.type === "done") { asrReject = null; if (IS_WEBKIT) dropASR(); resolve(d.words); }
+      if (d.type === "error") { asrReject = null; dropASR(); reject(new Error("Speech model: " + d.message)); }
     };
     w.postMessage({ audio: pcm, windows, model });
   });
 }
 
 // ---------------------------------------------------------------- render + quality gate
+// look = the per-cut choices the studio can change: { style, hl, size, pos, format, layout, cx, cy, tighten, captions, hook }
+const lookFrom = o => ({ style: o.style, hl: o.hl, size: o.size, pos: o.pos, format: o.format, layout: o.layout, cx: 0.5, cy: 0.5,
+                         tighten: o.tighten, captions: o.captions, hook: o.hook });
 function filterGraph(m, keep, info, o, hasASS) {
-  const W = o.hd ? 1080 : 720, H = o.hd ? 1920 : 1280;
+  const [W, H] = X.frameSize(o.format, o.hd);
   const fps = Math.round(Math.min(Math.max(info.fps || 30, 23), 60));
   let pre = `fps=${fps}`;
   if (o.enhance && info.height && info.height < 720) pre = "hqdn3d=2:1.5:3:3," + pre;
@@ -264,7 +443,8 @@ function filterGraph(m, keep, info, o, hasASS) {
   }
   let vf;
   const sharpen = o.enhance ? ",unsharp=5:5:0.45:5:5:0,eq=contrast=1.04:saturation=1.07" : "";
-  if (o.layout === "crop") vf = `scale=-2:${H},crop=${W}:${H}${sharpen}`;
+  const cx = Math.min(1, Math.max(0, o.cx ?? 0.5)).toFixed(3), cy = Math.min(1, Math.max(0, o.cy ?? 0.5)).toFixed(3);
+  if (o.layout === "crop") vf = `scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H}:(iw-ow)*${cx}:(ih-oh)*${cy}${sharpen}`;
   else {
     // blurred backdrop: blur a 1/8-size copy and scale it up (looks the same, ~5x less work than blurring full size);
     // only the visible video gets sharpened, since sharpening a blur is wasted work
@@ -273,12 +453,10 @@ function filterGraph(m, keep, info, o, hasASS) {
          `scale=${W}:${H}:flags=bilinear,eq=brightness=-0.08[bg];` +
          `[b]scale=${W}:${H}:force_original_aspect_ratio=decrease${sharpen}[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2`;
   }
-  if (o.enhance) {
-    if (keep.length > 1) {
-      let t = 0; const z = [];
-      keep.forEach(([a, b], k) => { const s = t; t += b - a; if (k % 2) z.push(`between(on,${Math.floor(s * fps)},${Math.max(Math.floor(t * fps) - 1, Math.floor(s * fps))})`); });
-      if (z.length) vf += `,zoompan=z='if(${z.join("+")},1.08,1)':d=1:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${W}x${H}:fps=${fps}`;
-    }
+  if (o.enhance && keep.length > 1) {
+    let t = 0; const z = [];
+    keep.forEach(([a, b], k) => { const s = t; t += b - a; if (k % 2) z.push(`between(on,${Math.floor(s * fps)},${Math.max(Math.floor(t * fps) - 1, Math.floor(s * fps))})`); });
+    if (z.length) vf += `,zoompan=z='if(${z.join("+")},1.08,1)':d=1:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${W}x${H}:fps=${fps}`;
   }
   if (hasASS) vf += ",ass=/sub.ass:fontsdir=/fonts";
   vf += ",setsar=1";   // square pixels: scale/crop rounding otherwise leaves SAR 10240:10239 (players show 719 px)
@@ -287,24 +465,25 @@ function filterGraph(m, keep, info, o, hasASS) {
   if (!info.hasVideo) {    // audio-only source (podcast, voice memo): captions over a moving waveform
     const ass = hasASS ? ",ass=/sub.ass:fontsdir=/fonts" : "";
     return { fc: `[0:a]${apre},asplit[aw][am];color=c=0x101018:s=${W}x${H}:r=${fps}[bg];` +
-      `[aw]showwaves=s=${W}x${Math.round(H * 0.22)}:mode=cline:colors=0xFFE600:rate=${fps}[wv];` +
+      `[aw]showwaves=s=${W}x${Math.round(H * 0.22)}:mode=cline:colors=0xF2C230:rate=${fps}[wv];` +
       `[bg][wv]overlay=0:(H-h)/2:shortest=1,format=yuv420p${ass},setsar=1[v];[am]${aout}`, fps, W, H, audiogram: true };
   }
   return { fc: `[0:v]${pre},${vf}[v];[0:a]${apre},${aout}`, fps, W, H };
 }
 
-async function renderClip(path, info, m, o, cta, onPct, E = E0) {
-  const keep = X.keepIntervals(m, o.tighten, S?.quiet);
+async function renderClip(sess, m, look, cta, onPct, E = E0) {
+  const o = { ...sess.o, ...look };
+  const keep = X.keepIntervals(m, o.tighten, sess.quiet);
   const plat = X.F.platforms[o.platform];
   const hasASS = (o.captions && m.words.length) || (o.hook && m.title) || cta;
-  if (hasASS) await writeFS("/sub.ass", X.buildASS(m, plat, keep, { captions: o.captions, hook: o.hook, cta, style: o.style }), E);
-  const { fc, fps, W, H, audiogram } = filterGraph(m, keep, info, o, hasASS);
+  if (hasASS) await writeFS("/sub.ass", X.buildASS(m, plat, keep, { captions: o.captions, hook: o.hook, cta, style: o.style, hl: o.hl, size: o.size, pos: o.pos, format: o.format }), E);
+  const { fc, fps, W, H, audiogram } = filterGraph(m, keep, sess.info, o, hasASS);
   const dur = m.end - m.start, expected = keep.reduce((a, [x, y]) => a + y - x, 0);
   // the quality detectors ride along on the render (black/freeze on the final picture, silence/loudness on the final audio),
   // so the clip isn't decoded a second time just to check it
   const taps = `;[v]split[vo][vq];[vq]blackdetect=d=0.5:pix_th=0.10,freezedetect=n=-60dB:d=2,nullsink` +
                `;[a]asplit[ao][aq];[aq]silencedetect=n=-45dB:d=2,ebur128=peak=true,anullsink`;
-  const r = await run(["-ss", m.start.toFixed(3), "-t", dur.toFixed(3), "-i", path, "-filter_complex", fc + taps, "-map", "[vo]", "-map", "[ao]",
+  const r = await run(["-ss", m.start.toFixed(3), "-t", dur.toFixed(3), "-i", sess.path, "-filter_complex", fc + taps, "-map", "[vo]", "-map", "[ao]",
     "-c:v", "libx264", "-preset", o.hd ? "veryfast" : "ultrafast", "-crf", o.hd ? "20" : "22", "-pix_fmt", "yuv420p",
     "-r", String(fps), "-g", String(fps * 2), "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-movflags", "+faststart", "-shortest", "/out.mp4"],
     t => onPct(Math.min(95, 95 * t / Math.max(expected, 1))), true, E);
@@ -321,8 +500,8 @@ async function renderClip(path, info, m, o, cta, onPct, E = E0) {
   const blob = new Blob([data.buffer], { type: "video/mp4" });
   const quality = qualityChecks(q.log, r.log, { expected, W, H, sizeMB: blob.size / 1e6, m, captions: o.captions, audiogram });
   const fillers = o.tighten ? m.words.filter(w => w.s >= m.start && w.s <= m.end && X.F.fillerSet.has(w.w.toLowerCase().replace(/[^a-z]/g, ""))).length : 0;
-  return { blob, url: URL.createObjectURL(blob), thumb, quality, duration: +expected.toFixed(1), cuts: keep.length - 1, fps,
-           size_mb: +(blob.size / 1e6).toFixed(1), fillers_cut: fillers, enhanced: o.enhance, srt: X.buildSRT(m, keep) };
+  return { blob, url: URL.createObjectURL(blob), thumb, quality, duration: +expected.toFixed(1), cuts: keep.length - 1, fps, W, H,
+           size_mb: +(blob.size / 1e6).toFixed(1), fillers_cut: fillers, enhanced: o.enhance, srt: X.buildSRT(m, keep), look: { ...look } };
 }
 
 function qualityChecks(fileLog, log, { expected, W, H, sizeMB, m, captions, audiogram }) {
@@ -349,45 +528,70 @@ const passed = q => q.every(x => x.ok || !x.hard);
 
 // Failures the safe mode (no cuts, no enhancement) can't fix: the content itself is silent or black.
 const CONTENT = new Set(["No dead silence", "No black frames"]);
-async function makeCut(path, info, m, o, cta, onPct, E = E0) {
-  let r = await renderClip(path, info, m, o, cta, onPct, E);
+async function makeCut(sess, m, look, cta, onPct, E = E0) {
+  let r = await renderClip(sess, m, look, cta, onPct, E);
   const hardFails = r.quality.filter(x => !x.ok && x.hard);
   if (hardFails.length && hardFails.every(x => CONTENT.has(x.k))) return r;   // skip a retry that would fail the same way
   if (!passed(r.quality)) {                                        // re-render once in safe mode
-    r = await renderClip(path, info, m, { ...o, tighten: false, enhance: false }, cta, onPct, E);
+    r = await renderClip(sess, m, { ...look, tighten: false, enhance: false }, cta, onPct, E);
     r.retried = true;
   }
   return r;
 }
 
-// ---------------------------------------------------------------- pipeline
-async function go(file) {
-  const o = { platform: opts.platform, n: +opts.n, version: opts.version, hd: opts.quality === "hd", captions: opts.captions === "1",
-              hook: opts.hook === "1", tighten: opts.tighten === "1", enhance: opts.enhance === "1", layout: opts.layout, style: opts.style };
-  if (busy) return toast("Already working. Cancel first to start over.");
-  busy = true;
-  let spares = [];
-  revokeAll();
-  const cta = $("#cta").value.trim().slice(0, 80);
-  $("#out").innerHTML = ""; $("#setup").classList.add("busy");
+// ---------------------------------------------------------------- batch pipeline
+let cancelled = false, spares = [];
+async function go() {
+  if (running) return toast("Already working. New videos join the queue.");
+  const todo = sessions.filter(s => s.status === "ready");
+  if (!todo.length) return toast("Add a video first.");
+  running = true; cancelled = false;
+  sessions.forEach(s => { s.batch = false; });
+  todo.forEach(s => { s.status = "queued"; s.batch = true; });
+  if (!active || !active.clips.length) setActive(todo[0]);
+  paintQueue(); paintGo();
   try { wakeLock = await navigator.wakeLock?.request("screen"); } catch {}
   try {
+    for (let s; !cancelled && (s = sessions.find(x => x.status === "queued"));) await (DESK ? processRemote(s) : processSession(s));
+  } finally {
+    running = false;
+    sessions.filter(s => s.status === "queued").forEach(s => { s.status = "ready"; });
+    $("#prog").classList.add("hide");
+    paintQueue(); paintGo(); renderBoard();
+    try { await wakeLock?.release(); } catch {}
+    pump();
+  }
+}
+const runOpts = () => ({ platform: opts.platform, n: +opts.n, version: opts.version, hd: opts.quality === "hd" || !!DESK, captions: opts.captions === "1",
+  hook: opts.hook === "1", tighten: opts.tighten === "1", enhance: opts.enhance === "1", layout: opts.layout, style: opts.style,
+  hl: opts.hl, size: opts.size, pos: opts.pos, format: opts.format });
+async function processSession(sess) {
+  const o = runOpts();
+  sess.status = "running"; sess.pct = 0; sess.msg = "Starting"; sess.err = null; sess.dropped = 0;
+  for (const c of sess.clips) revokeClip(c);
+  sess.clips = []; sess.o = o; sess.cta = $("#cta").value.trim().slice(0, 80);
+  if (!active || (!active.clips.length && active.status !== "done")) setActive(sess);
+  paintQueue(); renderBoard();
+  spares = [];
+  try {
     perf.start();
-    await getFFmpeg();
+    await loadEngine(E0);
     perf.lap("engine");
-    try { await E0.ff.unmount("/in"); } catch {}
-    srcFile = file;
-    await E0.ff.mount("WORKERFS", { files: [file] }, "/in");
-    const path = "/in/" + file.name;
+    await mountSrc(E0, sess);
+    const path = sess.path = "/in/" + sess.file.name;
     const info = probeLog((await run(["-hide_banner", "-i", path])).log);
     if (!info.duration) throw new Error("Couldn't read that file. Try an MP4 or MOV.");
     if (!info.acodec) throw new Error("That video has no audio track, so there's nothing to transcribe.");
     if (info.duration < 3) throw new Error("That video is under 3 seconds, too short to clip.");
     if (info.duration > 3 * 3600) throw new Error("That video is over 3 hours. Trim it first, or use the desktop app.");
-    if (IS_WEBKIT && info.duration > 75) toast(IS_IOS ? "Heads up: on iPhone/iPad, videos over about a minute can run out of memory. Shorter videos work best." : "Heads up: Safari can run out of memory on videos over about a minute. Chrome handles long videos best.");
+    // Safari / iOS: past ~85 s the WebAssembly engines run out of memory (or freeze the tab), so clip the first
+    // 80 s, which works reliably there, and say so on the results instead of failing
+    let capped = 0;
+    if (IS_WEBKIT && info.duration > 85) { capped = info.duration; info.duration = 80; }
     else if (info.duration > 45 * 60) toast(`Long video (${X.fmtT(info.duration)}): this can take a while. Keep the tab open and the screen on.`);
+    sess.info = info; sess.capped = capped;
     stage("audio", 0, "Reading audio…");
-    const a = await run(["-i", path, "-vn", "-ac", "1", "-ar", "16000", "-f", "f32le", "/audio.raw"], t => stage("audio", 100 * t / info.duration, "Reading audio…", `${X.fmtT(t)} / ${X.fmtT(info.duration)}`));
+    const a = await run(["-i", path, ...(capped ? ["-t", String(info.duration)] : []), "-vn", "-ac", "1", "-ar", "16000", "-f", "f32le", "/audio.raw"], t => stage("audio", 100 * t / info.duration, "Reading audio…", `${X.fmtT(t)} / ${X.fmtT(info.duration)}`));
     if (a.code !== 0) throw new Error("Couldn't decode the audio.");
     const raw = await E0.ff.readFile("/audio.raw"); await E0.ff.deleteFile("/audio.raw");
     const pcm = new Float32Array(raw.buffer, raw.byteOffset, Math.floor(raw.byteLength / 4));
@@ -396,23 +600,24 @@ async function go(file) {
     const loud = X.loudnessCurve(pcm), quiet = X.quietMap(pcm);
     perf.lap("probe+audio");
     // warm up extra engines for parallel rendering while the speech model works (a failed one is simply not used)
-    spares = Array.from({ length: renderSlots() - 1 }, () => spareEngine().catch(e => { console.warn("spare engine failed:", e?.message || e); return null; }));
+    spares = Array.from({ length: renderSlots() - 1 }, () => spareEngine(sess).catch(e => { console.warn("spare engine failed:", e?.message || e); return null; }));
     const words = await transcribe(pcm, X.asrWindows(loud, info.duration), opts.model);
+    if (cancelled) throw new Error("Cancelled.");
     perf.lap("transcribe");
     stage("score", 50, "Finding the best moments…");
     const segs = X.segmentsFromWords(words);
     const plat = X.F.platforms[o.platform];
     let version = o.version; if (!plat.long) version = "short";
     const pool = X.findMoments(segs, loud, info.duration, o.n + 3, o.platform, version);
-    const title = file.name.replace(/\.[^.]+$/, "");
-    results = []; let dropped = 0;
-    S = { path, info, words, segs, loud, quiet, o, cta, version, title };
+    Object.assign(sess, { words, segs, loud, quiet, version });
+    txState.dirty = true;
     perf.lap("score");
     const engines = [E0, ...(await Promise.all(spares)).filter(Boolean)];
     perf.lap(`engines x${engines.length}`);
+    const look = lookFrom(o);
     // Each engine takes the next-best moment, renders its long + short cut, then takes another, until n clips pass.
-    // Moments render side by side, but clips are always shown in score order.
-    const frac = new Map(), wins = [];
+    // Moments render side by side, but clips are always listed in score order.
+    const frac = new Map();
     let next = 0, inflight = 0, ok = 0, failed = null;
     const show = () => {
       const f = [...frac.values()].reduce((a, x) => a + x, 0);
@@ -424,223 +629,643 @@ async function go(file) {
     async function moment(m, E, idx) {
       if (tooQuiet(m)) return null;
       const p = x => { frac.set(idx, x / 100); show(); };
-      m.captions = X.postCopy(m, title);
-      const long = await makeCut(path, info, m, o, version !== "short" ? cta : "", x => p(version === "both" ? x * 0.6 : x), E);
+      m.captions = X.postCopy(m, sess.title);
+      const long = await makeCut(sess, m, look, version !== "short" ? sess.cta : "", x => p(version === "both" ? x * 0.6 : x), E);
       if (!passed(long.quality)) return null;
-      const clip = { ...m, ...long, range: `${X.fmtT(m.start)}–${X.fmtT(m.end)}`, short: null, view: "long" };
+      const clip = { ...m, ...long, rank: idx, range: `${X.fmtT(m.start)}–${X.fmtT(m.end)}`, short: null, view: "long", cta: version !== "short" ? sess.cta : "" };
       if (version === "both") {
         const sm = X.shorten(m, segs, loud, ...plat.short);
         if (sm && !tooQuiet(sm)) {
-          const s = await makeCut(path, info, sm, o, "", x => p(60 + x * 0.4), E);
-          if (passed(s.quality)) { clip.short = { ...s, start: sm.start, end: sm.end, title: sm.title, range: `${X.fmtT(sm.start)}–${X.fmtT(sm.end)}` }; clip.view = "short"; }
+          const s = await makeCut(sess, sm, look, "", x => p(60 + x * 0.4), E);
+          if (passed(s.quality)) { clip.short = { ...s, start: sm.start, end: sm.end, title: sm.title, range: `${X.fmtT(sm.start)}–${X.fmtT(sm.end)}`, cta: "" }; clip.view = "short"; }
         }
       }
       return clip;
     }
     async function worker(E) {
-      while (!failed && ok + inflight < o.n && next < pool.length) {
+      while (!failed && !cancelled && ok + inflight < o.n && next < pool.length) {
         const idx = next++; inflight++;
         try {
           const clip = await moment(pool[idx], E, idx);
-          if (clip) { ok++; wins.push({ idx, clip }); wins.sort((a, b) => a.idx - b.idx); results = wins.map(w => w.clip); renderResults(title, dropped); }
-          else dropped++;
+          if (cancelled) break;
+          if (clip) { ok++; addClip(sess, clip); }
+          else sess.dropped++;
         } catch (e) { failed ||= e; }
         finally { inflight--; frac.delete(idx); show(); }
       }
     }
     show();
     await Promise.all(engines.map(worker));      // workers never reject; the first error stops new work, then surfaces
+    if (cancelled) throw new Error("Cancelled.");
     if (failed) throw failed;
-    // the source stays mounted so clips can be edited and re-rendered; it's released when the next video starts
-    $("#prog").classList.add("hide");
-    if (!results.length) $("#out").innerHTML = `<div class="card msg">No moment passed the quality gate. Try a different video or turn off "Cut dead air".</div>`;
-    else toast(`${results.length} clip${results.length > 1 ? "s" : ""} ready`);
+    sess.status = "done";
+    sess.clips.sort((a, b) => a.rank - b.rank).forEach((c, i) => { c.idx = String(i + 1).padStart(2, "0"); });
+    if (sess.clips.length) toast(`${sess.title}: ${sess.clips.length} clip${sess.clips.length > 1 ? "s" : ""} ready`);
   } catch (err) {
-    console.error(err);
-    $("#prog").classList.add("hide");
-    $("#out").innerHTML = `<div class="card err">⚠ ${linkDesktop(esc(err.message || err))}</div>`;
+    if (cancelled) { sess.status = sess.clips.length ? "done" : "ready"; sess.msg = ""; }
+    else { console.error(err); sess.status = "error"; sess.err = friendly(err); }
   } finally {
     // spare engines are per run (memory); E0 keeps the source mounted for edits
     for (const sp of spares) sp.then(E => { try { E?.ff?.terminate(); } catch {} });
-    busy = false;
-    $("#setup").classList.remove("busy");
-    try { await wakeLock?.release(); } catch {}
+    spares = [];
+    paintQueue(); renderBoard();
   }
 }
-$("#go").onclick = () => { const f = $("#file").files[0]; if (f) go(f); };
-function revokeAll() {
-  for (const c of results) for (const v of [c, c.short]) if (v) { URL.revokeObjectURL(v.url); if (v.thumb) URL.revokeObjectURL(v.thumb); }
+// Browsers word a failed download differently (Safari "Load failed", Chrome "Failed to fetch", Firefox "NetworkError…");
+// none of them says what to do, so translate.
+function friendly(err) {
+  const msg = String(err?.message || err || "Something went wrong.");
+  if (/^(Load failed|Failed to fetch|NetworkError when attempting to fetch resource\.?|Network request failed)$/i.test(msg.trim()) || /Failed to fetch dynamically imported module/i.test(msg))
+    return "A download failed (the video engine or speech model). Check your internet connection and try again. After one complete run, the app also works offline.";
+  return msg;
+}
+function cancelBatch() {
+  if (linkAbort) return linkAbort.abort();
+  if (!running) return;
+  cancelled = true;
+  if (DESK) {
+    const s = sessions.find(x => x.status === "running");
+    curXHR?.abort();
+    if (s?.jid) api(`api/jobs/${encodeURIComponent(s.jid)}/cancel`, {}).catch(() => {});
+    toast("Cancelling…");
+    return;
+  }
+  try { E0.ff?.terminate(); } catch {}
+  E0.ff = null; E0.mounted = null;
+  for (const sp of spares) sp.then(E => { try { E?.ff?.terminate(); } catch {} });
+  if (asrReject) { dropASR(); asrReject(new Error("Cancelled.")); asrReject = null; }
+  toast("Cancelled. Clips that finished are kept.");
+}
+$("#cancel").onclick = cancelBatch;
+$("#go").onclick = go;
+let uidN = 1;
+function addClip(sess, clip) {
+  clip.uid = uidN++; clip.sid = sess.id;
+  clip.idx = String(sess.clips.length + 1).padStart(2, "0");
+  sess.clips.push(clip);
+  if (sess === active) renderBoard();
+  else paintQueueItem(sess);
+}
+function revokeClip(c) { for (const v of [c, c.short]) if (v) { URL.revokeObjectURL(v.url); if (v.thumb) URL.revokeObjectURL(v.thumb); if (v.srtURL) URL.revokeObjectURL(v.srtURL); } }
+
+// ---------------------------------------------------------------- desktop app engine
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+async function api(url, body) {
+  const r = await fetch(url, body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : { cache: "no-store" });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || (r.status === 403 ? "The desktop app needs its access link again: open the link it printed when it started." : `The desktop app answered ${r.status}.`));
+  return j;
+}
+let curXHR = null;
+function upload(url, fd, onPct) {
+  return new Promise((res, rej) => {
+    const x = curXHR = new XMLHttpRequest();
+    x.open("POST", url);
+    x.upload.onprogress = e => { if (e.lengthComputable) onPct(100 * e.loaded / e.total); };
+    x.onload = () => { curXHR = null; let j = {}; try { j = JSON.parse(x.responseText); } catch {} x.status < 400 ? res(j) : rej(new Error(j.error || `Upload failed (${x.status}).`)); };
+    x.onerror = () => { curXHR = null; rej(new Error("Couldn't reach the desktop app. Is it still running?")); };
+    x.onabort = () => { curXHR = null; rej(new Error("Cancelled.")); };
+    x.send(fd);
+  });
+}
+const oFromJob = o => ({ platform: o.platform || "all", n: o.n || 5, version: o.version || "both", hd: true, captions: o.captions !== false, hook: o.hook !== false,
+  tighten: o.tighten !== false, enhance: o.enhance !== false, layout: o.layout === "crop" ? "crop" : "fit", style: o.style || "pop",
+  hl: o.hl || "#FFF000", size: o.size || "m", pos: o.pos || "bottom", format: o.format || "9:16" });
+async function processRemote(sess) {
+  const o = runOpts();
+  sess.status = "running"; sess.pct = 0; sess.msg = "Starting"; sess.err = null; sess.dropped = 0;
+  for (const c of sess.clips) revokeClip(c);
+  sess.clips = []; sess.o = o; sess.cta = $("#cta").value.trim().slice(0, 80);
+  if (!active || (!active.clips.length && active.status !== "done")) setActive(sess);
+  paintQueue(); renderBoard();
+  const b = { n: o.n, platform: o.platform, version: o.version, hook: o.hook ? "1" : "0", tighten: o.tighten ? "1" : "0", enhance: o.enhance ? "1" : "0",
+              captions: o.captions ? "1" : "0", style: o.style, layout: o.layout, cta: sess.cta, model: opts.model, format: o.format, hl: o.hl, size: o.size, pos: o.pos };
+  try {
+    let id;
+    if (sess.file) {
+      const fd = new FormData(); fd.append("file", sess.file, sess.file.name);
+      for (const [k, v] of Object.entries(b)) fd.append(k, v);
+      id = (await upload("api/jobs", fd, p => setStage("Sending the video to the app…", p * 0.15, `${Math.round(p)}% of ${mb(sess.file.size)} MB`))).id;
+    } else id = (await api("api/jobs", { url: sess.link, label: sess.link, ...b })).id;
+    sess.jid = id;
+    for (;;) {
+      await sleep(800);
+      const j = await api(`api/jobs/${encodeURIComponent(id)}`);
+      if (j.status === "error") throw new Error(j.msg === "Cancelled" ? "Cancelled." : (j.msg || "Something went wrong."));
+      if (j.status === "done") { await loadRemote(sess, j); break; }
+      setStage(j.status === "queued" ? "Waiting in line…" : (j.msg || "Working…"), j.pct || 0, j.status === "running" ? "Running on this computer · you can close this tab" : "");
+    }
+    sess.status = "done";
+    if (sess.clips.length) toast(`${sess.title}: ${sess.clips.length} clip${sess.clips.length > 1 ? "s" : ""} ready`);
+  } catch (err) {
+    if (cancelled) { sess.status = sess.clips.length ? "done" : "ready"; sess.msg = ""; sess.jid = null; }
+    else { console.error(err); sess.status = "error"; sess.err = friendly(err); }
+  } finally { paintQueue(); renderBoard(); }
+}
+async function loadRemote(sess, job) {
+  const res = job.result || { clips: [] };
+  const tr = await api(`api/jobs/${encodeURIComponent(sess.jid)}/transcript`);
+  sess.words = tr.words || [];
+  sess.quiet = tr.quiet?.db?.length ? { step: tr.quiet.step, thr: tr.quiet.thr, db: Float32Array.from(tr.quiet.db) } : null;
+  sess.info = { duration: tr.duration || res.duration || 0, hasVideo: tr.has_video !== false };
+  sess.title = res.title || sess.title;
+  if (!sess.file && res.title) sess.name = res.title;     // a link: show the video's real title, not the URL
+  sess.version = res.version || "both";
+  sess.o ||= oFromJob(job.opts || {});
+  sess.cta ??= job.opts?.cta || "";
+  sess.remote = true; sess.loaded = true; sess.dropped = res.dropped_for_quality || 0;
+  syncRemoteClips(sess, res);
+  txState.dirty = true;
+}
+function syncRemoteClips(sess, res) {
+  const base = `files/${encodeURIComponent(sess.jid)}/`;
+  const cut = v => ({ ...v, url: `${base}${encodeURIComponent(v.file)}?v=${v.rev || 0}`, thumb: v.thumb ? `${base}${encodeURIComponent(v.thumb)}?v=${v.rev || 0}` : null,
+                      srtHref: `${base}${encodeURIComponent(v.srt)}?dl=1&v=${v.rev || 0}`, blob: null, srt: null, look: { ...lookFrom(sess.o), ...(v.look || {}) } });
+  res.clips.forEach((c, i) => {
+    const next = { ...cut(c), jidx: i, rank: c.custom ? 1e6 + i : i, captions: c.captions || {}, reasons: c.reasons || [], checklist: c.checklist || [],
+                   short: c.short ? cut(c.short) : null };
+    const have = sess.clips.find(x => x.jidx === i);
+    if (have) {
+      const keep = { uid: have.uid, sid: have.sid, idx: have.idx, kept: have.kept, view: next.short ? have.view : "long" };
+      for (const k of Object.keys(have)) delete have[k];
+      Object.assign(have, next, keep);
+    } else { next.view = c.short ? "short" : "long"; addClip(sess, next); }
+  });
+}
+async function remoteEdit(job) {
+  const d = job.d, sess = job.sess, id = encodeURIComponent(sess.jid);
+  const rev0 = (await api(`api/jobs/${id}`)).edit_rev || 0;
+  await api(`api/jobs/${id}/edit`, { clip: job.c ? job.c.jidx : -1, cut: job.cut, start: d.start, end: d.end, title: d.title, style: d.look.style,
+    look: d.look, cta: d.cta ?? "", words: sess.words.filter(w => w.s >= d.start - 0.5 && w.s <= d.end + 0.5) });
+  for (;;) {
+    await sleep(700);
+    const j = await api(`api/jobs/${id}`);
+    if (j.status === "editing") { job.pct = j.pct || 0; notifyJob(job); }
+    if (j.status === "done" && ((j.edit_rev || 0) > rev0 || j.edit_error)) {
+      if (j.edit_error) return { ok: false, msg: j.edit_error };
+      syncRemoteClips(sess, j.result);
+      const c = job.c || sess.clips.find(x => x.jidx === j.result.clips.length - 1);
+      c.view = job.cut === "short" ? "short" : "long";
+      return { ok: true, clip: c };
+    }
+  }
+}
+async function enterDesktop(info) {
+  DESK = info;
+  document.body.classList.add("desk");
+  DEF.model = "base";
+  $('.chips[data-k="model"]').innerHTML = `<button class="chip" data-v="tiny">Fastest</button><button class="chip" data-v="base" aria-pressed="true">Balanced</button><button class="chip" data-v="small">Most accurate (slower)</button>`;
+  $("#qualityRow").hidden = true;                   // the desktop app always exports full HD
+  $(".lhint").textContent = "Paste a YouTube, TikTok, Twitch, X or any video link. The desktop app downloads it on this computer.";
+  $("#link").placeholder = "Paste a YouTube, TikTok or video link";
+  $(".tag").textContent = "Desktop app · runs on this computer";
+  const tl = $(".toplink"); tl.href = "classic"; tl.removeAttribute("target"); tl.setAttribute("aria-label", "Classic view"); tl.querySelector("span").textContent = "Classic view";
+  try {                                            // past jobs on this computer, newest first
+    const list = await api("api/jobs");
+    for (const j of list.filter(j => j.status === "done").slice(0, 15))
+      sessions.push({ id: nextId++, jid: j.id, file: null, link: null, name: String(j.label || j.id).split("/").pop().slice(0, 80), title: String(j.label || j.id).slice(0, 80),
+                      status: "done", remote: true, loaded: false, clips: [], pct: 0, msg: "", url: null });
+  } catch {}
 }
 
-// ---------------------------------------------------------------- results UI
+// ---------------------------------------------------------------- edit renders (studio)
+// Studio renders queue up and run one at a time on the edit engine, so you can move on to the next clip while
+// one renders. Where memory is tight, the edit engine is E0 and edits wait for the batch to finish.
+const jobs = [];
+let jobNow = null;
+const jobKey = (c, cut) => `${c ? c.uid : "new"}:${cut}`;
+function jobFor(c, cut) { return [jobNow, ...jobs].find(j => j && j.key === jobKey(c, cut)) || null; }
+function queueRender(job) {
+  job.key = jobKey(job.c, job.cut);
+  const dup = jobs.findIndex(j => j.key === job.key); if (dup >= 0) jobs.splice(dup, 1);   // the newest edit wins
+  job.state = "queued"; job.pct = 0;
+  const p = new Promise(res => { job.resolve = res; });
+  jobs.push(job); notifyJob(job); pump();
+  return p;
+}
+async function pump() {
+  if (jobNow || !jobs.length) return;
+  const E = editEngine();
+  if (E === E0 && running && !jobs[0].sess.remote) { jobs.forEach(j => { j.state = "waiting"; notifyJob(j); }); return; }   // resumes when the batch ends
+  const job = jobNow = jobs.shift();
+  job.state = "running"; notifyJob(job);
+  let result = { ok: false };
+  if (job.sess.remote) {
+    try { result = await remoteEdit(job); }
+    catch (err) { console.error(err); result = { ok: false, msg: friendly(err) }; }
+    job.state = result.ok ? "done" : "failed"; job.result = result; jobNow = null;
+    if (job.sess === active) renderBoard();
+    notifyJob(job); job.resolve(result); pump();
+    return;
+  }
+  try {
+    await withTimeout(loadEngine(E, true), 60000);
+    await mountSrc(E, job.sess);
+    const d = job.d;
+    const m = { start: d.start, end: d.end, title: d.title, words: job.sess.words.filter(w => w.s >= d.start - 0.5 && w.s <= d.end + 0.5) };
+    const r = await makeCut(job.sess, m, d.look, d.cta, x => { job.pct = x; notifyJob(job); }, E);
+    if (!passed(r.quality)) {
+      URL.revokeObjectURL(r.url); if (r.thumb) URL.revokeObjectURL(r.thumb);
+      const why = r.quality.filter(x => !x.ok && x.hard).map(x => `${x.k} (${x.detail})`).join(", ");
+      result = { ok: false, msg: `That edit failed the quality gate: ${why}. Your previous version is kept.` };
+    } else {
+      const fields = { start: d.start, end: d.end, title: d.title, cta: d.cta, range: `${X.fmtT(d.start)}–${X.fmtT(d.end)}`, edited: true };
+      let c = job.c;
+      if (!c) {                                   // a new clip made from the transcript
+        c = { ...m, ...r, ...fields, score: null, custom: true, reasons: ["Picked from the transcript"], checklist: [], hashtags: [], short: null, view: "long" };
+        c.captions = X.postCopy({ ...c, hashtags: [] }, job.sess.title);
+        addClip(job.sess, c);
+      } else {
+        const target = job.cut === "short" ? c.short : c;
+        URL.revokeObjectURL(target.url); if (target.thumb) URL.revokeObjectURL(target.thumb); if (target.srtURL) URL.revokeObjectURL(target.srtURL);
+        target.srtURL = null;
+        Object.assign(target, r, fields);
+        if (job.cut === "long") c.title = d.title;
+        c.captions = X.postCopy({ ...c, title: c.title, hashtags: c.hashtags || [] }, job.sess.title);
+        c.view = job.cut === "short" ? "short" : "long";
+      }
+      result = { ok: true, clip: c };
+    }
+  } catch (err) {
+    console.error(err);
+    result = { ok: false, msg: friendly(err) };
+    if (E !== E0) { try { E.ff?.terminate(); } catch {} E.ff = null; E.mounted = null; }
+  } finally {
+    job.state = result.ok ? "done" : "failed"; job.result = result;
+    jobNow = null;
+    if (job.sess === active) renderBoard();
+    notifyJob(job);
+    job.resolve(result);
+    pump();
+  }
+}
+function notifyJob(job) {
+  const el = job.c && document.querySelector(`.clip[data-uid="${job.c.uid}"] .vw`);
+  if (el) {
+    let r = el.querySelector(".rendering");
+    const live = job.state === "queued" || job.state === "running" || job.state === "waiting";
+    if (live && !r) { r = document.createElement("div"); r.className = "rendering"; el.appendChild(r); }
+    if (r) { if (live) r.textContent = jobLabel(job); else r.remove(); }
+  }
+  studio.onJob(job);
+}
+const jobLabel = j => j.state === "running" ? `Rendering ${j.cut === "new" ? "new clip" : j.cut + " cut"} · ${Math.round(j.pct)}%`
+  : j.state === "waiting" ? "Waits for the batch to finish" : "Queued to render";
+
+// ---------------------------------------------------------------- clips board
+function boardList(s = active) {
+  if (!s) return [];
+  let l = s.clips.slice();
+  if (filterKept) l = l.filter(c => c.kept);
+  if (sortBy === "time") l.sort((a, b) => a.start - b.start);
+  else l.sort((a, b) => (a.custom - b.custom) || ((a.rank ?? 1e9) - (b.rank ?? 1e9)) || a.uid - b.uid);
+  return l;
+}
+const cutOf = c => c.view === "short" && c.short ? c.short : c;
 function qualityHTML(v) {
   const q = v.quality || [], ok = q.filter(x => x.ok).length, warn = q.length - ok;
-  return `<details class="qc"><summary><span class="qbadge ${warn ? "warn" : ""}">${warn ? "⚠" : "✓"} Quality ${ok}/${q.length}</span>${v.retried ? ' <span class="st">re-rendered in safe mode</span>' : ""}</summary>
-    <ul class="check">${q.map(x => `<li class="${x.ok ? "ok" : "no"}"><b>${x.ok ? "✓" : "✗"}</b> ${esc(x.k)} <span>${esc(x.detail)}</span></li>`).join("")}</ul></details>`;
+  return `<details class="qc"><summary><span class="qbadge ${warn ? "warn" : ""}">Quality ${ok}/${q.length}</span>${v.retried ? ' <span class="st">safe mode</span>' : ""}${v.edited ? ' <span class="st">edited</span>' : ""}</summary>
+    <ul class="check">${q.map(x => `<li class="${x.ok ? "ok" : "no"}"><b>${x.ok ? "✓" : "✗"}</b><span>${esc(x.k)} · ${esc(x.detail)}</span></li>`).join("")}</ul></details>`;
 }
-function cutHTML(c, v, which) {
-  const name = `${c.idx}${which === "short" ? "_short" : ""}`;
-  return qualityHTML(v) + `<div class="meta">${v.size_mb} MB · ${v.fps} fps · ${v.duration}s${v.cuts ? ` · ${v.cuts} cut${v.cuts > 1 ? "s" : ""}` : ""}${v.fillers_cut ? ` · ${v.fillers_cut} um/uh removed` : ""}${v.enhanced ? " · enhanced" : ""}</div>
-    <div class="acts"><button class="dl" data-share="${which}">Save / share</button><a class="sec" href="${v.url}" download="clip_${name}.mp4">Download</a><a class="sec" href="${URL.createObjectURL(new Blob([v.srt], { type: "text/plain" }))}" download="clip_${name}.srt">.srt</a></div>`;
+function vmeta(v) {
+  return `${v.duration}s · ${v.W && v.H ? `${v.W}×${v.H}` : ""} · ${v.size_mb} MB${v.cuts ? ` · ${v.cuts} cut${v.cuts > 1 ? "s" : ""}` : ""}${v.fillers_cut ? ` · ${v.fillers_cut} um/uh` : ""}`;
 }
-function renderResults(title, dropped) {
-  const plat = X.F.platforms[opts.platform];
-  const order = opts.platform !== "all" ? [opts.platform] : ["tiktok", "reels", "shorts", "facebook"];
-  const pub = order.map(k => X.F.platforms[k]?.publish?.length ? `<details class="card tight"><summary>Before you post on <b>${esc(X.F.platforms[k].name)}</b></summary><ul class="pub">${X.F.platforms[k].publish.map(x => `<li>${esc(x)}</li>`).join("")}</ul><div class="judge">Judge it by: ${X.F.platforms[k].judge.map(esc).join(" · ")}</div></details>` : "").join("");
-  $("#out").innerHTML = `<h2>${esc(title)}</h2><p class="pnote">Formatted for <b>${esc(plat.name)}</b>. ${esc(plat.note)}</p>${pub}` +
-    (dropped ? `<p class="pnote">The quality gate replaced ${dropped} clip${dropped > 1 ? "s" : ""} that failed a hard check.</p>` : "") +
-    `<div class="clips">` + results.map((c, i) => { c.idx = String(i + 1).padStart(2, "0"); const v = c.view === "short" && c.short ? c.short : c; return `
-    <article class="clip" data-i="${i}">
-      <video src="${v.url}" ${v.thumb ? `poster="${v.thumb}"` : ""} controls playsinline preload="metadata"></video>
-      <div class="b">
-        ${c.short ? `<div class="vtabs"><button data-cut="short" aria-pressed="${v === c.short}">Short · ${c.short.duration}s</button><button data-cut="long" aria-pressed="${v === c}">Long · ${c.duration}s</button></div>` : ""}
-        <div class="top"><span class="score">${c.score}</span><span class="when">${esc(c.range)}</span></div>
-        <div class="ttl">${esc((c.view === "short" && c.short ? c.short.title : c.title) || c.title)}</div>
-        <p class="why">${c.reasons.map(esc).join(" · ")}</p>
-        <ul class="check">${c.checklist.map(x => `<li class="${x.ok ? "ok" : "no"}"><b>${x.ok ? "✓" : "✗"}</b> ${esc(x.k)}<span class="ev">${esc(x.ev)}</span>${x.tip ? ` <span>${esc(x.tip)}</span>` : ""}</li>`).join("")}</ul>
-        <div class="cutbox">${cutHTML(c, v, v === c ? "long" : "short")}</div>
-        <button class="sec edbtn" data-edit>✎ Edit this cut: captions, trim, headline, style</button>
-        <div class="editor hide"></div>
-        <div class="copyrow">${order.filter(k => c.captions[k]).map(k => `<button class="sec" data-copy="${esc(c.captions[k])}">Copy ${PN[k]} caption</button>`).join("")}</div>
-        <details style="margin-top:10px"><summary>Log a post</summary>${logForm(i, !!c.short)}</details>
+function fileBase(c, which) { return `${c.idx}${which === "short" ? "-short" : c.short ? "-long" : ""}-${slug(which === "short" ? c.short.title : c.title, 40)}`; }
+const srtURL = v => v.srtHref || (v.srtURL ||= URL.createObjectURL(new Blob([v.srt], { type: "text/plain" })));
+const blobOf = async v => v.blob ||= await fetch(v.url).then(r => { if (!r.ok) throw new Error("Couldn't fetch the clip from the desktop app."); return r.blob(); });
+const srtOf = async v => v.srt ??= await fetch(v.srtHref).then(r => r.ok ? r.text() : "");
+function cardHTML(c) {
+  const v = cutOf(c), which = v === c ? "long" : "short", ar = (v.look?.format || "9:16").replace(":", "/");
+  const order = active.o.platform !== "all" ? [active.o.platform] : ["tiktok", "reels", "shorts", "facebook"];
+  const job = jobFor(c, which) || jobFor(c, which === "long" ? "short" : "long");
+  return `<article class="clip${c.uid === selUid ? " sel" : ""}" data-uid="${c.uid}">
+    <div class="vw"><video src="${v.url}" ${v.thumb ? `poster="${v.thumb}"` : ""} controls playsinline preload="metadata" style="--ar:${ar}"></video>
+      <div class="badge">${c.custom ? `<span class="score mine">Yours</span>` : `<span class="score" title="Moment score">${c.score}</span>`}</div>
+      ${job && job.state !== "done" && job.state !== "failed" ? `<div class="rendering">${esc(jobLabel(job))}</div>` : ""}</div>
+    <div class="b">
+      ${c.short ? `<div class="vtabs" role="group" aria-label="Cut"><button data-cut="short" aria-pressed="${v === c.short}">Short ${c.short.duration}s</button><button data-cut="long" aria-pressed="${v === c}">Long ${c.duration}s</button></div>` : ""}
+      <div class="row"><span class="when">${esc(c.idx)} · ${esc(v.range || c.range)}</span></div>
+      <h3 class="ttl">${esc(v.title || c.title)}</h3>
+      ${c.reasons?.length ? `<p class="why">${c.reasons.map(esc).join(" · ")}</p>` : ""}
+      <div class="cutbox">${qualityHTML(v)}<div class="vmeta">${vmeta(v)}</div></div>
+      <div class="acts">
+        <button class="btn sm grow" data-edit>${icon("edit")}Edit</button>
+        <button class="btn sm keep" data-keep aria-pressed="${!!c.kept}" aria-label="Keep this clip (K)">${icon("star")}Keep</button>
+        <button class="btn sm" data-share="${which}" aria-label="Download this cut">${icon("dl")}</button>
       </div>
-    </article>`; }).join("") + `</div>`;
-  $("#out").querySelectorAll(".logf").forEach(setMetricLabels);
+      <details class="more"><summary>More: captions, .srt, checklist, log a post</summary><div class="in-more">
+        <div class="copyrow">${order.filter(k => c.captions?.[k]).map(k => `<button class="btn sm" data-copy="${esc(c.captions[k])}">Copy ${PN[k]} caption</button>`).join("")}</div>
+        <a class="btn sm" href="${srtURL(v)}" download="${fileBase(c, which)}.srt">${icon("dl")}Subtitles (.srt)</a>
+        ${c.checklist?.length ? `<ul class="check">${c.checklist.map(x => `<li class="${x.ok ? "ok" : "no"}"><b>${x.ok ? "✓" : "✗"}</b><span>${esc(x.k)} <span class="ev">${esc(x.ev)}</span>${x.tip ? ` ${esc(x.tip)}` : ""}</span></li>`).join("")}</ul>` : ""}
+        ${logForm(c)}
+      </div></details>
+    </div></article>`;
 }
-
+function renderBoard() {
+  const s = active;
+  $("#empty").classList.toggle("hide", !!s);
+  $("#board").classList.toggle("hide", !s || !s.clips.length);
+  $("#nClips").textContent = s?.clips.length ? s.clips.length : "";
+  const out = $("#out");
+  if (!s) { out.innerHTML = ""; return; }
+  if (!s.clips.length) {
+    if (s.remote && !s.loaded) { out.innerHTML = `<div class="card note" style="color:var(--mute);padding:24px;text-align:center">Loading "${esc(s.name)}"…</div>`; return; }
+    const note = t => `<div class="card note msg-note" style="color:var(--mute);font-size:14px;padding:24px;border:1px dashed var(--line2);border-radius:12px;text-align:center">${t}</div>`;
+    out.innerHTML = s.status === "error" ? `<div class="card err">${linkDesktop(esc(s.err))}</div>`
+      : s.status === "done" ? `<div class="card msg">No moment in "${esc(s.title)}" passed the quality gate. Try a different video, or turn off "Cut dead air" under Edits.</div>`
+      : s.status === "running" ? note("Working on it. Clips appear here as each one passes the quality gate.")
+      : s.status === "queued" ? note(`"${esc(s.title)}" is in the queue.`)
+      : note(`<b style="color:var(--text)">${esc(s.name)}</b> is ready. Check the settings on the left, then press <b style="color:var(--text)">Find the moments</b>.`);
+    return;
+  }
+  const plat = X.F.platforms[s.o.platform];
+  $("#bTitle").textContent = s.title;
+  $("#bMeta").textContent = `${s.clips.length} clip${s.clips.length > 1 ? "s" : ""} · formatted for ${plat.name} · ${plat.note}` +
+    (s.dropped ? ` · The quality gate replaced ${s.dropped} clip${s.dropped > 1 ? "s" : ""} that failed a hard check.` : "");
+  const kept = s.clips.filter(c => c.kept).length;
+  $("#nKept").textContent = kept || "";
+  $("#fAll").setAttribute("aria-pressed", !filterKept); $("#fKept").setAttribute("aria-pressed", filterKept);
+  const list = boardList();
+  $("#zipLabel").textContent = filterKept ? `Download kept (${list.length})` : `Download all (${list.length})`;
+  $("#zip").disabled = !list.length;
+  const order = s.o.platform !== "all" ? [s.o.platform] : ["tiktok", "reels", "shorts", "facebook"];
+  const cap = s.capped ? `<p class="capnote">${IS_IOS ? "On iPhone and iPad" : "In Safari"}, only the first 80 seconds of this ${X.fmtT(s.capped)} video were clipped: past that, Safari's engine runs out of memory. ` +
+    `For the whole video, use Chrome, Edge or Firefox on a computer, or ${linkDesktop("the free desktop app")}.</p>` : "";
+  $("#bNotes").innerHTML = cap + `<details class="tips"><summary>Before you post: platform checklist</summary><div class="cols">${order.map(k => X.F.platforms[k]?.publish?.length ?
+    `<div><h3>${esc(X.F.platforms[k].name)}</h3><ul>${X.F.platforms[k].publish.map(x => `<li>${esc(x)}</li>`).join("")}</ul><p class="st">Judge it by: ${X.F.platforms[k].judge.map(esc).join(" · ")}</p></div>` : "").join("")}</div></details>`;
+  out.innerHTML = list.length ? `<div class="clips">${list.map(cardHTML).join("")}</div>`
+    : `<div class="card note" style="color:var(--mute);padding:24px;text-align:center;border:1px dashed var(--line2);border-radius:12px">No kept clips yet. Press <kbd>K</kbd> or the Keep button on a clip.</div>`;
+  out.querySelectorAll(".logf").forEach(setMetricLabels);
+}
+$("#fAll").onclick = () => { filterKept = false; renderBoard(); };
+$("#fKept").onclick = () => { filterKept = true; renderBoard(); };
+$("#sort").onchange = e => { sortBy = e.target.value; renderBoard(); };
+const findClip = uid => { for (const s of sessions) { const c = s.clips.find(x => x.uid === uid); if (c) return [s, c]; } return [null, null]; };
+function toggleKeep(c) {
+  c.kept = !c.kept;
+  const b = document.querySelector(`.clip[data-uid="${c.uid}"] [data-keep]`);
+  if (b) b.setAttribute("aria-pressed", c.kept);
+  $("#nKept").textContent = active.clips.filter(x => x.kept).length || "";
+  if (filterKept) renderBoard();
+  toast(c.kept ? "Kept" : "Removed from kept");
+}
+function select(uid, focus = true) {
+  selUid = uid;
+  $$("#out .clip").forEach(el => el.classList.toggle("sel", +el.dataset.uid === uid));
+  const el = document.querySelector(`.clip[data-uid="${uid}"]`);
+  if (el && focus) el.scrollIntoView({ block: "nearest", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+}
 $("#out").addEventListener("click", async e => {
   const cp = e.target.closest("[data-copy]");
-  if (cp) { try { await navigator.clipboard.writeText(cp.dataset.copy); } catch { const a = document.createElement("textarea"); a.value = cp.dataset.copy; document.body.appendChild(a); a.select(); document.execCommand("copy"); a.remove(); } toast("Caption copied"); return; }
+  if (cp) { await copyText(cp.dataset.copy); toast("Caption copied"); return; }
   const art = e.target.closest(".clip"); if (!art) return;
-  const c = results[+art.dataset.i];
+  const [s, c] = findClip(+art.dataset.uid); if (!c) return;
+  if (!e.target.closest("video, details, a, button, input, select")) select(c.uid, false);
   const cutBtn = e.target.closest("[data-cut]");
-  if (cutBtn) {
-    const v = cutBtn.dataset.cut === "short" ? c.short : c;
-    art.querySelectorAll("[data-cut]").forEach(x => x.setAttribute("aria-pressed", x === cutBtn));
-    const vid = art.querySelector("video"); vid.src = v.url; if (v.thumb) vid.poster = v.thumb;
-    art.querySelector(".cutbox").innerHTML = cutHTML(c, v, cutBtn.dataset.cut);
-    c.view = cutBtn.dataset.cut;
-    art.querySelector(".ttl").textContent = v.title || c.title;
-    art.querySelector(".editor").classList.add("hide");
-  }
-  if (e.target.closest("[data-edit]")) openEditor(art, c);
-  const nd = e.target.closest("[data-nudge]");
-  if (nd) { const [which, dir] = nd.dataset.nudge.split(":"); keepTyped(art, c); const r = X.nudge(c.wl, c.ed.start, c.ed.end, which, +dir); Object.assign(c.ed, r); drawEditor(art, c); }
-  const es = e.target.closest("[data-estyle]");
-  if (es) { c.ed.style = es.dataset.estyle; art.querySelectorAll("[data-estyle]").forEach(x => x.setAttribute("aria-pressed", x === es)); }
-  if (e.target.closest("[data-ecancel]")) art.querySelector(".editor").classList.add("hide");
-  if (e.target.closest("[data-rerender]")) rerender(art, c);
+  if (cutBtn) { c.view = cutBtn.dataset.cut; select(c.uid, false); const html = cardHTML(c); art.outerHTML = html; setMetricLabels(document.querySelector(`.clip[data-uid="${c.uid}"] .logf`)); return; }
+  if (e.target.closest("[data-edit]")) { select(c.uid, false); studio.open(s, c, c.view === "short" && c.short ? "short" : "long"); return; }
+  if (e.target.closest("[data-keep]")) { toggleKeep(c); return; }
   const sh = e.target.closest("[data-share]");
   if (sh) {
-    const v = sh.dataset.share === "short" ? c.short : c;
-    const f = new File([v.blob], `clip_${c.idx}${sh.dataset.share === "short" ? "_short" : ""}.mp4`, { type: "video/mp4" });
-    if (navigator.canShare?.({ files: [f] })) { try { await navigator.share({ files: [f], text: c.captions.tiktok }); } catch {} }
-    else { const a = document.createElement("a"); a.href = v.url; a.download = f.name; a.click(); }
+    const which = sh.dataset.share, v = which === "short" ? c.short : c;
+    const f = new File([await blobOf(v)], fileBase(c, which) + ".mp4", { type: "video/mp4" });
+    if (TIGHT && navigator.canShare?.({ files: [f] })) { try { await navigator.share({ files: [f], text: c.captions?.tiktok }); } catch {} }
+    else download(f, f.name);
   }
 });
-
-// ---------------------------------------------------------------- clip editor
-function openEditor(art, c) {
-  if (!S) return toast("Run a video first.");
-  const cut = c.view === "short" && c.short ? "short" : "long", v = cut === "short" ? c.short : c;
-  c.wl ??= S.words.map(w => ({ ...w }));                       // this clip's own editable copy of the transcript
-  c.ed = { cut, start: v.start, end: v.end, title: v.title ?? c.title, style: S.o.style || "pop" };
-  drawEditor(art, c);
-  art.querySelector(".editor").classList.remove("hide");
-  art.querySelector(".editor").scrollIntoView({ behavior: "smooth", block: "nearest" });
-}
-function drawEditor(art, c) {
-  const ed = c.ed;
-  c.lines = X.captionLines(c.wl, ed.start, ed.end);
-  art.querySelector(".editor").innerHTML = `
-    <label class="t">Headline (first 3 seconds)</label>
-    <input class="txt ed-title" maxlength="90" value="${esc(ed.title)}">
-    <label class="t">Trim <span class="st">${X.fmtT(ed.start)}.${String(Math.round(ed.start * 10) % 10)} → ${X.fmtT(ed.end)}.${String(Math.round(ed.end * 10) % 10)} · ${(ed.end - ed.start).toFixed(1)}s before cuts</span></label>
-    <div class="trim"><span>Start</span><button class="sec" data-nudge="start:-1">◀ earlier</button><button class="sec" data-nudge="start:1">later ▶</button></div>
-    <div class="trim"><span>End</span><button class="sec" data-nudge="end:-1">◀ earlier</button><button class="sec" data-nudge="end:1">later ▶</button></div>
-    <label class="t">Captions: fix any misheard words</label>
-    <div class="lines">${c.lines.map((l, i) => `<input class="txt ed-line" data-line="${i}" value="${esc(l.text)}" aria-label="Caption line ${i + 1}">`).join("") || '<p class="msg">No speech in this cut.</p>'}</div>
-    <label class="t">Caption style</label>
-    <div class="chips">${Object.entries(X.STYLES).map(([k, n]) => `<button class="chip" data-estyle="${k}" aria-pressed="${k === ed.style}">${esc(n)}</button>`).join("")}</div>
-    <div class="acts" style="margin-top:14px"><button class="dl" data-rerender>Re-render this cut</button><button class="sec" data-ecancel>Close</button></div>
-    <p class="pnote ed-status"></p>`;
-}
-function keepTyped(art, c) {          // fold typed caption fixes into the clip's transcript before redrawing
-  const texts = [...art.querySelectorAll(".ed-line")].map(x => x.value);
-  if (texts.length) X.applyLineEdits(c.wl, c.lines, texts);
-  c.ed.title = art.querySelector(".ed-title")?.value.trim() ?? c.ed.title;
-}
-async function rerender(art, c) {
-  if (busy) return toast("Wait for the current render to finish.");
-  keepTyped(art, c);
-  const ed = c.ed, btn = art.querySelector("[data-rerender]"), status = art.querySelector(".ed-status");
-  const m = { start: ed.start, end: ed.end, title: ed.title, words: c.wl.filter(w => w.s >= ed.start - 0.5 && w.s <= ed.end + 0.5) };
-  const o = { ...S.o, style: ed.style };
-  busy = true; btn.disabled = true;
+$("#zip").onclick = async () => {
+  const list = boardList(); if (!list.length) return;
+  const btn = $("#zip"); btn.disabled = true; $("#zipLabel").textContent = "Packing…";
   try {
-    const r = await makeCut(S.path, S.info, m, o, ed.cut === "long" && S.version !== "short" ? S.cta : "", x => { btn.textContent = `Rendering… ${Math.round(x)}%`; });
-    if (!passed(r.quality)) { status.textContent = "That edit failed the quality gate (see the badge). Your previous version is kept."; return; }
-    const target = ed.cut === "short" ? c.short : c;
-    URL.revokeObjectURL(target.url); if (target.thumb) URL.revokeObjectURL(target.thumb);
-    Object.assign(target, r, { start: ed.start, end: ed.end, title: ed.title, range: `${X.fmtT(ed.start)}–${X.fmtT(ed.end)}` });
-    if (ed.cut === "long") c.title = ed.title;
-    c.view = ed.cut;
-    renderResults(S.title, 0);
-    toast("Re-rendered and re-checked");
-  } catch (err) { status.textContent = "⚠ " + (err.message || err); }
-  finally { busy = false; if (btn.isConnected) { btn.disabled = false; btn.textContent = "Re-render this cut"; } }
+    const files = [];
+    for (const c of list) {
+      for (const which of c.short ? ["short", "long"] : ["long"]) {
+        const v = which === "short" ? c.short : c, base = fileBase(c, which);
+        files.push({ name: base + ".mp4", data: await blobOf(v) }, { name: base + ".srt", data: await srtOf(v) });
+      }
+      const caps = Object.entries(c.captions || {}).map(([k, t]) => `${PN[k] || k}\n${t}\n`).join("\n");
+      files.push({ name: `${c.idx}-captions.txt`, data: `${c.title}\n${c.range}${c.score != null ? ` · score ${c.score}` : ""}\n\n${caps}` });
+    }
+    download(await zip(files), `${slug(active.title)}-clips.zip`);
+    toast(`Packed ${list.length} clip${list.length > 1 ? "s" : ""}`);
+  } catch (err) { toast(err.message || "Couldn't make the .zip"); }
+  finally { btn.disabled = false; renderBoard(); }
+};
+
+// ---------------------------------------------------------------- transcript tab
+const txState = { dirty: true, sid: null, a: null, b: null, anchor: null, hits: [], cur: -1 };
+function renderTranscript() {
+  const s = active, tx = $("#tx");
+  if (!s?.words?.length) {
+    tx.innerHTML = `<p class="msg" style="display:block">${s ? (s.status === "running" ? "The transcript appears here once speech recognition finishes." : "Run this video to get its transcript.") : "Add a video to see its transcript."}</p>`;
+    $("#mkclip").disabled = true; $("#selinfo").textContent = ""; txState.sid = null;
+    return;
+  }
+  if (!txState.dirty && txState.sid === s.id) return;
+  txState.dirty = false; txState.sid = s.id; txState.a = txState.b = txState.anchor = null;
+  const inClip = new Array(s.words.length).fill(false);
+  for (const c of s.clips) for (const v of [c, c.short]) if (v) s.words.forEach((w, i) => { if (w.s >= v.start && w.s <= v.end) inClip[i] = true; });
+  const paras = []; let cur = null;
+  s.words.forEach((w, i) => {
+    if (!cur || w.s - s.words[i - 1].e > 1.2 || (cur.n > 40 && /[.?!]$/.test(s.words[i - 1].w))) { cur = { t: w.s, html: [], n: 0 }; paras.push(cur); }
+    cur.html.push(`<w data-i="${i}" class="${inClip[i] ? "inclip" : ""}${X.F.fillerSet.has(w.w.toLowerCase().replace(/[^a-z]/g, "")) ? " filler" : ""}">${esc(w.w)}</w>`); cur.n++;
+  });
+  tx.innerHTML = paras.map(p => `<p><button class="tcb" data-t="${p.t}" aria-label="Open the studio at ${X.fmtT(p.t)}">${X.fmtT(p.t)}</button><span>${p.html.join(" ")}</span></p>`).join("");
+  paintSel(); runSearch();
 }
+function paintSel() {
+  $$("#tx w.on").forEach(el => el.classList.remove("on"));
+  const s = active, { a, b } = txState;
+  if (a == null || !s?.words) { $("#mkclip").disabled = true; $("#selinfo").textContent = ""; return; }
+  const words = $$("#tx w");
+  for (let i = a; i <= b; i++) words[i]?.classList.add("on");
+  const t0 = s.words[a].s, t1 = s.words[b].e, d = t1 - t0;
+  $("#selinfo").textContent = `${fmtTC(t0)} → ${fmtTC(t1)} · ${d.toFixed(1)}s${d < 3 ? " · select at least 3 s" : ""}`;
+  $("#mkclip").disabled = d < 3;
+}
+function selFromRange() {
+  const sel = getSelection(); if (!sel || sel.isCollapsed || !sel.rangeCount) return false;
+  const r = sel.getRangeAt(0); if (!$("#tx").contains(r.commonAncestorContainer)) return false;
+  const hit = $$("#tx w").filter(el => r.intersectsNode(el) && el.textContent.trim());
+  if (!hit.length) return false;
+  txState.a = +hit[0].dataset.i; txState.b = +hit.at(-1).dataset.i; txState.anchor = txState.a;
+  paintSel(); return true;
+}
+$("#tx").addEventListener("mouseup", e => {
+  if (e.target.closest(".tcb")) return;
+  if (selFromRange()) return;
+  const w = e.target.closest("w"); if (!w) return;
+  const i = +w.dataset.i;
+  if (e.shiftKey && txState.anchor != null) { txState.a = Math.min(txState.anchor, i); txState.b = Math.max(txState.anchor, i); }
+  else { txState.anchor = txState.a = txState.b = i; }
+  paintSel();
+});
+$("#tx").addEventListener("keyup", () => selFromRange());
+$("#tx").addEventListener("click", e => {
+  const b = e.target.closest(".tcb"); if (!b || !active) return;
+  const t = +b.dataset.t, c = active.clips.find(x => t >= x.start - 1 && t <= x.end);
+  if (c) studio.open(active, c, "long", t); else studio.openNew(active, t, t + 15);
+});
+$("#mkclip").onclick = () => {
+  const s = active, { a, b } = txState; if (a == null) return;
+  studio.openNew(s, s.words[a].s, s.words[b].e, s.words.slice(a, b + 1).map(w => w.w).join(" "));
+};
+const norm = w => w.toLowerCase().replace(/[^\p{L}\p{N}']/gu, "");
+function runSearch() {
+  const q = $("#txq").value.trim(), s = active;
+  $$("#tx w.hit").forEach(el => el.classList.remove("hit", "cur"));
+  txState.hits = []; txState.cur = -1;
+  if (!q || !s?.words) { $("#txhits").textContent = ""; return; }
+  const toks = q.split(/\s+/).map(norm).filter(Boolean), ws = s.words.map(w => norm(w.w)), els = $$("#tx w");
+  for (let i = 0; i + toks.length <= ws.length; i++) {
+    if (toks.every((t, k) => k === toks.length - 1 ? ws[i + k].startsWith(t) : ws[i + k] === t)) {
+      txState.hits.push(i); for (let k = 0; k < toks.length; k++) els[i + k]?.classList.add("hit");
+    }
+  }
+  $("#txhits").textContent = txState.hits.length ? `0/${txState.hits.length}` : "0";
+  if (txState.hits.length) stepHit(1);
+}
+function stepHit(d) {
+  const h = txState.hits; if (!h.length) return;
+  $$("#tx w.cur").forEach(el => el.classList.remove("cur"));
+  txState.cur = (txState.cur + d + h.length) % h.length;
+  const els = $$("#tx w"), i = h[txState.cur], n = $("#txq").value.trim().split(/\s+/).filter(Boolean).length;
+  for (let k = 0; k < n; k++) els[i + k]?.classList.add("cur");
+  els[i]?.scrollIntoView({ block: "center" });
+  $("#txhits").textContent = `${txState.cur + 1}/${h.length}`;
+}
+$("#txq").addEventListener("input", runSearch);
+$("#txq").addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); stepHit(e.shiftKey ? -1 : 1); } });
+$("#txnext").onclick = () => stepHit(1);
+$("#txprev").onclick = () => stepHit(-1);
+
+// ---------------------------------------------------------------- workspace tabs
+const TABS = { tClips: "pClips", tTx: "pTx", tLog: "pLog" };
+function showTab(id) {
+  for (const [t, p] of Object.entries(TABS)) { $("#" + t).setAttribute("aria-selected", t === id); $("#" + p).hidden = t !== id; }
+  if (id === "tTx") renderTranscript();
+  if (id === "tLog") loadLog();
+}
+for (const t of Object.keys(TABS)) $("#" + t).onclick = () => showTab(t);
+$(".wtabs").addEventListener("keydown", e => {
+  if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
+  const ids = Object.keys(TABS), i = ids.indexOf(document.activeElement.id); if (i < 0) return;
+  const n = ids[(i + (e.key === "ArrowRight" ? 1 : -1) + ids.length) % ids.length]; showTab(n); $("#" + n).focus();
+});
 
 // ---------------------------------------------------------------- results log (stored on this device)
 const LOGKEY = "clipmachine.log";
-const readLog = () => { try { return JSON.parse(localStorage.getItem(LOGKEY) || "[]"); } catch { return []; } };
-const writeLog = rows => { try { localStorage.setItem(LOGKEY, JSON.stringify(rows)); } catch {} };
-function logForm(i, hasShort) {
-  const def = opts.platform !== "all" ? opts.platform : "tiktok";
-  return `<form class="logf" data-clip="${i}">
-    <select name="platform">${Object.keys(PN).map(k => `<option value="${k}" ${k === def ? "selected" : ""}>${PN[k]}</option>`).join("")}</select>
-    <select name="cut">${hasShort ? `<option value="short">Short cut</option><option value="long">Long cut</option>` : `<option value="single">Clip</option>`}</select>
-    <input name="posted" type="date" aria-label="Posted on"><select name="checkpoint"><option>24h</option><option>7d</option></select>
-    <input name="views" inputmode="numeric" placeholder="Views" class="wide">
-    <input name="metric1"><input name="metric2"><input name="metric3" class="wide">
-    <input name="notes" placeholder="Notes: what you changed (one variable at a time)" class="wide">
-    <button class="dl wide" type="submit">Save result</button></form>`;
+const readLog = () => store.get(LOGKEY, []);
+const writeLog = rows => store.set(LOGKEY, rows);
+function logForm(c) {
+  const def = active?.o?.platform !== "all" ? active.o.platform : "tiktok";
+  return `<form class="logf" data-uid="${c.uid}"><span class="wide st">Log a post</span>
+    <select name="platform" aria-label="Platform">${Object.keys(PN).map(k => `<option value="${k}" ${k === def ? "selected" : ""}>${PN[k]}</option>`).join("")}</select>
+    <select name="cut" aria-label="Cut">${c.short ? `<option value="short">Short cut</option><option value="long">Long cut</option>` : `<option value="single">Clip</option>`}</select>
+    <input name="posted" type="date" aria-label="Posted on"><select name="checkpoint" aria-label="Checkpoint"><option>24h</option><option>7d</option></select>
+    <input name="views" inputmode="numeric" placeholder="Views" aria-label="Views" class="wide">
+    <input name="metric1" aria-label="Metric 1"><input name="metric2" aria-label="Metric 2"><input name="metric3" aria-label="Metric 3" class="wide">
+    <input name="notes" placeholder="Notes: what you changed (one variable at a time)" aria-label="Notes" class="wide">
+    <button class="btn sm pri wide" type="submit">Save result</button></form>`;
 }
-function setMetricLabels(f) { const p = X.F.platforms[f.platform.value]; ["metric1", "metric2", "metric3"].forEach((n, i) => f[n].placeholder = p.judge[i] || n); }
+function setMetricLabels(f) { if (!f) return; const p = X.F.platforms[f.platform.value]; ["metric1", "metric2", "metric3"].forEach((n, i) => { f[n].placeholder = p.judge[i] || n; f[n].setAttribute("aria-label", p.judge[i] || n); }); }
 $("#out").addEventListener("change", e => { const f = e.target.closest(".logf"); if (f && e.target.name === "platform") setMetricLabels(f); });
 $("#out").addEventListener("submit", e => {
   const f = e.target.closest(".logf"); if (!f) return; e.preventDefault();
-  const c = results[+f.dataset.clip], p = X.F.platforms[f.platform.value], row = Object.fromEntries(new FormData(f));
+  const [, c] = findClip(+f.dataset.uid); if (!c) return;
+  const p = X.F.platforms[f.platform.value], row = Object.fromEntries(new FormData(f));
   ["metric1", "metric2", "metric3"].forEach((n, i) => { if (row[n]) row[n] = `${p.judge[i] || n}: ${row[n]}`; });
   Object.assign(row, { id: Math.random().toString(36).slice(2, 10), logged: new Date().toISOString().slice(0, 16).replace("T", " "), title: c.title });
   writeLog([...readLog(), row]); f.reset(); setMetricLabels(f); loadLog(); toast("Result saved on this device");
 });
 function loadLog() {
   const rows = readLog();
-  $("#logtbl").innerHTML = rows.length ? `<div class="lwrap"><table class="ltable"><tr><th>Platform</th><th>Clip</th><th>At</th><th>Views</th><th>Metrics</th><th></th></tr>` +
-    rows.slice().reverse().map(r => `<tr><td>${esc(PN[r.platform] || r.platform)}<br><span class="st">${esc(r.posted)}</span></td><td>${esc(r.title).slice(0, 40)}<br><span class="st">${esc(r.cut)}</span></td><td>${esc(r.checkpoint)}</td><td>${esc(r.views)}</td><td>${[r.metric1, r.metric2, r.metric3].filter(Boolean).map(esc).join("<br>")}${r.notes ? `<br><span class="st">${esc(r.notes)}</span>` : ""}</td><td><button class="x" data-dellog="${r.id}" aria-label="Delete">✕</button></td></tr>`).join("") + `</table></div>` : "No results logged yet.";
+  $("#logtbl").innerHTML = rows.length ? `<div class="lwrap"><table class="ltable"><tr><th>Platform</th><th>Clip</th><th>At</th><th>Views</th><th>Metrics</th><th><span class="sr">Delete</span></th></tr>` +
+    rows.slice().reverse().map(r => `<tr><td>${esc(PN[r.platform] || r.platform)}<br><span class="st">${esc(r.posted)}</span></td><td>${esc(String(r.title ?? "").slice(0, 40))}<br><span class="st">${esc(r.cut)}</span></td><td>${esc(r.checkpoint)}</td><td>${esc(r.views)}</td><td>${[r.metric1, r.metric2, r.metric3].filter(Boolean).map(esc).join("<br>")}${r.notes ? `<br><span class="st">${esc(r.notes)}</span>` : ""}</td><td><button class="x" data-dellog="${r.id}" aria-label="Delete">${icon("x")}</button></td></tr>`).join("") + `</table></div>` : "No results logged yet.";
 }
 $("#logtbl").addEventListener("click", e => { const d = e.target.closest("[data-dellog]"); if (d && confirm("Delete this entry?")) { writeLog(readLog().filter(r => r.id !== d.dataset.dellog)); loadLog(); } });
 $("#csv").onclick = () => {
   const cols = ["logged", "platform", "cut", "title", "posted", "checkpoint", "views", "metric1", "metric2", "metric3", "notes"];
   const q = v => `"${String(v ?? "").replace(/"/g, '""')}"`;
-  const csv = [cols.join(","), ...readLog().map(r => cols.map(k => q(r[k])).join(","))].join("\n");
-  const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv" })); a.download = "clip_results.csv"; a.click();
+  download(new Blob([[cols.join(","), ...readLog().map(r => cols.map(k => q(r[k])).join(","))].join("\n")], { type: "text/csv" }), "clip_results.csv");
 };
+
+// ---------------------------------------------------------------- keyboard
+$("#keysBtn").onclick = () => $("#keys").showModal();
+$("#keys").addEventListener("click", e => { if (e.target.closest("[data-close]") || e.target === $("#keys")) $("#keys").close(); });
+addEventListener("keydown", e => {
+  if (studio.isOpen()) return;                          // the studio has its own keys
+  if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); if (!$("#go").disabled) go(); return; }
+  if (typing(e) || e.metaKey || e.ctrlKey || e.altKey) return;
+  if (e.key === "?") { e.preventDefault(); $("#keys").open ? $("#keys").close() : $("#keys").showModal(); return; }
+  if ($("#pClips").hidden || $("#keys").open) return;
+  const list = boardList(); if (!list.length) return;
+  const i = list.findIndex(c => c.uid === selUid);
+  const cols = Math.max(1, Math.round($("#out .clips")?.clientWidth / ($("#out .clip")?.offsetWidth + 16)) || 1);
+  const mv = { ArrowRight: 1, ArrowLeft: -1, ArrowDown: cols, ArrowUp: -cols }[e.key];
+  if (mv) { e.preventDefault(); select(list[Math.min(list.length - 1, Math.max(0, i < 0 ? 0 : i + mv))].uid); return; }
+  const c = list[i]; if (!c) return;
+  if (e.key === "Enter" && !e.target.closest("button, a, summary, video")) { e.preventDefault(); studio.open(active, c, c.view === "short" && c.short ? "short" : "long"); }
+  else if (e.key.toLowerCase() === "k") { e.preventDefault(); toggleKeep(c); }
+  else if (e.key === " " && !e.target.closest("button, a, summary, video")) { e.preventDefault(); const v = document.querySelector(`.clip[data-uid="${c.uid}"] video`); v.paused ? v.play() : v.pause(); }
+});
+
+// ---------------------------------------------------------------- studio
+const studio = createStudio({
+  X, esc, toast, fmtTC, icon, IS_WEBKIT,
+  list: () => boardList(), srcURL, lookFrom, queueRender, jobFor, jobLabel,
+  onClose(c) { renderBoard(); if (c) { select(c.uid); document.querySelector(`.clip[data-uid="${c.uid}"] [data-edit]`)?.focus(); } },
+  onWords(sess) { txState.dirty = true; if (sess === active && !$("#pTx").hidden) renderTranscript(); },
+});
+
+// ---------------------------------------------------------------- empty-state reel (a decorative scrolling waveform with in/out marks)
+(function reel() {
+  const cv = $("#reel"); if (!cv) return;
+  const ctx = cv.getContext("2d"), still = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const bars = Array.from({ length: 400 }, (_, i) => 0.25 + 0.75 * Math.abs(Math.sin(i * 0.37) * Math.sin(i * 0.071 + 1) + 0.25 * Math.sin(i * 1.7)));
+  let off = 0;
+  function draw() {
+    if ($("#empty").classList.contains("hide")) { requestAnimationFrame(draw); return; }
+    const dpr = devicePixelRatio || 1, w = cv.clientWidth, h = cv.clientHeight;
+    if (cv.width !== w * dpr) { cv.width = w * dpr; cv.height = h * dpr; }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0); ctx.clearRect(0, 0, w, h);
+    const bw = 4, n = Math.ceil(w / bw) + 1, a = w * 0.36, b = w * 0.64;
+    for (let k = 0; k < n; k++) {
+      const x = k * bw - (off % bw), v = bars[(Math.floor(off / bw) + k) % bars.length], bh = v * (h - 30);
+      ctx.fillStyle = x > a && x < b ? "#f2c230" : "#3a3e47";
+      ctx.fillRect(x, (h - bh) / 2, bw - 1.5, bh);
+    }
+    ctx.fillStyle = "rgba(242,194,48,.10)"; ctx.fillRect(a, 0, b - a, h);
+    ctx.fillStyle = "#f2c230"; ctx.fillRect(a - 2, 0, 3, h); ctx.fillRect(b, 0, 3, h);
+    ctx.fillRect(a - 2, 0, 10, 3); ctx.fillRect(b - 7, 0, 10, 3); ctx.fillRect(a - 2, h - 3, 10, 3); ctx.fillRect(b - 7, h - 3, 10, 3);
+    ctx.fillStyle = "#ff5a4e"; ctx.fillRect(a + (b - a) * ((off / 3) % 100) / 100, 0, 2, h);
+    if (!still) { off += 0.6; requestAnimationFrame(draw); }
+  }
+  draw();
+})();
 
 // ---------------------------------------------------------------- boot
 // offline support: app files + ffmpeg core are cached after the first visit (http(s) only, not file://)
-if ("serviceWorker" in navigator && location.protocol.startsWith("http")) navigator.serviceWorker.register("sw.js").catch(() => {});
+// (the service worker is registered after the desktop check below: the desktop app's pages aren't cached)
 await X.loadFormula();
-showPlat(); loadLog();
-// URL presets, e.g. ?platform=tiktok&n=1&version=short (handy for sharing a setup)
-for (const [k, v] of new URLSearchParams(location.search)) document.querySelector(`.chips[data-k="${k}"] .chip[data-v="${CSS.escape(v)}"]`)?.click();
-const src = new URLSearchParams(location.search).get("src");   // e.g. ?src=sample.mp4 (same-origin or CORS-enabled)
+if (!/github\.io$/.test(location.hostname) && location.protocol.startsWith("http")) {
+  try { const r = await fetch("api/info", { cache: "no-store" }); if (r.ok) { const j = await r.json(); if (j.desktop) await enterDesktop(j); } } catch {}
+}
+if (!DESK && "serviceWorker" in navigator && location.protocol.startsWith("http")) navigator.serviceWorker.register("sw.js").catch(() => {});
+fillPresets("");
+if (innerWidth < 1000) $$(".grp[open]").forEach(d => { d.open = false; });   // phones: settings folded so the button and progress stay in reach
+const params = new URLSearchParams(location.search);
+// URL presets, e.g. ?platform=tiktok&n=1&version=short (handy for sharing a setup) win over the last-used settings
+const urlSet = [...params.keys()].some(k => k in DEF);
+applySettings(urlSet ? {} : store.get(LKEY, {}));
+for (const [k, v] of params) if (k in DEF) setChip(k, v, false);
+loadLog(); paintQueue(); renderBoard();
+const src = params.get("src");   // e.g. ?src=sample.mp4 (same-origin or CORS-enabled)
 if (src) {
   try {
     const f = await fetchVideo(new URL(src, location.href).href, (p, m) => setStage("Fetching video…", p ?? 0, m));
-    useFile(f);
     $("#prog").classList.add("hide");
-    if (new URLSearchParams(location.search).get("auto") === "1") go(f);
+    addFiles([f]);
+    if (params.get("auto") === "1") go();
   } catch (e) { $("#prog").classList.add("hide"); toast("Couldn't load ?src video"); }
 }

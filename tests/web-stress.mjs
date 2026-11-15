@@ -20,7 +20,7 @@ const pick = name => !want.length || want.some(w => name.includes(w));
 
 // ---- tiny static server (correct MIME types for modules + wasm)
 const MIME = { ".html": "text/html", ".js": "text/javascript", ".mjs": "text/javascript", ".json": "application/json",
-  ".wasm": "application/wasm", ".css": "text/css", ".svg": "image/svg+xml", ".ttf": "font/ttf", ".png": "image/png", ".mp4": "video/mp4", ".webmanifest": "application/manifest+json" };
+  ".wasm": "application/wasm", ".css": "text/css", ".svg": "image/svg+xml", ".ttf": "font/ttf", ".png": "image/png", ".woff2": "font/woff2", ".mp4": "video/mp4", ".webmanifest": "application/manifest+json" };
 const server = createServer(async (req, res) => {
   const p = decodeURIComponent(new URL(req.url, "http://x").pathname);
   const f = join(DOCS, p.endsWith("/") ? p + "index.html" : p);
@@ -61,7 +61,9 @@ async function waitDone(page, timeoutMs) {
   // done = an error card, a "no moment" card, or results with the progress bar hidden; a crashed tab fails fast
   const crashed = new Promise((_, bad) => page.once("crash", () => bad(new Error("the browser tab crashed (likely out of memory)"))));
   const tick = process.env.VERBOSE ? setInterval(async () => console.log("   …", (await page.locator("#prog").textContent().catch(() => "")).replace(/\s+/g, " ").slice(0, 90)), 30000) : null;
-  try { await Promise.race([crashed, waitDoneInner(page, timeoutMs)]); } finally { clearInterval(tick); }
+  // a frozen WebKit tab can stall Playwright's own timeout, so also race a plain wall clock
+  let hard; const wall = new Promise((_, bad) => { hard = setTimeout(() => bad(Object.assign(new Error("the tab froze (no response)"), { froze: true })), timeoutMs + 30000); });
+  try { await Promise.race([crashed, wall, waitDoneInner(page, timeoutMs)]); } finally { clearInterval(tick); clearTimeout(hard); }
 }
 async function waitDoneInner(page, timeoutMs) {
   await page.waitForFunction(() => {
@@ -92,22 +94,24 @@ async function checkClips(page) {
 }
 
 async function runEditor(page) {
-  // open the editor on the first clip, trim the end one word earlier, fix a caption, switch style, re-render
-  const art = page.locator("#out .clip").first();
+  // open the first clip in the studio, trim the end one word earlier, fix a caption, switch style, render
+  const art = page.locator("#out .clip").first(), uid = await art.getAttribute("data-uid");
   await art.locator("[data-edit]").click();
-  await art.locator(".editor:not(.hide)").waitFor({ timeout: 10000 });
-  const before = await art.locator(".editor label.t").nth(1).textContent();
-  await art.locator('[data-nudge="end:-1"]').click();
-  const after = await art.locator(".editor label.t").nth(1).textContent();
-  const line = art.locator(".ed-line").first();
-  if (await line.count()) await line.fill((await line.inputValue()).toUpperCase());
-  await art.locator('[data-estyle="boxed"]').click();
-  const oldSrc = await art.locator("video").getAttribute("src");
-  await art.locator("[data-rerender]").click();
-  await page.waitForFunction(old => { const v = document.querySelector("#out .clip video"); const st = document.querySelector("#out .clip .ed-status");
-    return (v && v.getAttribute("src") !== old) || (st && st.textContent.includes("⚠")); }, oldSrc, { timeout: 900000, polling: 1000 });
-  const status = await page.locator("#out .clip .ed-status").first().textContent().catch(() => "");
-  const newSrc = await page.locator("#out .clip video").first().getAttribute("src");
+  await page.locator("#studio:not(.hide)").waitFor({ timeout: 10000 });
+  const before = await page.locator("#stLen").textContent();
+  await page.click('[data-nudge="end:-1"]');
+  const after = await page.locator("#stLen").textContent();
+  const line = page.locator("#studio .ed-line").first();
+  if (await line.count()) { await line.fill((await line.inputValue()).toUpperCase()); await line.dispatchEvent("change"); }
+  await page.click("#stTabLook");
+  await page.click('[data-estyle="boxed"]');
+  const sel = `#out .clip[data-uid="${uid}"] video`, oldSrc = await page.locator(sel).getAttribute("src");
+  await page.click("#stRender");
+  await page.waitForFunction(([s, old]) => { const v = document.querySelector(s), st = document.querySelector("#stStatus");
+    return (v && v.getAttribute("src") !== old) || (st && st.textContent.includes("⚠")); }, [sel, oldSrc], { timeout: 900000, polling: 1000 });
+  const status = await page.locator("#stStatus").textContent().catch(() => "");
+  const newSrc = await page.locator(sel).getAttribute("src");
+  await page.click("#stClose");
   return { trimmed: before !== after, replaced: newSrc !== oldSrc, status: (status || "").trim() };
 }
 
@@ -122,12 +126,15 @@ for (const B of BROWSERS) {
   if (!cases.length && !offline) continue;
   await mkdir(PROFILES, { recursive: true });
   let ctx, browser = null;
-  try {
+  const start = async () => {
     if (B.type === webkit) {   // WebKit's persistent-profile mode fails on recent macOS; one context keeps the model cache for the run
       const { channel, ...rest } = B.ctx;
       browser = await webkit.launch({ headless: true }); ctx = await browser.newContext(rest);
     } else ctx = await B.type.launchPersistentContext(join(PROFILES, B.name), { headless: true, ...B.ctx });
-  } catch (e) { log("SKIP", B.name, "-", 0, "browser failed to start: " + e.message.split("\n")[0]); continue; }
+    ctx.setDefaultTimeout(30000);
+  };
+  const quit = () => Promise.race([(async () => { await ctx?.close().catch(() => {}); await browser?.close().catch(() => {}); })(), new Promise(r => setTimeout(r, 15000))]);
+  try { await start(); } catch (e) { log("SKIP", B.name, "-", 0, "browser failed to start: " + e.message.split("\n")[0]); continue; }
   for (const C of cases) {
     const page = await ctx.newPage();
     const errors = [];
@@ -179,8 +186,13 @@ for (const B of BROWSERS) {
       await page.screenshot({ path: shot, fullPage: true }).catch(() => {});
       const stage = await page.locator("#prog").textContent().catch(() => "");
       log("FAIL", B.name, C.name, (Date.now() - t0) / 1000, "timeout/crash: " + e.message.split("\n")[0] + " | stage: " + stage.replace(/\s+/g, " ").slice(0, 100) + (errors.length ? "\n       console: " + errors.slice(-3).join(" || ") : ""));
+      if (e.froze || /crash/.test(e.message)) {   // the browser is unusable now: start a fresh one for the remaining cases
+        await quit();
+        try { await start(); } catch (e2) { log("SKIP", B.name, "-", 0, "browser failed to restart: " + e2.message.split("\n")[0]); break; }
+        continue;
+      }
     }
-    await page.close();
+    await Promise.race([page.close().catch(() => {}), new Promise(r => setTimeout(r, 15000))]);
   }
   if (offline) {
     // offline: after one online visit, the app shell, ffmpeg core (service worker) and model (transformers.js cache) are local
@@ -199,7 +211,7 @@ for (const B of BROWSERS) {
     } catch (e) { log("FAIL", B.name, "offline rerun", (Date.now() - t0) / 1000, e.message.split("\n")[0]); }
     await ctx.setOffline(false); await page.close();
   }
-  await ctx.close(); await browser?.close();
+  await quit();
 }
 server.close();
 const fails = rows.filter(r => r.status === "FAIL");

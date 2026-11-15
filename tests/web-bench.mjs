@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 const HERE = fileURLToPath(new URL(".", import.meta.url));
 const DOCS = resolve(process.env.DOCS || resolve(HERE, "../docs")), MEDIA = resolve(HERE, "media");
 const file = process.argv[2] || "talk_720p.mp4", q = process.argv[3] || "";
-const MIME = { ".html": "text/html", ".js": "text/javascript", ".json": "application/json", ".wasm": "application/wasm", ".svg": "image/svg+xml", ".ttf": "font/ttf", ".png": "image/png" };
+const MIME = { ".html": "text/html", ".js": "text/javascript", ".json": "application/json", ".wasm": "application/wasm", ".svg": "image/svg+xml", ".ttf": "font/ttf", ".png": "image/png", ".woff2": "font/woff2" };
 const server = createServer(async (req, res) => {
   const p = decodeURIComponent(new URL(req.url, "http://x").pathname), f = join(DOCS, p.endsWith("/") ? p + "index.html" : p);
   if (!f.startsWith(DOCS)) return res.writeHead(403).end();

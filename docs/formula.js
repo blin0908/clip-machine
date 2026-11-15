@@ -289,46 +289,78 @@ const clean = w => w.replace(/\\/g, "").replace(/{/g, "(").replace(/}/g, ")").to
 // Caption styles: pop = bold white, active word yellow + scaled; clean = plain white phrases; boxed = white on black box.
 export const STYLES = { pop: "Pop (active word highlight)", clean: "Clean (plain phrases)", boxed: "Boxed (black box)" };
 
-export function buildASS(m, plat, keep, { captions = true, hook = true, cta = "", style = "pop" } = {}) {
-  const R = plat.right, font = "Montserrat Thin Black";   // the family name stored inside fonts/Montserrat-Black.ttf
+// Output frames. 9:16 is the default; the others are for feeds (1:1, 4:5) and landscape players (16:9).
+export const FORMATS = { "9:16": [9, 16], "4:5": [4, 5], "1:1": [1, 1], "16:9": [16, 9] };
+export function frameSize(format = "9:16", hd = true) {
+  const [a, b] = FORMATS[format] || FORMATS["9:16"], s = hd ? 1080 : 720, even = x => Math.round(x / 2) * 2;
+  return a <= b ? [s, even(s * b / a)] : [even(s * a / b), s];
+}
+// "#ffd400" → ASS colour "&H0000D4FF&" (ASS stores blue, green, red)
+export function assColour(hex, fallback = "#FFF000") {
+  const h = /^#?[0-9a-f]{6}$/i.test(hex || "") ? hex.replace("#", "") : fallback.replace("#", "");
+  return `&H${h.slice(4, 6)}${h.slice(2, 4)}${h.slice(0, 2)}&`.toUpperCase();
+}
+const SIZES = { s: 0.82, m: 1, l: 1.2 };
+/** Where captions sit for a format/position, in subtitle pixels: { PX, PY, align, marginV, marginLR, hookTop, scale }. */
+export function captionLayout(plat, { format = "9:16", size = "m", pos = "bottom" } = {}) {
+  const [PX, PY] = frameSize(format, true), tall = format === "9:16";
+  const scale = Math.min(1, Math.max(0.62, PY / 1920 * 1.45)) * (SIZES[size] || 1);
+  const hookTop = tall ? plat.hook_top : Math.round(PY * 0.07);
+  const marginLR = tall ? plat.right : Math.round(PX * 0.07);
+  const align = pos === "top" ? 8 : pos === "middle" ? 5 : 2;
+  const marginV = pos === "top" ? hookTop + Math.round(PY * 0.11) : pos === "middle" ? 0 : tall ? plat.cap_bottom : Math.round(PY * 0.1);
+  return { PX, PY, align, marginV, marginLR, hookTop, scale };
+}
+export function buildASS(m, plat, keep, { captions = true, hook = true, cta = "", style = "pop", hl = "#FFF000", size = "m", pos = "bottom", format = "9:16" } = {}) {
+  const font = "Montserrat Thin Black";   // the family name stored inside fonts/Montserrat-Black.ttf
+  const L0 = captionLayout(plat, { format, size, pos }), k = L0.scale, R = L0.marginLR, n = x => Math.round(x * k);
+  const hk = Math.min(1, L0.scale / (SIZES[size] || 1)), nh = x => Math.round(x * hk);   // headline ignores the size choice
+  const tail = `${L0.align},${R},${R},${L0.marginV},1`;
   const CAPS = {
-    pop:   `Style: Cap,${font},84,&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,0,0,0,0,100,100,0,0,1,7,3,2,${R},${R},${plat.cap_bottom},1`,
-    clean: `Style: Cap,${font},70,&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,4,2,2,${R},${R},${plat.cap_bottom},1`,
-    boxed: `Style: Cap,${font},72,&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,3,16,0,2,${R},${R},${plat.cap_bottom},1`,
+    pop:   `Style: Cap,${font},${n(84)},&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,0,0,0,0,100,100,0,0,1,${n(7)},${n(3)},${tail}`,
+    clean: `Style: Cap,${font},${n(70)},&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,${n(4)},${n(2)},${tail}`,
+    boxed: `Style: Cap,${font},${n(72)},&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,3,${n(16)},0,${tail}`,
   };
-  const cap = CAPS[style] || CAPS.pop;
-  let out = `[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\nWrapStyle: 0\n\n[V4+ Styles]\n` +
+  const cap = CAPS[style] || CAPS.pop, HL = assColour(hl);
+  let out = `[Script Info]\nScriptType: v4.00+\nPlayResX: ${L0.PX}\nPlayResY: ${L0.PY}\nWrapStyle: 0\n\n[V4+ Styles]\n` +
     `Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n` +
     `${cap}\n` +
-    `Style: Hook,${font},58,&H00111111,&H00111111,&H00FFFFFF,&H00000000,0,0,0,0,100,100,0,0,3,20,0,8,${R + 20},${R + 20},${plat.hook_top},1\n` +
-    `Style: Cta,${font},58,&H00111111,&H00111111,&H0000E6FF,&H00000000,0,0,0,0,100,100,0,0,3,20,0,8,${R + 20},${R + 20},${plat.hook_top},1\n\n` +
+    `Style: Hook,${font},${nh(58)},&H00111111,&H00111111,&H00FFFFFF,&H00000000,0,0,0,0,100,100,0,0,3,${nh(20)},0,8,${R + 20},${R + 20},${L0.hookTop},1\n` +
+    `Style: Cta,${font},${nh(58)},&H00111111,&H00111111,&H0000E6FF,&H00000000,0,0,0,0,100,100,0,0,3,${nh(20)},0,8,${R + 20},${R + 20},${L0.hookTop},1\n\n` +
     `[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n`;
   const L = [];
-  const safe = s => s.replace(/{/g, "(").replace(/}/g, ")");
+  // headline / end card: braces would start an override tag, a backslash an escape (\N = line break), a newline a new event
+  const safe = s => String(s).replace(/[\r\n]+/g, " ").replace(/\\/g, "/").replace(/{/g, "(").replace(/}/g, ")");
   if (hook && m.title) L.push(`Dialogue: 1,${assTime(0)},${assTime(3.2)},Hook,,0,0,0,,{\\fad(120,250)}${safe(m.title)}`);
   if (cta) { const tot = keep.reduce((a, [x, y]) => a + y - x, 0); L.push(`Dialogue: 1,${assTime(Math.max(3.4, tot - 2.8))},${assTime(tot)},Cta,,0,0,0,,{\\fad(150,0)}${safe(cta)}`); }
-  const words = captions ? spoken(m.words.filter(w => w.s >= m.start - 0.05 && w.s <= m.end)) : [];
   const T = t => remap(t - m.start, keep);
-  const per = style === "clean" ? 4 : 3;
-  const groups = []; for (let i = 0; i < words.length; i += per) groups.push(words.slice(i, i + per));
-  groups.forEach((g, gi) => {
-    const gEnd = gi + 1 < groups.length ? groups[gi + 1][0].s : g.at(-1).e + 0.3;
+  for (const g of captionGroups(m, { captions, style })) {
     if (style === "clean") {             // one event per phrase, no per-word highlight
-      const s = T(g[0].s); let e = T(gEnd); if (e - s > 3.5) e = s + 3.5;
-      L.push(`Dialogue: 0,${assTime(s)},${assTime(Math.max(e, s + 0.05))},Cap,,0,0,0,,${g.map(x => safe(x.w)).join(" ")}`);
-      return;
+      const s = T(g.s); let e = T(g.e); if (e - s > 3.5) e = s + 3.5;
+      L.push(`Dialogue: 0,${assTime(s)},${assTime(Math.max(e, s + 0.05))},Cap,,0,0,0,,${g.words.map(x => safe(x.w)).join(" ")}`);
+      continue;
     }
-    g.forEach((w, wi) => {
-      const s = T(w.s); let e = T(wi + 1 < g.length ? g[wi + 1].s : gEnd);
+    g.words.forEach((w, wi) => {
+      const s = T(w.s); let e = T(wi + 1 < g.words.length ? g.words[wi + 1].s : g.e);
       if (e - s > 1.6) e = s + 1.6;
-      const hi = style === "boxed" ? `{\\c&H00F0FF&}` : `{\\c&H00F0FF&\\fscx112\\fscy112}`;
+      const hi = style === "boxed" ? `{\\c${HL}}` : `{\\c${HL}\\fscx112\\fscy112}`;
       const lo = style === "boxed" ? `{\\c&HFFFFFF&}` : `{\\c&HFFFFFF&\\fscx100\\fscy100}`;
-      const parts = g.map((x, k) => k === wi ? `${hi}${clean(x.w)}${lo}` : clean(x.w));
+      const parts = g.words.map((x, j) => j === wi ? `${hi}${clean(x.w)}${lo}` : clean(x.w));
       L.push(`Dialogue: 0,${assTime(s)},${assTime(Math.max(e, s + 0.05))},Cap,,0,0,0,,${parts.join(" ")}`);
     });
-  });
+  }
   return out + L.join("\n") + "\n";
 }
+/** The caption phrases a cut shows (3 words, 4 for "clean"), each { s, e, words } in source time. Shared by the
+ *  subtitle file and the studio's live preview, so what you see before rendering is what renders. */
+export function captionGroups(m, { captions = true, style = "pop" } = {}) {
+  const words = captions ? spoken(m.words.filter(w => w.s >= m.start - 0.05 && w.s <= m.end)) : [];
+  const per = style === "clean" ? 4 : 3, out = [];
+  for (let i = 0; i < words.length; i += per) out.push({ words: words.slice(i, i + per) });
+  out.forEach((g, i) => { g.s = g.words[0].s; g.e = i + 1 < out.length ? out[i + 1].words[0].s : g.words.at(-1).e + 0.3; });
+  return out;
+}
+export const captionText = w => clean(w);
 
 // ---------------------------------------------------------------- editor helpers
 /** Caption lines (≈6 spoken words) inside a cut, each holding references to its word objects. */
