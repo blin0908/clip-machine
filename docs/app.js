@@ -1310,20 +1310,42 @@ $(".wtabs").addEventListener("keydown", e => {
 
 // ---------------------------------------------------------------- results log (stored on this device)
 const LOGKEY = "clipmachine.log";
+const SHORTS_METRICS = [
+  { name: "feed_shown", label: "Shown in Shorts feed", inputmode: "numeric" },
+  { name: "feed_share", label: "Shorts-feed share", inputmode: "decimal", unit: "%" },
+  { name: "avg_view_duration", label: "Average view duration", inputmode: "text", unit: "mm:ss" },
+];
 const readLog = () => store.get(LOGKEY, []);
 const writeLog = rows => store.set(LOGKEY, rows);
 function logForm(c) {
   const def = active?.o?.platform !== "all" ? active.o.platform : "tiktok";
+  const shortsFields = SHORTS_METRICS.map(({ name, label, inputmode, unit }) => {
+    const hint = unit ? `${label} (${unit})` : label;
+    return `<input name="${name}" inputmode="${inputmode}" placeholder="${hint}" aria-label="${hint}" class="wide">`;
+  }).join("");
   return `<form class="logf" data-uid="${c.uid}"><span class="wide st">Log a post</span>
     <select name="platform" aria-label="Platform">${Object.keys(PN).map(k => `<option value="${k}" ${k === def ? "selected" : ""}>${PN[k]}</option>`).join("")}</select>
     <select name="cut" aria-label="Cut">${c.short ? `<option value="short">Short cut</option><option value="long">Long cut</option>` : `<option value="single">Clip</option>`}</select>
-    <input name="posted" type="date" aria-label="Posted on"><select name="checkpoint" aria-label="Checkpoint"><option>24h</option><option>7d</option></select>
+    <input name="posted" type="date" aria-label="Posted on"><select name="checkpoint" aria-label="Checkpoint"><option>24h</option><option>72h</option><option>7d</option></select>
     <input name="views" inputmode="numeric" placeholder="Views" aria-label="Views" class="wide">
     <input name="metric1" aria-label="Metric 1"><input name="metric2" aria-label="Metric 2"><input name="metric3" aria-label="Metric 3" class="wide">
+    ${shortsFields}
     <input name="notes" placeholder="Notes: what you changed (one variable at a time)" aria-label="Notes" class="wide">
     <button class="btn sm pri wide" type="submit">Save result</button></form>`;
 }
-function setMetricLabels(f) { if (!f) return; const p = X.F.platforms[f.platform.value]; ["metric1", "metric2", "metric3"].forEach((n, i) => { f[n].placeholder = p.judge[i] || n; f[n].setAttribute("aria-label", p.judge[i] || n); }); }
+function setMetricLabels(f) {
+  if (!f) return;
+  const p = X.F.platforms[f.platform.value];
+  ["metric1", "metric2", "metric3"].forEach((n, i) => {
+    f[n].placeholder = p.judge[i] || n;
+    f[n].setAttribute("aria-label", p.judge[i] || n);
+  });
+  const showShorts = f.platform.value === "shorts";
+  for (const { name } of SHORTS_METRICS) {
+    const field = f.elements.namedItem(name);
+    field.hidden = field.disabled = !showShorts;
+  }
+}
 $("#out").addEventListener("change", e => { const f = e.target.closest(".logf"); if (f && e.target.name === "platform") setMetricLabels(f); });
 $("#out").addEventListener("submit", e => {
   const f = e.target.closest(".logf"); if (!f) return; e.preventDefault();
@@ -1333,14 +1355,23 @@ $("#out").addEventListener("submit", e => {
   Object.assign(row, { id: Math.random().toString(36).slice(2, 10), logged: new Date().toISOString().slice(0, 16).replace("T", " "), title: c.title });
   writeLog([...readLog(), row]); f.reset(); setMetricLabels(f); loadLog(); toast("Result saved on this device");
 });
+function logMetrics(row) {
+  const metrics = [row.metric1, row.metric2, row.metric3].filter(Boolean);
+  for (const { name, label, unit } of SHORTS_METRICS) {
+    const value = row[name];
+    if (value != null && value !== "") metrics.push(`${label}: ${value}${unit === "%" ? unit : ""}`);
+  }
+  return metrics.map(esc).join("<br>");
+}
 function loadLog() {
   const rows = readLog();
   $("#logtbl").innerHTML = rows.length ? `<div class="lwrap"><table class="ltable"><tr><th>Platform</th><th>Clip</th><th>At</th><th>Views</th><th>Metrics</th><th><span class="sr">Delete</span></th></tr>` +
-    rows.slice().reverse().map(r => `<tr><td>${esc(PN[r.platform] || r.platform)}<br><span class="st">${esc(r.posted)}</span></td><td>${esc(String(r.title ?? "").slice(0, 40))}<br><span class="st">${esc(r.cut)}</span></td><td>${esc(r.checkpoint)}</td><td>${esc(r.views)}</td><td>${[r.metric1, r.metric2, r.metric3].filter(Boolean).map(esc).join("<br>")}${r.notes ? `<br><span class="st">${esc(r.notes)}</span>` : ""}</td><td><button class="x" data-dellog="${r.id}" aria-label="Delete">${icon("x")}</button></td></tr>`).join("") + `</table></div>` : "No results logged yet.";
+    rows.slice().reverse().map(r => `<tr><td>${esc(PN[r.platform] || r.platform)}<br><span class="st">${esc(r.posted)}</span></td><td>${esc(String(r.title ?? "").slice(0, 40))}<br><span class="st">${esc(r.cut)}</span></td><td>${esc(r.checkpoint)}</td><td>${esc(r.views)}</td><td>${logMetrics(r)}${r.notes ? `<br><span class="st">${esc(r.notes)}</span>` : ""}</td><td><button class="x" data-dellog="${r.id}" aria-label="Delete">${icon("x")}</button></td></tr>`).join("") + `</table></div>` : "No results logged yet.";
 }
 $("#logtbl").addEventListener("click", e => { const d = e.target.closest("[data-dellog]"); if (d && confirm("Delete this entry?")) { writeLog(readLog().filter(r => r.id !== d.dataset.dellog)); loadLog(); } });
 $("#csv").onclick = () => {
-  const cols = ["logged", "platform", "cut", "title", "posted", "checkpoint", "views", "metric1", "metric2", "metric3", "notes"];
+  const cols = ["logged", "platform", "cut", "title", "posted", "checkpoint", "views", "metric1", "metric2", "metric3", "notes",
+    ...SHORTS_METRICS.map(({ name }) => name)];
   const q = v => `"${String(v ?? "").replace(/"/g, '""')}"`;
   download(new Blob([[cols.join(","), ...readLog().map(r => cols.map(k => q(r[k])).join(","))].join("\n")], { type: "text/csv" }), "clip_results.csv");
 };

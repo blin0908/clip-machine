@@ -178,13 +178,38 @@ try {
   // ---- results log + CSV
   const c0 = page.locator(`#out .clip[data-uid="${uids[0]}"]`);
   await c0.locator("details.more > summary").click();
-  await c0.locator('.logf [name="views"]').fill("1234");
-  await c0.locator(".logf [type=submit]").click();
+  const log = c0.locator(".logf");
+  const platform = log.getByLabel("Platform", { exact: true });
+  const shortsMetrics = {
+    "Shown in Shorts feed": "2000",
+    "Shorts-feed share (%)": "92.7",
+    "Average view duration (mm:ss)": "00:17",
+  };
+  await platform.selectOption("shorts");
+  await log.getByLabel("Checkpoint").selectOption("72h");
+  for (const [label, value] of Object.entries(shortsMetrics)) await log.getByLabel(label, { exact: true }).fill(value);
+  await platform.selectOption("reels");
+  for (const label of Object.keys(shortsMetrics)) {
+    const field = log.getByLabel(label, { exact: true });
+    check(await field.isHidden() && await field.isDisabled(), `${label} is hidden and excluded for Reels`);
+  }
+  await log.getByLabel("Views", { exact: true }).fill("567");
+  await log.locator("[type=submit]").click();
+  await platform.selectOption("shorts");
+  await log.getByLabel("Checkpoint").selectOption("72h");
+  for (const [label, value] of Object.entries(shortsMetrics)) await log.getByLabel(label, { exact: true }).fill(value);
+  await log.getByLabel("Views", { exact: true }).fill("1234");
+  await log.locator("[type=submit]").click();
   await page.click("#tLog");
-  check(/1234/.test(await page.locator("#logtbl").textContent()), "logged result shows in the results log");
+  const shortsRow = await page.locator("#logtbl tr").filter({ hasText: "YT Shorts" }).textContent();
+  check(["72h", "1234", "Shown in Shorts feed: 2000", "Shorts-feed share: 92.7%", "Average view duration: 00:17"]
+    .every(value => shortsRow.includes(value)), "the 72h Shorts metrics show in the results log", shortsRow);
   const [dl] = await Promise.all([page.waitForEvent("download", { timeout: 20000 }), page.click("#csv")]);
-  const csv = await readFile(await dl.path(), "utf8");
-  check(/1234/.test(csv), "CSV export has the logged row", csv.split("\n")[0].slice(0, 80));
+  const [header, reelsRow, shortsCsvRow] = (await readFile(await dl.path(), "utf8")).split("\n");
+  check(header.endsWith(",feed_shown,feed_share,avg_view_duration"), "CSV has the Shorts metric column names", header);
+  check(reelsRow.includes('"reels"') && reelsRow.endsWith(',"","",""'), "CSV leaves Shorts metrics blank for Reels");
+  check(shortsCsvRow.includes('"72h","1234"') && shortsCsvRow.endsWith(',"2000","92.7","00:17"'),
+    "CSV exports the checkpoint and raw Shorts metric values");
   await page.click("#tClips");
 
   // ---- remove the video
