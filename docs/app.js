@@ -29,7 +29,7 @@ function showPlat() {
   if (!l && opts.version !== "short") $("#vshort").click();
 }
 $("#file").onchange = e => { const f = e.target.files[0]; $("#fname").textContent = f ? `📎 ${f.name} (${(f.size / 1e6).toFixed(0)} MB)` : "Choose a video"; $("#go").disabled = !f; };
-$("#cancel").onclick = () => location.reload();
+$("#cancel").onclick = () => linkAbort ? linkAbort.abort() : location.reload();
 
 function setStage(label, pct, msg = "") {
   $("#prog").classList.remove("hide");
@@ -63,6 +63,100 @@ const OOM = "This browser ran out of memory for video editing. " + (IS_IOS
 const DESKTOP_URL = "https://github.com/blin0908/clip-machine/releases/latest";
 // Turn "the (free) desktop app" in an already-escaped message into a download link.
 const linkDesktop = html => html.replace(/(the (?:free )?desktop app)/, `<a href="${DESKTOP_URL}" target="_blank" rel="noopener">$1</a>`);
+
+// ---------------------------------------------------------------- paste a link
+// A web page can only download a video file whose server allows it (CORS). Video sites don't, so those go to the desktop app.
+const SITES = { "youtube.com": "YouTube", "youtu.be": "YouTube", "tiktok.com": "TikTok", "twitch.tv": "Twitch", "x.com": "X", "twitter.com": "X",
+  "instagram.com": "Instagram", "facebook.com": "Facebook", "fb.watch": "Facebook", "vimeo.com": "Vimeo", "kick.com": "Kick", "reddit.com": "Reddit",
+  "rumble.com": "Rumble", "dailymotion.com": "Dailymotion", "soundcloud.com": "SoundCloud", "snapchat.com": "Snapchat", "linkedin.com": "LinkedIn", "threads.net": "Threads" };
+const siteOf = host => { host = host.toLowerCase(); for (const d in SITES) if (host === d || host.endsWith("." + d)) return SITES[d]; return null; };
+let linkAbort = null;
+const mb = n => (n / 1e6).toFixed(n < 1e7 ? 1 : 0);
+async function fetchVideo(url, prog) {       // download with progress, prog(pct | null, msg); throws on CORS/network/non-video
+  linkAbort = new AbortController();
+  prog(0, "Connecting…");
+  try {
+    const r = await fetch(url, { signal: linkAbort.signal });
+    if (!r.ok) throw Object.assign(new Error(`The link returned an error (${r.status}).`), { kind: "http" });
+    const type = (r.headers.get("content-type") || "").split(";")[0].trim();
+    if (/^text\/|json|xml/.test(type)) throw Object.assign(new Error("That link opens a web page, not a video file."), { kind: "page" });
+    const total = +r.headers.get("content-length") || 0;
+    const parts = []; let got = 0;
+    if (r.body?.getReader) {
+      const reader = r.body.getReader();
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        parts.push(value); got += value.length;
+        prog(total ? 100 * got / total : null, total ? `${mb(got)} of ${mb(total)} MB · ${Math.round(100 * got / total)}%` : `${mb(got)} MB downloaded`);
+      }
+    } else { const b = await r.arrayBuffer(); parts.push(new Uint8Array(b)); got = b.byteLength; }
+    if (!got) throw Object.assign(new Error("That link returned an empty file."), { kind: "http" });
+    prog(100, `${mb(got)} MB · done`);
+    let name = "video.mp4";
+    try { name = decodeURIComponent(new URL(r.url || url).pathname.split("/").pop()) || name; } catch {}
+    if (!/\.[a-z0-9]{2,4}$/i.test(name)) name += ".mp4";
+    return new File(parts, name, { type: type && type !== "application/octet-stream" ? type : "video/mp4" });
+  } finally { linkAbort = null; }
+}
+function linkProg(pct, msg) {                 // inline bar under the link box; null = size unknown, creep toward 95%
+  const bar = $("#lbar"), el = $("#lprog");
+  if (pct == null) pct = Math.min(95, (parseFloat(bar.style.width) || 0) + (95 - (parseFloat(bar.style.width) || 0)) * 0.02);
+  bar.style.width = pct + "%"; el.setAttribute("aria-valuenow", Math.round(pct)); $("#lmsg").textContent = msg;
+}
+function useFile(f) {
+  const dt = new DataTransfer(); dt.items.add(f); $("#file").files = dt.files; $("#file").onchange({ target: $("#file") });
+}
+function setTab(link) {
+  $("#tabFile").setAttribute("aria-selected", !link); $("#tabLink").setAttribute("aria-selected", link);
+  $("#paneFile").classList.toggle("hide", link); $("#paneLink").classList.toggle("hide", !link);
+  if (link) $("#link").focus();
+}
+function linkNote(title, why) {
+  $("#lnote").innerHTML = `<b>${esc(title)}</b> ${esc(why)}<div class="btns">` +
+    `<a class="lbtn pri" href="${DESKTOP_URL}" target="_blank" rel="noopener">Get the free desktop app</a>` +
+    `<button type="button" class="lbtn" data-act="copy">Copy link</button>` +
+    `<button type="button" class="lbtn" data-act="file">Upload a file instead</button></div>`;
+  $("#lnote").classList.remove("hide");
+}
+$("#tabFile").onclick = () => setTab(false);
+$("#tabLink").onclick = () => setTab(true);
+$("#link").oninput = () => $("#lnote").classList.add("hide");
+$("#lcancel").onclick = () => linkAbort?.abort();
+$("#lnote").onclick = e => {
+  const act = e.target.closest("[data-act]")?.dataset.act;
+  if (act === "file") setTab(false);
+  if (act === "copy") navigator.clipboard?.writeText($("#link").value.trim()).then(() => toast("Link copied. Paste it into the desktop app."), () => toast("Couldn't copy. Select the link and copy it."));
+};
+$("#linkForm").onsubmit = async e => {
+  e.preventDefault();
+  let raw = $("#link").value.trim(), u;
+  if (!raw) { $("#link").focus(); return; }
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(raw)) raw = "https://" + raw;
+  try {
+    u = new URL(raw);
+    if (/\s/.test($("#link").value.trim()) || !/^https?:$/.test(u.protocol) || !/\.|^localhost$|^\[/.test(u.hostname)) throw 0;
+  } catch { linkNote("That doesn't look like a link.", "Copy the full address from your browser or the app's Share button, then paste it here."); return; }
+  $("#link").value = raw;
+  const site = siteOf(u.hostname);
+  if (site) { linkNote(`${site} links need the free desktop app.`, `${site} doesn't let websites download its videos. The desktop app downloads it on your own computer and makes the clips. It's free too, and works on Mac, Windows and Linux.`); return; }
+  $("#lnote").classList.add("hide"); $("#lbar").style.width = "0%"; $("#lprog").classList.remove("hide");
+  $("#link").disabled = $("#linkGo").disabled = $("#tabFile").disabled = $("#go").disabled = true;
+  try {
+    const f = await fetchVideo(u.href, linkProg);
+    useFile(f); setTab(false);
+    toast("Video loaded. Pick your settings, then tap Find the moments.");
+  } catch (err) {
+    if (err.name === "AbortError") toast("Download cancelled.");
+    else if (err.kind === "page") linkNote(err.message, "Paste a link that goes straight to an .mp4 or .mov file, or use the desktop app, which handles links to most video sites.");
+    else if (err.kind === "http") linkNote(err.message, "Check the link opens the video in your browser, or download the video and upload the file.");
+    else linkNote("That site won't let this page download the video.", "Most websites block it. The desktop app downloads it on your own computer instead, or you can save the video and upload the file.");
+  } finally {
+    $("#lprog").classList.add("hide");
+    $("#link").disabled = $("#linkGo").disabled = $("#tabFile").disabled = false;
+    $("#go").disabled = !$("#file").files[0];
+  }
+};
 const withTimeout = (p, ms) => Promise.race([p, new Promise((_, bad) => setTimeout(() => bad(new Error(OOM)), ms))]);
 const fsCache = new Map();                // small files we wrote (captions), replayed into a fresh engine
 async function writeFS(path, data) { fsCache.set(path, data); await ffmpeg.writeFile(path, data); }
@@ -460,10 +554,8 @@ for (const [k, v] of new URLSearchParams(location.search)) document.querySelecto
 const src = new URLSearchParams(location.search).get("src");   // e.g. ?src=sample.mp4 (same-origin or CORS-enabled)
 if (src) {
   try {
-    setStage("Fetching video…", 0);
-    const b = await (await fetch(src)).blob();
-    const f = new File([b], src.split("/").pop().split("?")[0] || "video.mp4", { type: b.type || "video/mp4" });
-    const dt = new DataTransfer(); dt.items.add(f); $("#file").files = dt.files; $("#file").onchange({ target: $("#file") });
+    const f = await fetchVideo(new URL(src, location.href).href, (p, m) => setStage("Fetching video…", p ?? 0, m));
+    useFile(f);
     $("#prog").classList.add("hide");
     if (new URLSearchParams(location.search).get("auto") === "1") go(f);
   } catch (e) { $("#prog").classList.add("hide"); toast("Couldn't load ?src video"); }

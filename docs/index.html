@@ -28,6 +28,21 @@ h2{font-size:18px;margin:22px 0 10px}
 label.t{display:block;font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--mute);margin:16px 0 8px;font-weight:600}
 label.t:first-child{margin-top:0}
 button{font:inherit;border:0;border-radius:12px;cursor:pointer}
+.seg{display:flex;gap:4px;background:#0f0f14;border:1px solid var(--line);border-radius:12px;padding:4px;margin-bottom:12px}
+.seg button{flex:1;padding:10px 6px;background:none;color:var(--mute);font-size:14px;font-weight:600;border-radius:9px}
+.seg button[aria-selected=true]{background:#26262f;color:var(--text)}
+.linkrow{display:flex;gap:8px}
+.linkrow input{flex:1;min-width:0;background:#0f0f14;border:1px solid var(--line);border-radius:12px;color:var(--text);padding:12px;font-size:16px}
+.linkrow input:focus{outline:2px solid var(--acc);outline-offset:-1px}
+.linkrow button{background:var(--acc);color:var(--acc-ink);font-weight:700;padding:0 16px;white-space:nowrap}
+.linkrow button:disabled{opacity:.4}
+.lprog{margin-top:12px}
+.lprog .bar i{transition:width .2s}
+.lhint{color:var(--mute);font-size:13px;margin:8px 0 0}
+.lnote{margin-top:12px;background:#1c1b12;border:1px solid #47421d;border-radius:12px;padding:12px 14px;font-size:14px}
+.lnote .btns{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+.lbtn{display:inline-block;background:#26262f;color:var(--text);padding:9px 13px;font-size:14px;font-weight:600;border-radius:10px;text-decoration:none}
+.lbtn.pri{background:var(--acc);color:var(--acc-ink)}
 .file{display:block;text-align:center;border:1.5px dashed #3a3a46;border-radius:14px;padding:22px 14px;color:var(--text);font-size:15px;cursor:pointer;font-weight:600}
 .file small{display:block;color:var(--mute);font-weight:400;margin-top:4px}
 .file input{display:none}
@@ -114,7 +129,17 @@ details summary::-webkit-details-marker{display:none}
   <div class="badges"><span>Free</span><span>No watermark</span><span>No account</span><span>Runs on your device: your video is never uploaded</span></div>
 
   <section class="card" id="setup">
-    <label class="file"><input type="file" id="file" accept="video/*,audio/*"><span id="fname">Choose a video</span><small>MP4 or MOV from your camera roll or computer. English speech.</small></label>
+    <div class="seg" role="tablist" aria-label="Video source"><button type="button" role="tab" id="tabFile" aria-selected="true" aria-controls="paneFile">📁 Upload a file</button><button type="button" role="tab" id="tabLink" aria-selected="false" aria-controls="paneLink">🔗 Paste a link</button></div>
+    <div id="paneFile" role="tabpanel"><label class="file"><input type="file" id="file" accept="video/*,audio/*"><span id="fname">Choose a video</span><small>MP4 or MOV from your camera roll or computer. English speech.</small></label></div>
+    <div id="paneLink" role="tabpanel" class="hide">
+      <form class="linkrow" id="linkForm" novalidate><input id="link" type="url" inputmode="url" enterkeyhint="go" placeholder="Paste a YouTube, TikTok or video link" autocomplete="off" aria-label="Video link"><button type="submit" id="linkGo">Get video</button></form>
+      <p class="lhint">Links that end in .mp4 or .mov load right here. YouTube, TikTok and most video sites need the free desktop app.</p>
+      <div id="lprog" class="lprog hide" role="progressbar" aria-label="Downloading video" aria-valuemin="0" aria-valuemax="100">
+        <div class="bar"><i id="lbar"></i></div>
+        <div class="top"><span class="msg" id="lmsg"></span><button type="button" class="ghost" id="lcancel">Cancel</button></div>
+      </div>
+      <div id="lnote" class="lnote hide" role="status"></div>
+    </div>
 
     <label class="t">Posting to</label>
     <div class="chips" data-k="platform"><button class="chip" data-v="all" aria-pressed="true">All platforms</button><button class="chip" data-v="tiktok">TikTok</button><button class="chip" data-v="reels">IG Reels</button><button class="chip" data-v="shorts">YT Shorts</button><button class="chip" data-v="facebook">Facebook</button><button class="chip" data-v="snapchat">Snapchat</button><button class="chip" data-v="x">X</button></div>
