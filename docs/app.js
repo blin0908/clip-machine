@@ -60,6 +60,9 @@ const IS_WEBKIT = IS_IOS || (/AppleWebKit/.test(UA) && !/Chrome|Chromium|Edg|Fir
 const OOM = "This browser ran out of memory for video editing. " + (IS_IOS
   ? "On iPhone and iPad every browser uses Safari's engine, which tops out around a minute of video. Use a shorter video, or a computer with Chrome or the free desktop app."
   : "Safari is the usual cause with videos over about a minute. Try Chrome, Edge or Firefox, a shorter video, or the free desktop app.");
+const DESKTOP_URL = "https://github.com/blin0908/clip-machine/releases/latest";
+// Turn "the (free) desktop app" in an already-escaped message into a download link.
+const linkDesktop = html => html.replace(/(the (?:free )?desktop app)/, `<a href="${DESKTOP_URL}" target="_blank" rel="noopener">$1</a>`);
 const withTimeout = (p, ms) => Promise.race([p, new Promise((_, bad) => setTimeout(() => bad(new Error(OOM)), ms))]);
 const fsCache = new Map();                // small files we wrote (captions), replayed into a fresh engine
 async function writeFS(path, data) { fsCache.set(path, data); await ffmpeg.writeFile(path, data); }
@@ -279,7 +282,7 @@ async function go(file) {
   } catch (err) {
     console.error(err);
     $("#prog").classList.add("hide");
-    $("#out").innerHTML = `<div class="card err">⚠ ${esc(err.message || err)}</div>`;
+    $("#out").innerHTML = `<div class="card err">⚠ ${linkDesktop(esc(err.message || err))}</div>`;
   } finally {
     busy = false;
     $("#setup").classList.remove("busy");

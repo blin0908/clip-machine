@@ -47,6 +47,7 @@ details summary::-webkit-details-marker{display:none}
 .bar i{display:block;height:100%;width:0;background:var(--acc);transition:width .4s}
 .msg{color:var(--mute);font-size:14px}
 .err{color:var(--bad);white-space:pre-wrap;font-size:14px}
+.err a{color:inherit;text-decoration:underline;font-weight:600}
 .top{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px}
 .when{color:var(--mute);font-size:13px;font-variant-numeric:tabular-nums}
 .ghost{background:#22222b;color:var(--text);padding:8px 12px;font-size:13px}
@@ -163,7 +164,7 @@ details summary::-webkit-details-marker{display:none}
     <button class="sec ghost" id="csv" style="margin-top:10px">Export CSV</button>
   </div>
 
-  <p class="foot">Every clip passes a quality gate: format, length, loudness, clipping, black frames, silence and frozen picture. Clips that fail are re-rendered or replaced. Want to clip straight from a YouTube link? Get the <a href="https://github.com/blin0908/clip-machine#mac-app">free Mac app</a>. · <a href="https://github.com/blin0908/clip-machine">Source &amp; research</a> · Only clip videos you have the rights to.</p>
+  <p class="foot">Every clip passes a quality gate: format, length, loudness, clipping, black frames, silence and frozen picture. Clips that fail are re-rendered or replaced. Want to clip straight from a YouTube link? Get the <a href="https://github.com/blin0908/clip-machine/releases/latest" target="_blank" rel="noopener">free desktop app</a> for Mac, Windows or Linux. · <a href="https://github.com/blin0908/clip-machine">Source &amp; research</a> · Only clip videos you have the rights to.</p>
 </main>
 <div class="toast" id="toast"></div>
 <script type="module" src="app.js"></script>
