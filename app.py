@@ -117,9 +117,16 @@ def run_edit(jid, p):
         save(jid)
 
 
+def write_atomic(path, text):
+    """Write via a temp file + rename, so a crash mid-write never leaves a half-written (unreadable) file."""
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text)
+    os.replace(tmp, path)
+
+
 def save(jid):
     j = {k: v for k, v in jobs[jid].items()}
-    (JOBS / jid / "job.json").write_text(json.dumps(j))
+    write_atomic(JOBS / jid / "job.json", json.dumps(j))
 
 
 def load_history():
@@ -329,14 +336,14 @@ def add_log():
     with log_lock:
         rows = read_log()
         rows.append(row)
-        LOG.write_text(json.dumps(rows, indent=1))
+        write_atomic(LOG, json.dumps(rows, indent=1))
     return jsonify(row)
 
 
 @app.delete("/api/log/<rid>")
 def del_log(rid):
     with log_lock:
-        LOG.write_text(json.dumps([r for r in read_log() if r.get("id") != rid], indent=1))
+        write_atomic(LOG, json.dumps([r for r in read_log() if r.get("id") != rid], indent=1))
     return jsonify(ok=True)
 
 

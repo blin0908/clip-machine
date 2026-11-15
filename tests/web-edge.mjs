@@ -84,7 +84,7 @@ try {
     // find the out bracket by scanning for the brightest yellow column in the top band
     const g = cv.getContext("2d"), d = g.getImageData(0, 0, cv.width, cv.height).data, sx = cv.width / r.width;
     let best = -1;
-    for (let x = cv.width - 1; x >= 0; x--) { let n = 0; for (let y = 0; y < cv.height; y += 2) { const i = (y * cv.width + x) * 4; if (d[i] > 220 && d[i + 1] > 170 && d[i + 2] < 90) n++; } if (n > cv.height / 4) { best = x; break; } }
+    for (let x = cv.width - 1; x >= 0; x--) { let n = 0; for (let y = 0; y < cv.height; y += 2) { const i = (y * cv.width + x) * 4; if (d[i] > 220 && d[i + 1] > 170 && d[i + 2] < 90) n++; } if (n > cv.height * 0.36) { best = x; break; } }   // the bracket runs the full height (n counts every other row); waveform bars don't
     return best < 0 ? null : best / sx;
   });
   if (outX != null) {
@@ -130,6 +130,27 @@ try {
   // ---- transcript reflects the edit
   await page.click("#tTx");
   check(/ZEBRA/i.test(await page.locator("#tx").textContent()), "transcript shows the edited word");
+
+  // ---- two clips from the transcript, queued behind a running edit: both must land (they used to share one slot)
+  await page.click("#tClips");
+  await page.locator(`#out .clip[data-uid="${uids[1]}"] [data-edit]`).click();
+  await page.locator("#studio:not(.hide)").waitFor();
+  await page.click('[data-nudge="start:1"]');
+  await page.click("#stRender");
+  await page.click("#stClose");
+  const mine0 = await page.locator("#out .clip .score.mine").count();
+  await page.click("#tTx");
+  const tw = page.locator("#tx w"), twc = await tw.count();
+  for (const [a, b] of [[1, Math.min(30, twc - 3)], [Math.min(40, twc - 30), Math.min(75, twc - 2)]]) {
+    await tw.nth(a).click(); await tw.nth(b).click({ modifiers: ["Shift"] });
+    await page.click("#mkclip");
+    await page.locator("#studio:not(.hide)").waitFor();
+    await page.click("#stRender");
+    await page.click("#stClose");
+  }
+  await page.waitForFunction(n => document.querySelectorAll("#out .clip .score.mine").length >= n + 2, mine0, { timeout: 600000, polling: 1000 }).catch(() => {});
+  check(await page.locator("#out .clip .score.mine").count() === mine0 + 2, "two transcript clips queued back to back both land",
+    `${mine0} → ${await page.locator("#out .clip .score.mine").count()}`);
   await page.click("#tClips");
 
   // ---- results log + CSV

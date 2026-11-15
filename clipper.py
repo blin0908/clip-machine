@@ -1080,7 +1080,9 @@ def edit_cut(outdir: Path, idx: int, cut: str, start: float, end: float, title: 
         target.update(score=None, custom=True, reasons=["Picked from the transcript"], checklist=[], short=None,
                       captions=_post_copy(m, st_["platform"], res.get("title", "")))
         res["clips"].append(target)
-    (outdir / "result.json").write_text(json.dumps(res, indent=2))
+    tmp = outdir / "result.json.tmp"             # temp + rename: a crash mid-edit never corrupts the job's clip list
+    tmp.write_text(json.dumps(res, indent=2))
+    os.replace(tmp, outdir / "result.json")
     progress("render", 100, "Done")
     return res
 

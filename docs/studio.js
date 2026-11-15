@@ -210,6 +210,7 @@ export function createStudio(api) {
     const at = { c: ST.c, cut: ST.cut, holder: ST };
     $("stStatus").textContent = "";
     api.queueRender(job).then(res => {
+      if (res.superseded) return;                            // a newer edit of the same cut replaced this one
       const here = ST && ST.c === at.c && ST.cut === at.cut;
       if (!res.ok) { if (here || (ST && at.c === null && ST.c === null)) $("stStatus").textContent = "⚠ " + res.msg; else toast("⚠ An edit failed. Open the clip to see why."); return; }
       if (at.c) drafts.delete(at.c);
@@ -237,7 +238,7 @@ export function createStudio(api) {
     if (!job || job.state === "done" || job.state === "failed") { el.classList.remove("busy"); if (ST) paintHead(); return; }
     el.textContent = api.jobLabel(job); el.classList.add("busy");
   }
-  function onJob(job) { if (ST && job.key === `${ST.c ? ST.c.uid : "new"}:${ST.cut}`) paintJob(job); }
+  function onJob(job) { if (ST && job.cut === ST.cut && (ST.c ? job.c === ST.c : !job.c && (job.state === "done" || job.state === "failed" || job === api.jobFor(null, ST.cut)))) paintJob(job); }
 
   // ------------------------------------------------------------ preview
   function setMode(m) {

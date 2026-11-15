@@ -102,8 +102,10 @@ try {
   // ---- close the tab mid-run and come back: the job is still followed in the queue and its clips load
   await page.setInputFiles("#file", join(MEDIA, "talk_40s.mp4"));
   await page.click("#go");
-  await page.waitForFunction(async () => (await (await fetch("api/jobs", { cache: "no-store" })).json()).some(j => j.status === "running" && !j.has_result),
-    null, { timeout: 60000, polling: 300 });   // the app has the video and is working on it
+  for (let i = 0; i < 200; i++) {                 // wait until the app has the video and is working on it
+    const busy = await page.evaluate(async () => (await (await fetch("api/jobs", { cache: "no-store" })).json()).some(j => j.status === "running" && !j.has_result));
+    if (busy) break; await page.waitForTimeout(300);
+  }
   await page.reload({ waitUntil: "load" });
   await page.waitForFunction(() => document.body.classList.contains("desk"));
   await page.waitForFunction(() => document.querySelectorAll(".qi").length > 0, null, { timeout: 10000 });

@@ -153,6 +153,8 @@ async function loadEngine(E, quiet = false) {
   E.ff = ff; E.mounted = null;
   return ff;
 }
+// Throw an engine away (a fresh worker gets a fresh WebAssembly heap: WebKit never gives memory back).
+function dropEngine(E) { try { E.ff?.terminate(); } catch {} E.ff = null; E.mounted = null; E.file = null; E.cache.clear(); }
 async function mountSrc(E, sess) {
   if (E.mounted === sess.id) return;
   try { await E.ff.unmount("/in"); } catch {}
@@ -207,7 +209,8 @@ async function run(args, onTime, retry = true, E = E0) {
   ff.on("progress", h); ff.on("log", lg);
   const wd = setInterval(() => {
     const now = Date.now();
-    if (!last && now - t0 > 60000) { stalled = true; clearInterval(wd); try { ff.terminate(); } catch {} }
+    // Safari also stalls mid-render when memory runs out: 2 minutes of total silence there is a stall, not a slow step
+    if ((!last && now - t0 > 60000) || (IS_WEBKIT && last && now - last > 120000)) { stalled = true; clearInterval(wd); try { ff.terminate(); } catch {} }
   }, 3000);
   try {
     const code = await ff.exec(args);
@@ -352,7 +355,7 @@ function setActive(s) {
 }
 function qStatus(s) {
   if (s.status === "running") return s.msg || "Working";
-  if (s.status === "queued") return "Queued";
+  if (s.status === "queued") return s.prep?.words ? "Transcribed · renders next" : s.prep ? "Audio read · transcribes next" : "Queued";
   if (s.status === "error") return "Error: " + (s.err || "").slice(0, 60);
   if (s.remote && !s.loaded) return s.loading ? "Loading…" : "Saved on this computer";
   if (s.status === "done") return `${s.clips.length} clip${s.clips.length === 1 ? "" : "s"}${s.info ? " · " + X.fmtT(s.capped || s.info.duration) : ""}`;
@@ -413,23 +416,29 @@ addEventListener("drop", e => { if (!hasFiles(e)) return; e.preventDefault(); dr
 
 // ---------------------------------------------------------------- transcription
 // The speech worker keeps its model loaded between videos (and starts loading it when a file is picked), except on
-// Safari/iOS, where the worker is dropped after each run to leave WebAssembly memory for the video engine.
+// Safari/iOS: there the model and the video engine never hold memory at the same time (see processSession), so the
+// worker is dropped as soon as the words are back.
 let asrW = null, asrReject = null;
 const asrWorker = () => asrW ||= new Worker(new URL("./asr-worker.js", import.meta.url), { type: "module" });
 const dropASR = () => { try { asrW?.terminate(); } catch {} asrW = null; };
 function preloadASR() { if (!IS_WEBKIT && !DESK) asrWorker().postMessage({ type: "preload", model: opts.model }); }
-function transcribe(pcm, windows, model) {
+const ASR_SILENCE = 150000;      // no word from the speech model for this long = stalled (out of memory), not slow
+function transcribe(pcm, windows, model, keep = false) {
   return new Promise((resolve, reject) => {
     const w = asrWorker();
-    let dev = "";
-    asrReject = reject;
+    let dev = "", dog = 0;
+    const stall = () => { clearTimeout(dog); dog = setTimeout(() => { asrReject = null; dropASR();
+      reject(new Error("The speech model stopped responding. " + (IS_WEBKIT ? "Safari can run out of memory after a few videos: reload the page to free it, or use Chrome or the free desktop app." : "Reload the page and try again."))); }, ASR_SILENCE); };
+    stall();
+    asrReject = e => { clearTimeout(dog); reject(e); };
     w.onmessage = ({ data: d }) => {
+      stall();
       if (d.type === "load") stage("asr", 0, d.loaded < d.total ? "Loading speech model…" : "Preparing speech model…",
         d.loaded < d.total ? `${(d.loaded / 1e6).toFixed(0)} / ${(d.total / 1e6).toFixed(0)} MB (cached after first use)` : "Takes a moment on the first video only.");
       if (d.type === "device") { dev = d.device === "webgpu" ? " · GPU" : ""; perf.lap(`model load (${d.device})`); }
       if (d.type === "progress") stage("asr", 100 * d.done / d.total, "Transcribing…", `${X.fmtT(d.upto)} done${dev}`);
-      if (d.type === "done") { asrReject = null; if (IS_WEBKIT) dropASR(); resolve(d.words); }
-      if (d.type === "error") { asrReject = null; dropASR(); reject(new Error("Speech model: " + d.message)); }
+      if (d.type === "done") { clearTimeout(dog); asrReject = null; if (IS_WEBKIT && !keep) dropASR(); resolve(d.words); }
+      if (d.type === "error") { clearTimeout(dog); asrReject = null; dropASR(); reject(new Error("Speech model: " + d.message)); }
     };
     w.postMessage({ audio: pcm, windows, model });
   });
@@ -560,7 +569,16 @@ async function go() {
   paintQueue(); paintGo();
   try { wakeLock = await navigator.wakeLock?.request("screen"); } catch {}
   try {
-    for (let s; !cancelled && (s = sessions.find(x => x.status === "queued"));) await (DESK ? processRemote(s) : processSession(s));
+    if (DESK || !IS_WEBKIT)
+      for (let s; !cancelled && (s = sessions.find(x => x.status === "queued"));) await (DESK ? processRemote(s) : processSession(s));
+    else while (!cancelled && sessions.some(x => x.status === "queued")) {     // Safari: read all, transcribe all, render all
+      const q = f => sessions.find(x => x.status === "queued" && f(x));
+      for (let s; !cancelled && (s = q(x => !x.prep));) await processSession(s, "read");
+      dropEngine(E0);
+      for (let s; !cancelled && (s = q(x => x.prep && !x.prep.words));) await processSession(s, "listen");
+      dropASR();
+      for (let s; !cancelled && (s = q(x => x.prep?.words));) await processSession(s, "cut");
+    }
   } finally {
     running = false;
     sessions.filter(s => s.status === "queued").forEach(s => { s.status = "ready"; });
@@ -573,21 +591,35 @@ async function go() {
 const runOpts = () => ({ platform: opts.platform, n: +opts.n, version: opts.version, hd: opts.quality === "hd" || !!DESK, captions: opts.captions === "1",
   hook: opts.hook === "1", tighten: opts.tighten === "1", enhance: opts.enhance === "1", layout: opts.layout, style: opts.style,
   hl: opts.hl, size: opts.size, pos: opts.pos, format: opts.format });
-async function processSession(sess) {
-  const o = runOpts();
-  sess.status = "running"; sess.pct = 0; sess.msg = "Starting"; sess.err = null; sess.dropped = 0;
-  for (const c of sess.clips) revokeClip(c);
-  sess.clips = []; sess.o = o; sess.cta = $("#cta").value.trim().slice(0, 80);
+// phase: "all" = the whole run. On Safari the queue runs in three passes instead, so that only three big WebAssembly
+// instances are ever started, each after the previous one is gone: "read" (every video's audio, one video engine),
+// "listen" (every transcript, one speech model), "cut" (score + render, one fresh video engine). Tested in WebKit: a
+// second speech model, or a video engine started while the model is loaded, stalls.
+async function processSession(sess, phase = "all") {
+  const fresh = phase === "all" || phase === "read", cut = phase === "cut";
+  const o = fresh ? runOpts() : sess.o;
+  sess.status = "running"; sess.err = null;
+  if (fresh) {
+    sess.pct = 0; sess.msg = "Starting"; sess.dropped = 0; sess.prep = null;
+    for (const c of sess.clips) revokeClip(c);
+    sess.clips = []; sess.o = o; sess.cta = $("#cta").value.trim().slice(0, 80);
+  }
   if (!active || (!active.clips.length && active.status !== "done")) setActive(sess);
   paintQueue(); renderBoard();
   spares = [];
   try {
     perf.start();
-    await loadEngine(E0);
+    // Where memory is tight, each video starts on a fresh engine, so one video's leftovers (or a failed render)
+    // can't starve the next one in the queue
+    if (phase === "all" && TIGHT && E0.ff && E0.mounted !== sess.id) dropEngine(E0);
+    let words, loud, quiet, info, pcm;
+    if (!fresh) ({ words, loud, quiet, info, pcm } = sess.prep);
+    if (fresh) {
+    await withTimeout(loadEngine(E0), 90000);
     perf.lap("engine");
     await mountSrc(E0, sess);
     const path = sess.path = "/in/" + sess.file.name;
-    const info = probeLog((await run(["-hide_banner", "-i", path])).log);
+    info = probeLog((await run(["-hide_banner", "-i", path])).log);
     if (!info.duration) throw new Error("Couldn't read that file. Try an MP4 or MOV.");
     if (!info.acodec) throw new Error("That video has no audio track, so there's nothing to transcribe.");
     if (info.duration < 3) throw new Error("That video is under 3 seconds, too short to clip.");
@@ -602,16 +634,24 @@ async function processSession(sess) {
     const a = await run(["-i", path, ...(capped ? ["-t", String(info.duration)] : []), "-vn", "-ac", "1", "-ar", "16000", "-f", "f32le", "/audio.raw"], t => stage("audio", 100 * t / info.duration, "Reading audio…", `${X.fmtT(t)} / ${X.fmtT(info.duration)}`));
     if (a.code !== 0) throw new Error("Couldn't decode the audio.");
     const raw = await E0.ff.readFile("/audio.raw"); await E0.ff.deleteFile("/audio.raw");
-    const pcm = new Float32Array(raw.buffer, raw.byteOffset, Math.floor(raw.byteLength / 4));
+    pcm = new Float32Array(raw.buffer, raw.byteOffset, Math.floor(raw.byteLength / 4));
     let peak = 0; for (let k = 0; k < pcm.length; k += 4) { const x = Math.abs(pcm[k]); if (x > peak) peak = x; }
     if (peak < 1e-4) throw new Error("The audio is silent, so there's nothing to clip. Check the file has sound.");
-    const loud = X.loudnessCurve(pcm), quiet = X.quietMap(pcm);
+    loud = X.loudnessCurve(pcm); quiet = X.quietMap(pcm);
     perf.lap("probe+audio");
     // warm up extra engines for parallel rendering while the speech model works (a failed one is simply not used)
     spares = Array.from({ length: renderSlots() - 1 }, () => spareEngine(sess).catch(e => { console.warn("spare engine failed:", e?.message || e); return null; }));
-    const words = await transcribe(pcm, X.asrWindows(loud, info.duration), opts.model);
+    if (phase === "read") { sess.prep = { loud, quiet, info, pcm }; sess.status = "queued"; sess.msg = ""; return; }
+    }
+    if (phase === "all" || phase === "listen") {
+    if (IS_WEBKIT) dropEngine(E0);               // Safari: give the speech model the whole WebAssembly budget...
+    words = await transcribe(pcm, X.asrWindows(loud, info.duration), opts.model, phase === "listen");
     if (cancelled) throw new Error("Cancelled.");
     perf.lap("transcribe");
+    if (phase === "listen") { Object.assign(sess.prep, { words, pcm: null }); sess.status = "queued"; sess.msg = ""; return; }
+    }
+    if (!E0.ff) await withTimeout(loadEngine(E0, true), 90000);   // ...then a fresh engine renders
+    await mountSrc(E0, sess);
     stage("score", 50, "Finding the best moments…");
     const segs = X.segmentsFromWords(words);
     const plat = X.F.platforms[o.platform];
@@ -666,12 +706,13 @@ async function processSession(sess) {
     await Promise.all(engines.map(worker));      // workers never reject; the first error stops new work, then surfaces
     if (cancelled) throw new Error("Cancelled.");
     if (failed) throw failed;
-    sess.status = "done";
+    sess.status = "done"; sess.prep = null;
     sess.clips.sort((a, b) => a.rank - b.rank).forEach((c, i) => { c.idx = String(i + 1).padStart(2, "0"); });
     if (sess.clips.length) toast(`${sess.title}: ${sess.clips.length} clip${sess.clips.length > 1 ? "s" : ""} ready`);
   } catch (err) {
     if (cancelled) { sess.status = sess.clips.length ? "done" : "ready"; sess.msg = ""; }
     else { console.error(err); sess.status = "error"; sess.err = friendly(err); }
+    if (err?.message === OOM) dropEngine(E0);      // a stalled engine is dead weight: the next video loads a fresh one
   } finally {
     // spare engines are per run (memory); E0 keeps the source mounted for edits
     for (const sp of spares) sp.then(E => { try { E?.ff?.terminate(); } catch {} });
@@ -868,11 +909,16 @@ async function enterDesktop(info) {
 // one renders. Where memory is tight, the edit engine is E0 and edits wait for the batch to finish.
 const jobs = [];
 let jobNow = null;
-const jobKey = (c, cut) => `${c ? c.uid : "new"}:${cut}`;
-function jobFor(c, cut) { return [jobNow, ...jobs].find(j => j && j.key === jobKey(c, cut)) || null; }
+const jobKey = (c, cut) => `${c.uid}:${cut}`;
+let newSeq = 0;
+function jobFor(c, cut) {
+  const all = [jobNow, ...jobs].filter(Boolean);
+  return c ? all.find(j => j.key === jobKey(c, cut)) || null : all.filter(j => !j.c && j.cut === cut).pop() || null;   // new clips: the latest
+}
 function queueRender(job) {
-  job.key = jobKey(job.c, job.cut);
-  const dup = jobs.findIndex(j => j.key === job.key); if (dup >= 0) jobs.splice(dup, 1);   // the newest edit wins
+  job.key = job.c ? jobKey(job.c, job.cut) : `new:${++newSeq}`;      // every clip made from the transcript is its own job
+  const dup = job.c ? jobs.findIndex(j => j.key === job.key) : -1;
+  if (dup >= 0) { const [old] = jobs.splice(dup, 1); old.resolve?.({ ok: false, superseded: true }); }   // the newest edit of a cut wins
   job.state = "queued"; job.pct = 0;
   const p = new Promise(res => { job.resolve = res; });
   jobs.push(job); notifyJob(job); pump();
