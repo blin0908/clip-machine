@@ -40,11 +40,19 @@ const errors = []; page.on("pageerror", e => errors.push(e.message));
 const idle = (ms = 600000) => page.waitForFunction(() => document.querySelector("#prog").classList.contains("hide") &&
   ![...document.querySelectorAll(".qi")].some(q => q.dataset.st === "running" || q.dataset.st === "queued"), null, { timeout: ms, polling: 1000 });
 const mod = process.platform === "darwin" ? "Meta" : "Control";
+const RED_PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAACAAAAAQCAYAAAB3AH1ZAAAAI0lEQVR4nO3OIQEAAAwEoetfeovxBoGnq1tKQEBAQEBAYB142QD8LgetqmMAAAAASUVORK5CYII=", "base64");
 try {
   await page.goto(BASE + "?key=" + KEY, { waitUntil: "load" });
   await page.waitForFunction(() => document.body.classList.contains("desk"), null, { timeout: 10000 });
   check(true, "desktop mode detected");
   check(await page.locator('.chips[data-k="model"] [data-v="small"]').count() === 1, "native speech models offered");
+
+  // ---- brand kit: the logo is stored by the app and burned in natively
+  await page.setInputFiles("#logoFile", { name: "logo.png", mimeType: "image/png", buffer: RED_PNG });
+  await page.waitForFunction(() => !document.querySelector("#logoPrev").hidden);
+  await page.locator('.chips[data-k="lpos"] [data-v="tr"]').dispatchEvent("click");
+  await page.locator('.chips[data-k="lop"] [data-v="1"]').dispatchEvent("click");
+  check((await page.evaluate(async () => (await fetch("api/brand/logo", { cache: "no-store" })).status)) === 200, "the desktop app keeps the logo");
 
   // ---- a link and a file, one run
   await page.locator('.chips[data-k="model"] [data-v="tiny"]').dispatchEvent("click");   // inside a folded section
@@ -62,6 +70,14 @@ try {
   await page.click(".qi >> nth=0");
   await page.waitForFunction(() => document.querySelectorAll("#out .clip").length > 0);
   check(/talk/.test(await page.locator(".qi >> nth=0").textContent()), "link job shows the video's title", await page.locator(".qi .n >> nth=0").textContent());
+  const px = await page.evaluate(async () => {     // 1080x1920: the logo box is 130 px, 54 px from the right, 86 px down
+    const v = document.querySelector("#out .clip video"); v.muted = true;
+    if (v.readyState < 2) { v.load(); await new Promise(r => { v.addEventListener("loadeddata", r, { once: true }); setTimeout(r, 8000); }); }
+    v.currentTime = 1; await new Promise(r => { v.addEventListener("seeked", r, { once: true }); setTimeout(r, 4000); });
+    const c = document.createElement("canvas"); c.width = v.videoWidth; c.height = v.videoHeight;
+    const g = c.getContext("2d"); g.drawImage(v, 0, 0); return [...g.getImageData(960, 110, 1, 1).data.slice(0, 3)];
+  });
+  check(px[0] > 180 && px[1] < 90 && px[2] < 90, "native render has the logo in the top-right corner", px.join(","));
 
   // ---- studio edit on the native engine: trim + 1:1 + style
   const uid = await page.locator("#out .clip").first().getAttribute("data-uid"), vsel = `#out .clip[data-uid="${uid}"] video`;

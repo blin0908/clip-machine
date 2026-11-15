@@ -311,6 +311,24 @@ export function captionLayout(plat, { format = "9:16", size = "m", pos = "bottom
   const marginV = pos === "top" ? hookTop + Math.round(PY * 0.11) : pos === "middle" ? 0 : tall ? plat.cap_bottom : Math.round(PY * 0.1);
   return { PX, PY, align, marginV, marginLR, hookTop, scale };
 }
+// Brand logo: a square box in a top corner, under the captions. Mirrors logo_box / logo_chain in clipper.py.
+export const LOGO_SIZES = { s: 0.09, m: 0.12, l: 0.15 }, LOGO_OPACITY = [0.5, 0.7, 1];
+export function logoBox(format = "9:16", { lpos = "tl", lsize = "m" } = {}, hd = true) {
+  const [W, H] = frameSize(format, hd), m = Math.min(W, H);
+  const box = Math.round(m * (LOGO_SIZES[lsize] || LOGO_SIZES.m) / 2) * 2;
+  const mx = Math.round(m * 0.05), my = format === "9:16" ? Math.round(H * 0.045) : mx;
+  return { W, H, box, mx, my, right: lpos === "tr" };
+}
+export function logoOpacity(v) {
+  const n = Number(v);
+  return Number.isFinite(n) && v !== "" && v != null ? LOGO_OPACITY.reduce((a, o) => Math.abs(o - n) < Math.abs(a - n) ? o : a) : 0.7;
+}
+/** Filtergraph piece: scale logo input #idx into its box and lay it over inLabel (the caller continues the chain). */
+export function logoChain(format, look, inLabel, idx, hd = true) {
+  const b = logoBox(format, look, hd);
+  return `[${idx}:v]scale=w=${b.box}:h=${b.box}:force_original_aspect_ratio=decrease,format=rgba,` +
+         `colorchannelmixer=aa=${logoOpacity(look?.lop).toFixed(2)}[lg];${inLabel}[lg]overlay=x=${b.right ? `W-w-${b.mx}` : b.mx}:y=${b.my}`;
+}
 export function buildASS(m, plat, keep, { captions = true, hook = true, cta = "", style = "pop", hl = "#FFF000", size = "m", pos = "bottom", format = "9:16" } = {}) {
   const font = "Montserrat Thin Black";   // the family name stored inside fonts/Montserrat-Black.ttf
   const L0 = captionLayout(plat, { format, size, pos }), k = L0.scale, R = L0.marginLR, n = x => Math.round(x * k);

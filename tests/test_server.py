@@ -149,6 +149,18 @@ class ServerTest(unittest.TestCase):
         row = next(j for j in self.c.get("/api/jobs", headers=self.k).get_json() if j["id"] == jid)
         self.assertTrue(row["has_result"])                                          # the page can tell an edit from a first run
 
+    def test_brand_logo(self):
+        png = b"\x89PNG\r\n\x1a\n" + b"0" * 64
+        self.assertEqual(self.c.get("/api/brand/logo", headers=self.k).status_code, 404)
+        self.assertEqual(self.c.post("/api/brand/logo", data=b"GIF89a....", headers=self.k).status_code, 400)
+        self.assertEqual(self.c.post("/api/brand/logo", data=png, headers=self.k).status_code, 200)
+        r = self.c.get("/api/brand/logo", headers=self.k)
+        self.assertEqual((r.status_code, r.data), (200, png)); r.close()
+        self.assertEqual(server.logo_file(), server.JOBS / "_brand" / "logo.png")
+        self.c.delete("/api/brand/logo", headers=self.k)
+        self.assertIsNone(server.logo_file())
+        self.assertEqual(self.c.post("/api/brand/logo", data=b"x").status_code, 403)       # needs the key
+
     def test_pages(self):
         self.assertEqual(self.c.get("/api/info", headers=self.k).get_json()["desktop"], True)
         for path in ("/", "/classic", "/studio.js", "/app.js", "/zip.js", "/fonts/ui/archivo-400-800.woff2", "/vendor/ffmpeg/index.js"):

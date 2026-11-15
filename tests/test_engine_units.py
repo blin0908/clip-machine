@@ -68,6 +68,17 @@ class QualityGateRules(unittest.TestCase):
 
 
 class Looks(unittest.TestCase):
+    def test_brand_logo_settings(self):
+        lk = clipper.clean_look({"logo": "1", "lpos": "tr", "lsize": "l", "lop": "0.66"})
+        self.assertEqual((lk["logo"], lk["lpos"], lk["lsize"], lk["lop"]), (True, "tr", "l", 0.7))
+        junk = clipper.clean_look({"logo": "maybe", "lpos": "bottom", "lsize": "xl", "lop": "abc", "logo_path": "/etc/passwd"})
+        self.assertNotIn("lpos", junk); self.assertNotIn("lsize", junk); self.assertNotIn("logo_path", junk)
+        self.assertEqual(junk.get("lop"), 0.7)
+        kept = clipper.clean_look({"format": "1:1"}, {"logo": True, "lpos": "tr"})   # an edit keeps the run's brand settings
+        self.assertEqual((kept["logo"], kept["lpos"]), (True, "tr"))
+        b = clipper.logo_box("16:9", {"lsize": "s"})
+        self.assertEqual((b["box"], b["mx"], b["my"]), (98, 54, 54))
+
     def test_frame_sizes(self):
         self.assertEqual(clipper.frame_size("9:16"), (1080, 1920))
         self.assertEqual(clipper.frame_size("4:5"), (1080, 1350))

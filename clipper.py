@@ -655,12 +655,45 @@ def caption_layout(plat, fmt="9:16", size="m", pos="bottom"):
     return dict(PX=PX, PY=PY, align=align, marginV=mv, marginLR=lr, hookTop=hook_top, scale=scale)
 
 
+LOGO_SIZES = {"s": 0.09, "m": 0.12, "l": 0.15}   # logo box, as a share of the frame's short side
+LOGO_OPACITY = (0.5, 0.7, 1.0)
+
+
+def logo_box(fmt="9:16", look=None, short=1080):
+    """Where the brand logo sits: a square box (px) in a top corner. Mirrors logoBox in formula.js."""
+    look = look or {}
+    W, H = frame_size(fmt, short)
+    m = min(W, H)
+    box = _rnd(m * LOGO_SIZES.get(look.get("lsize"), LOGO_SIZES["m"]) / 2) * 2
+    mx = _rnd(m * 0.05)
+    my = _rnd(H * 0.045) if fmt == "9:16" else mx
+    return dict(W=W, H=H, box=box, mx=mx, my=my, right=look.get("lpos") == "tr")
+
+
+def logo_opacity(v):
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return 0.7
+    return min(LOGO_OPACITY, key=lambda o: abs(o - v)) if math.isfinite(v) else 0.7
+
+
+def logo_chain(fmt, look, in_label, idx, short=1080):
+    """Filtergraph piece that scales the logo (input #idx) into its box and lays it over in_label.
+    Mirrors logoChain in formula.js (tests/formula.test.mjs checks they match)."""
+    b = logo_box(fmt, look, short)
+    x = f"W-w-{b['mx']}" if b["right"] else str(b["mx"])
+    return (f"[{idx}:v]scale=w={b['box']}:h={b['box']}:force_original_aspect_ratio=decrease,format=rgba,"
+            f"colorchannelmixer=aa={logo_opacity((look or {}).get('lop')):.2f}[lg];{in_label}[lg]overlay=x={x}:y={b['my']}")
+
+
 def clean_look(d, base=None):
     """Validate the per-cut look a client sends (studio edits): unknown or bad values fall back to base."""
     base = dict(base or {})
     d = d if isinstance(d, dict) else {}
     out = {"format": base.get("format", "9:16"), "hl": base.get("hl", "#FFF000"), "size": base.get("size", "m"),
            "pos": base.get("pos", "bottom"), "cy": base.get("cy", 0.5)}
+    out.update({k: base[k] for k in ("logo", "lpos", "lsize", "lop") if k in base})   # an edit keeps the run's brand settings
     if d.get("format") in FORMATS: out["format"] = d["format"]
     if isinstance(d.get("hl"), str) and re.fullmatch(r"#[0-9a-fA-F]{6}", d["hl"]): out["hl"] = d["hl"].upper()
     if d.get("size") in SIZES: out["size"] = d["size"]
@@ -675,6 +708,11 @@ def clean_look(d, base=None):
     if d.get("layout") in ("fit", "crop"): out["layout"] = d["layout"]
     for k in ("tighten", "captions", "hook"):
         if isinstance(d.get(k), bool): out[k] = d[k]
+    if isinstance(d.get("logo"), bool): out["logo"] = d["logo"]
+    elif d.get("logo") in ("1", "0", "true", "false"): out["logo"] = d["logo"] in ("1", "true")
+    if d.get("lpos") in ("tl", "tr"): out["lpos"] = d["lpos"]
+    if d.get("lsize") in LOGO_SIZES: out["lsize"] = d["lsize"]
+    if d.get("lop") not in (None, ""): out["lop"] = logo_opacity(d["lop"])
     return out
 
 
@@ -800,13 +838,20 @@ def render(video: Path, m: Moment, out: Path, layout="fit", captions=True, crop_
                        f"y='ih/2-(ih/zoom/2)':s={W}x{H}:fps={fps}")
     ass = out.with_suffix(".ass")
     overlay = layout != "original" and ((captions and m.words) or (hook and m.title) or cta)
+    subs = ""
     if overlay:
         write_ass(m, ass, plat, keep, captions, hook, cta, style, look)
-        vf += f",ass='{_ffesc(str(ass))}':fontsdir='{_ffesc(FONT_DIR)}'"
+        subs = f",ass='{_ffesc(str(ass))}':fontsdir='{_ffesc(FONT_DIR)}'"
+    # brand logo: laid over the picture under the captions, so a long headline draws on top of it
+    lp = look.get("logo_path")
+    logo = lp if look.get("logo") and layout != "original" and lp and Path(lp).is_file() else None
+    fmt = look.get("format", "9:16")
 
     if info["has_video"]:
         cmd = [FFMPEG, "-y", "-hide_banner", "-v", "info", "-ss", f"{m.start:.3f}", "-t", f"{dur:.3f}", "-i", str(video)]
-        vchain = f"[0:v]{pre},{vf},setsar=1[v]"   # square pixels: scale/crop rounding otherwise leaves SAR 10240:10239
+        if logo: cmd += ["-i", logo]
+        lg = f"[pv];{logo_chain(fmt, look, '[pv]', 1)}" if logo else ""
+        vchain = f"[0:v]{pre},{vf}{lg}{subs},setsar=1[v]"   # square pixels: scale/crop rounding otherwise leaves SAR 10240:10239
     clean = ("highpass=f=80,afftdn=nr=10:nf=-40,equalizer=f=3200:t=q:w=1.2:g=2.5,"
              "acompressor=threshold=-20dB:ratio=2.5:attack=10:release=150:makeup=2,") if enhance else ""
     if info["has_video"]:
@@ -814,9 +859,10 @@ def render(video: Path, m: Moment, out: Path, layout="fit", captions=True, crop_
     else:  # audio-only source (podcast, voice memo): audiogram = moving waveform on a dark card + captions
         cmd = [FFMPEG, "-y", "-hide_banner", "-v", "info", "-ss", f"{m.start:.3f}", "-t", f"{dur:.3f}", "-i", str(video),
                "-f", "lavfi", "-i", f"color=c=0x101018:s={W}x{H}:r={fps}:d={dur:.3f}"]
-        subs = f",ass='{_ffesc(str(ass))}':fontsdir='{_ffesc(FONT_DIR)}'" if overlay else ""
+        if logo: cmd += ["-i", logo]
+        lg = f"[pv];{logo_chain(fmt, look, '[pv]', 2)}" if logo else ""
         vchain = (f"[0:a]{apre},asplit[am][aw];[aw]showwaves=s={W}x{_rnd(H * 0.22)}:mode=cline:rate={fps}:colors=0xF2C230,"
-                  f"format=yuva420p[w];[1:v][w]overlay=0:(H-h)/2-{_rnd(260 * H / 1920)}:shortest=1{subs},setsar=1[v]")
+                  f"format=yuva420p[w];[1:v][w]overlay=0:(H-h)/2-{_rnd(260 * H / 1920)}:shortest=1{lg}{subs},setsar=1[v]")
         achain = f"[am]{clean}loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[a]"
     # quality detectors ride along on the render (final picture + final audio), so the clip isn't decoded twice
     taps = (";[v]split[vo][vq];[vq]blackdetect=d=0.5:pix_th=0.10,freezedetect=n=-60dB:d=2,nullsink"
@@ -916,10 +962,12 @@ def fmt_t(t):
 # ---------------------------------------------------------------- pipeline
 def run(source, outdir: Path, n=5, min_len=None, max_len=None, layout="fit", captions=True,
         model="base", crop_x=0.5, platform="all", hook=True, tighten=True, version="both", cta="",
-        enhance=True, style="pop", progress=_noop, look=None) -> dict:
+        enhance=True, style="pop", progress=_noop, look=None, logo=None) -> dict:
     """version: 'both' = long cut + a short cut with the same opening; 'short' or 'long' = one cut.
-    look: {format, hl, size, pos} caption/frame choices (defaults: 9:16, yellow, medium, lower third)."""
+    look: {format, hl, size, pos, logo, lpos, lsize, lop} caption/frame/brand choices (defaults: 9:16, yellow,
+    medium, lower third, no logo). logo: path to the brand logo image, used when look["logo"] is on."""
     look = clean_look(look)
+    rlook = dict(look, logo_path=str(logo)) if logo else look   # what render sees; the path isn't saved with the clips
     outdir.mkdir(parents=True, exist_ok=True)
     video, title = fetch(source, outdir, progress)
     info = probe(video)
@@ -946,12 +994,12 @@ def run(source, outdir: Path, n=5, min_len=None, max_len=None, layout="fit", cap
 
     def make(mm, path, use_cta):
         """Render, measure, and if a hard check fails re-render once with safe settings."""
-        st = render(video, mm, path, layout, captions, crop_x, info, platform, hook, tighten, use_cta, enhance, style, look)
+        st = render(video, mm, path, layout, captions, crop_x, info, platform, hook, tighten, use_cta, enhance, style, rlook)
         qc = quality_check(path, st, mm, captions)
         for safe_tighten in ((tighten, False) if tighten else (False,)):
             if _passed(qc) or _content_fail(qc):   # safe mode can't fix a silent or black source: don't re-render
                 break
-            st = render(video, mm, path, layout, captions, crop_x, info, platform, hook, safe_tighten, use_cta, False, style, look)
+            st = render(video, mm, path, layout, captions, crop_x, info, platform, hook, safe_tighten, use_cta, False, style, rlook)
             qc = quality_check(path, st, mm, captions)
             st["retried"] = True
             st["_tighten"] = safe_tighten
@@ -1003,7 +1051,7 @@ def run(source, outdir: Path, n=5, min_len=None, max_len=None, layout="fit", cap
 
 
 def edit_cut(outdir: Path, idx: int, cut: str, start: float, end: float, title: str, words: list,
-             style: str | None = None, progress=_noop, look=None, cta=None) -> dict:
+             style: str | None = None, progress=_noop, look=None, cta=None, logo=None) -> dict:
     """Re-render one cut after a manual edit (trim, caption fixes, headline, style) and re-run the quality gate.
     The previous file is only replaced if the new render passes every hard check."""
     sess = json.loads((outdir / "session.json").read_text())
@@ -1050,11 +1098,12 @@ def edit_cut(outdir: Path, idx: int, cut: str, start: float, end: float, title: 
     tmp = outdir / f"_edit_{target['file']}"
     progress("render", 10, "Rendering" if cut == "new" else "Re-rendering")
     args = (video, m, tmp, layout, captions, lk.get("cx", base.get("crop_x", 0.5)), info, st_["platform"], hook)
-    stats = render(*args, tighten, use_cta, st_["enhance"], style, lk)
+    rlk = dict(lk, logo_path=str(logo)) if logo else lk
+    stats = render(*args, tighten, use_cta, st_["enhance"], style, rlk)
     qc = quality_check(tmp, stats, m, captions)
     if not _passed(qc) and not _content_fail(qc):
         progress("render", 60, "Re-rendering in safe mode")
-        stats = render(*args, False, use_cta, False, style, lk)
+        stats = render(*args, False, use_cta, False, style, rlk)
         qc = quality_check(tmp, stats, m, captions)
         stats["retried"] = True
     if not _passed(qc):
@@ -1110,6 +1159,8 @@ if __name__ == "__main__":
                     help="both = long cut + short cut with the same opening")
     ap.add_argument("--cta", default="", help="end-card text on the long cut, e.g. 'Which one would you pick?'")
     ap.add_argument("--style", choices=list(CAPTION_STYLES), default="pop", help="caption look: pop | clean | boxed")
+    ap.add_argument("--logo", help="brand logo image (PNG with transparency works best), laid over a top corner")
+    ap.add_argument("--logo-pos", choices=["tl", "tr"], default="tl", help="logo corner: tl (top left) | tr (top right)")
     ap.add_argument("-o", "--out", default=str(HERE / "jobs" / "cli"))
     a = ap.parse_args()
 
@@ -1119,7 +1170,8 @@ if __name__ == "__main__":
             print()
     res = run(a.source, Path(a.out), a.n, a.min, a.max, a.layout, not a.no_captions, a.model,
               platform=a.platform, hook=not a.no_hook, tighten=not a.keep_pauses, version=a.version,
-              cta=a.cta, enhance=not a.no_enhance, style=a.style, progress=pr)
+              cta=a.cta, enhance=not a.no_enhance, style=a.style, progress=pr,
+              look={"logo": bool(a.logo), "lpos": a.logo_pos} if a.logo else None, logo=a.logo)
     for c in res["clips"]:
         print(f"{c['score']:>4}  {c['range']:>13s}  {c['duration']}s  {c['file']}  {c['title']}")
         if c.get("short"):

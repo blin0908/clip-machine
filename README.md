@@ -55,7 +55,7 @@ The desktop app opens the same workspace in your browser, but does the work on y
 | Windows | double-click **Install (Windows).bat** (tick "Add python.exe to PATH" when installing Python) | **Start Clip Machine.bat** |
 | Linux | `./install.sh` (Debian/Ubuntu may need `sudo apt install python3-venv`) | `./start.sh` |
 
-Command line: `.venv/bin/python clipper.py <url-or-file> -p tiktok -n 5 --style boxed` (Windows: `.venv\Scripts\python`).
+Command line: `.venv/bin/python clipper.py <url-or-file> -p tiktok -n 5 --style boxed --logo logo.png --logo-pos tr` (Windows: `.venv\Scripts\python`).
 
 ## The workspace
 
@@ -68,6 +68,7 @@ Built for clipping every day, not once:
   - **Look**: caption style (*Pop*, *Clean*, *Boxed*), highlight colour, size, position, headline on/off, frame (**9:16, 4:5, 1:1, 16:9**), full frame + blur or **fill and drag to reframe**, and pause cutting on/off.
   - **Render** (**⌘/Ctrl + Enter**) queues the edit and lets you move to the next clip (**]**) while it renders. Every render goes back through the quality gate; if it fails, your previous version is kept. **⌘/Ctrl + Z** undoes.
 - **Transcript.** Search the whole video, select any stretch of words and **make your own clip** from it.
+- **Brand kit.** Add your logo once (PNG with a transparent background works best) and it's laid over a top corner of every clip, under the captions. Pick the corner, size and opacity, and turn it on or off per clip in the studio. The desktop app keeps the logo on your computer.
 - **Presets.** Save your settings per show or platform; starter presets cover podcasts → Shorts, talking heads → TikTok, square feed posts and landscape highlights. Your last settings come back next time.
 - **Keyboard first.** Press **?** for every shortcut.
 

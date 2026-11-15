@@ -12,7 +12,8 @@ const icon = id => `<svg class="i" aria-hidden="true"><use href="#i-${id}"/></sv
 const CORE = "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/esm";
 const PN = { tiktok: "TikTok", reels: "Reels", shorts: "YT Shorts", facebook: "Facebook", snapchat: "Snapchat", x: "X" };
 const DEF = { platform: "all", n: "3", version: "both", quality: "fast", model: "Xenova/whisper-base.en", format: "9:16",
-              captions: "1", hook: "1", tighten: "1", enhance: "1", layout: "fit", style: "pop", hl: "#FFF000", size: "m", pos: "bottom" };
+              captions: "1", hook: "1", tighten: "1", enhance: "1", layout: "fit", style: "pop", hl: "#FFF000", size: "m", pos: "bottom",
+              logo: "1", lpos: "tl", lsize: "m", lop: "0.7" };
 const opts = { ...DEF };
 // DESK = set when this page is served by the desktop app: videos and links are processed by its native engine
 // (faster-whisper + ffmpeg on this computer) instead of in the browser.
@@ -47,6 +48,7 @@ function setChip(k, v, save = true) {
     opts[k] = v;
   }
   if (k === "platform") showPlat();
+  if (["logo", "lpos"].includes(k) && typeof paintBrand === "function") paintBrand();
   lookSummary();
   if (save) { saveLast(); markCustom(); }
 }
@@ -66,11 +68,16 @@ function showPlat() {
   $("#vboth").disabled = $("#vlong").disabled = !l;
   if (!l && opts.version !== "short") setChip("version", "short", false);
 }
-function lookSummary() { $("#lookSum").textContent = opts.captions === "1" ? `${opts.style} · ${opts.size.toUpperCase()} · ${opts.format}` : `no captions · ${opts.format}`; }
+function lookSummary() {
+  const lg = opts.logo === "1" && brand.url ? " · logo" : "";
+  $("#lookSum").textContent = (opts.captions === "1" ? `${opts.style} · ${opts.size.toUpperCase()} · ${opts.format}` : `no captions · ${opts.format}`) + lg;
+}
 
 const PKEY = "clipmachine.presets", LKEY = "clipmachine.last";
 const store = { get(k, d) { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } },
                 set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} } };
+const BKEY = "clipmachine.logo";
+const brand = { url: store.get(BKEY, null), bytes: null, v: 1 };     // the brand logo (see "brand logo" below)
 const BUILTIN = {
   "Default · vertical, all platforms": {},
   "Podcast → YouTube Shorts": { platform: "shorts", n: "5", version: "both", style: "pop", layout: "fit" },
@@ -150,7 +157,7 @@ async function loadEngine(E, quiet = false) {
   await ff.createDir("/fonts");
   await ff.writeFile("/fonts/Montserrat-Black.ttf", new Uint8Array((await getFont()).slice(0)));   // a copy: writeFile hands its buffer to the worker
   await ff.createDir("/in");
-  E.ff = ff; E.mounted = null;
+  E.ff = ff; E.mounted = null; E.logoV = 0;
   return ff;
 }
 // Throw an engine away (a fresh worker gets a fresh WebAssembly heap: WebKit never gives memory back).
@@ -194,7 +201,7 @@ async function resetFFmpeg(E = E0) {      // a fresh engine with the source re-m
   await withTimeout((async () => {
     await loadEngine(E, true);
     if (file) { await E.ff.mount("WORKERFS", { files: [file] }, "/in"); E.mounted = id; E.file = file; }
-    for (const [p, d] of E.cache) await E.ff.writeFile(p, d);
+    for (const [p, d] of E.cache) await E.ff.writeFile(p, d instanceof Uint8Array ? d.slice() : d);
   })(), 40000);
 }
 async function run(args, onTime, retry = true, E = E0) {
@@ -447,7 +454,8 @@ function transcribe(pcm, windows, model, keep = false) {
 // ---------------------------------------------------------------- render + quality gate
 // look = the per-cut choices the studio can change: { style, hl, size, pos, format, layout, cx, cy, tighten, captions, hook }
 const lookFrom = o => ({ style: o.style, hl: o.hl, size: o.size, pos: o.pos, format: o.format, layout: o.layout, cx: 0.5, cy: 0.5,
-                         tighten: o.tighten, captions: o.captions, hook: o.hook });
+                         tighten: o.tighten, captions: o.captions, hook: o.hook,
+                         logo: !!o.logo, lpos: o.lpos || "tl", lsize: o.lsize || "m", lop: X.logoOpacity(o.lop) });
 function filterGraph(m, keep, info, o, hasASS) {
   const [W, H] = X.frameSize(o.format, o.hd);
   const fps = Math.round(Math.min(Math.max(info.fps || 30, 23), 60));
@@ -475,6 +483,9 @@ function filterGraph(m, keep, info, o, hasASS) {
     keep.forEach(([a, b], k) => { const s = t; t += b - a; if (k % 2) z.push(`between(on,${Math.floor(s * fps)},${Math.max(Math.floor(t * fps) - 1, Math.floor(s * fps))})`); });
     if (z.length) vf += `,zoompan=z='if(${z.join("+")},1.08,1)':d=1:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=${W}x${H}:fps=${fps}`;
   }
+  // brand logo (input #1): laid over the picture under the captions, so a long headline draws on top of it
+  const lg = o.logo ? `[pv];${X.logoChain(o.format, o, "[pv]", 1, o.hd)}` : "";
+  vf += lg;
   if (hasASS) vf += ",ass=/sub.ass:fontsdir=/fonts";
   vf += ",setsar=1";   // square pixels: scale/crop rounding otherwise leaves SAR 10240:10239 (players show 719 px)
   const clean = o.enhance ? "highpass=f=80,afftdn=nr=10:nf=-40,equalizer=f=3200:t=q:w=1.2:g=2.5,acompressor=threshold=-20dB:ratio=2.5:attack=10:release=150:makeup=2," : "";
@@ -483,10 +494,63 @@ function filterGraph(m, keep, info, o, hasASS) {
     const ass = hasASS ? ",ass=/sub.ass:fontsdir=/fonts" : "";
     return { fc: `[0:a]${apre},asplit[aw][am];color=c=0x101018:s=${W}x${H}:r=${fps}[bg];` +
       `[aw]showwaves=s=${W}x${Math.round(H * 0.22)}:mode=cline:colors=0xF2C230:rate=${fps}[wv];` +
-      `[bg][wv]overlay=0:(H-h)/2:shortest=1,format=yuv420p${ass},setsar=1[v];[am]${aout}`, fps, W, H, audiogram: true };
+      `[bg][wv]overlay=0:(H-h)/2:shortest=1,format=yuv420p${lg}${ass},setsar=1[v];[am]${aout}`, fps, W, H, audiogram: true };
   }
   return { fc: `[0:v]${pre},${vf}[v];[0:a]${apre},${aout}`, fps, W, H };
 }
+
+// ---------------------------------------------------------------- brand logo
+// One logo per browser (a PNG data URL, at most 512 px). Inside the desktop app the app's copy is the source of truth.
+async function brandIntoEngine(E) {
+  if (E.logoV === brand.v) return;
+  brand.bytes ||= new Uint8Array(await (await fetch(brand.url)).arrayBuffer());
+  E.cache.set("/logo.png", brand.bytes);
+  await E.ff.writeFile("/logo.png", brand.bytes.slice());   // a copy: writeFile hands its buffer to the worker
+  E.logoV = brand.v;
+}
+function setBrand(url) {                      // url: a PNG data URL, or null to remove
+  brand.url = url; brand.bytes = null; brand.v++;
+  try { url ? localStorage.setItem(BKEY, JSON.stringify(url)) : localStorage.removeItem(BKEY); } catch {}
+  paintBrand();
+}
+function paintBrand() {
+  $("#logoPrev").hidden = !brand.url;
+  if (brand.url) $("#logoPrev img").src = brand.url;
+  $("#logoPick").textContent = brand.url ? "Replace logo" : "Add a logo";
+  $("#logoDel").hidden = !brand.url;
+  $("#brandSum").textContent = !brand.url ? "no logo" : opts.logo === "1" ? `logo · ${opts.lpos === "tr" ? "top right" : "top left"}` : "logo off";
+  document.querySelectorAll('#brandOpts .chips').forEach(g => g.classList.toggle("off", !brand.url));
+  lookSummary();
+}
+// any image → a PNG at most 512 px on its long side (keeps transparency)
+async function toLogoPNG(file) {
+  const img = await createImageBitmap(file);
+  const k = Math.min(1, 512 / Math.max(img.width, img.height));
+  const cv = document.createElement("canvas");
+  cv.width = Math.max(1, Math.round(img.width * k)); cv.height = Math.max(1, Math.round(img.height * k));
+  cv.getContext("2d").drawImage(img, 0, 0, cv.width, cv.height);
+  const blob = await new Promise(r => cv.toBlob(r, "image/png"));
+  const url = await new Promise(r => { const fr = new FileReader(); fr.onload = () => r(fr.result); fr.readAsDataURL(blob); });
+  return { blob, url };
+}
+$("#logoPick").onclick = () => $("#logoFile").click();
+$("#logoFile").addEventListener("change", async e => {
+  const f = e.target.files[0]; e.target.value = "";
+  if (!f) return;
+  try {
+    const { blob, url } = await toLogoPNG(f);
+    if (DESK) {
+      const r = await fetch("api/brand/logo", { method: "POST", headers: { "Content-Type": "image/png" }, body: blob });
+      if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || "The desktop app didn't take the logo.");
+    }
+    setBrand(url); setChip("logo", "1");
+    toast("Logo added. New clips get it in the corner.");
+  } catch (err) { toast("Couldn't use that image: " + (err.message || "try a PNG or JPG")); }
+});
+$("#logoDel").onclick = async () => {
+  if (DESK) await fetch("api/brand/logo", { method: "DELETE" }).catch(() => {});
+  setBrand(null); toast("Logo removed");
+};
 
 async function renderClip(sess, m, look, cta, onPct, E = E0) {
   const o = { ...sess.o, ...look };
@@ -494,13 +558,15 @@ async function renderClip(sess, m, look, cta, onPct, E = E0) {
   const plat = X.F.platforms[o.platform];
   const hasASS = (o.captions && m.words.length) || (o.hook && m.title) || cta;
   if (hasASS) await writeFS("/sub.ass", X.buildASS(m, plat, keep, { captions: o.captions, hook: o.hook, cta, style: o.style, hl: o.hl, size: o.size, pos: o.pos, format: o.format }), E);
+  o.logo = !!(o.logo && brand.url);
+  if (o.logo) await brandIntoEngine(E);
   const { fc, fps, W, H, audiogram } = filterGraph(m, keep, sess.info, o, hasASS);
   const dur = m.end - m.start, expected = keep.reduce((a, [x, y]) => a + y - x, 0);
   // the quality detectors ride along on the render (black/freeze on the final picture, silence/loudness on the final audio),
   // so the clip isn't decoded a second time just to check it
   const taps = `;[v]split[vo][vq];[vq]blackdetect=d=0.5:pix_th=0.10,freezedetect=n=-60dB:d=2,nullsink` +
                `;[a]asplit[ao][aq];[aq]silencedetect=n=-45dB:d=2,ebur128=peak=true,anullsink`;
-  const r = await run(["-ss", m.start.toFixed(3), "-t", dur.toFixed(3), "-i", sess.path, "-filter_complex", fc + taps, "-map", "[vo]", "-map", "[ao]",
+  const r = await run(["-ss", m.start.toFixed(3), "-t", dur.toFixed(3), "-i", sess.path, ...(o.logo ? ["-i", "/logo.png"] : []), "-filter_complex", fc + taps, "-map", "[vo]", "-map", "[ao]",
     "-c:v", "libx264", "-preset", o.hd ? "veryfast" : "ultrafast", "-crf", o.hd ? "20" : "22", "-pix_fmt", "yuv420p",
     "-r", String(fps), "-g", String(fps * 2), "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-movflags", "+faststart", "-shortest", "/out.mp4"],
     t => onPct(Math.min(95, 95 * t / Math.max(expected, 1))), true, E);
@@ -590,7 +656,8 @@ async function go() {
 }
 const runOpts = () => ({ platform: opts.platform, n: +opts.n, version: opts.version, hd: opts.quality === "hd" || !!DESK, captions: opts.captions === "1",
   hook: opts.hook === "1", tighten: opts.tighten === "1", enhance: opts.enhance === "1", layout: opts.layout, style: opts.style,
-  hl: opts.hl, size: opts.size, pos: opts.pos, format: opts.format });
+  hl: opts.hl, size: opts.size, pos: opts.pos, format: opts.format,
+  logo: opts.logo === "1" && !!brand.url, lpos: opts.lpos, lsize: opts.lsize, lop: X.logoOpacity(opts.lop) });
 // phase: "all" = the whole run. On Safari the queue runs in three passes instead, so that only three big WebAssembly
 // instances are ever started, each after the previous one is gone: "read" (every video's audio, one video engine),
 // "listen" (every transcript, one speech model), "cut" (score + render, one fresh video engine). Tested in WebKit: a
@@ -779,7 +846,8 @@ function upload(url, fd, onPct) {
 }
 const oFromJob = o => ({ platform: o.platform || "all", n: o.n || 5, version: o.version || "both", hd: true, captions: o.captions !== false, hook: o.hook !== false,
   tighten: o.tighten !== false, enhance: o.enhance !== false, layout: o.layout === "crop" ? "crop" : "fit", style: o.style || "pop",
-  hl: o.hl || "#FFF000", size: o.size || "m", pos: o.pos || "bottom", format: o.format || "9:16" });
+  hl: o.hl || "#FFF000", size: o.size || "m", pos: o.pos || "bottom", format: o.format || "9:16",
+  logo: o.logo === true, lpos: o.lpos || "tl", lsize: o.lsize || "m", lop: X.logoOpacity(o.lop) });
 // Poll a desktop job until it finishes. A missed answer or two (the app busy, the laptop waking up) is retried;
 // only a real error, a deleted job, or about 30 s without any answer stops it.
 async function pollRemote(id, tick) {
@@ -815,7 +883,8 @@ async function processRemote(sess) {
   if (!active || (!active.clips.length && active.status !== "done")) setActive(sess);
   paintQueue(); renderBoard();
   const b = { n: o.n, platform: o.platform, version: o.version, hook: o.hook ? "1" : "0", tighten: o.tighten ? "1" : "0", enhance: o.enhance ? "1" : "0",
-              captions: o.captions ? "1" : "0", style: o.style, layout: o.layout, cta: sess.cta, model: opts.model, format: o.format, hl: o.hl, size: o.size, pos: o.pos };
+              captions: o.captions ? "1" : "0", style: o.style, layout: o.layout, cta: sess.cta, model: opts.model, format: o.format, hl: o.hl, size: o.size, pos: o.pos,
+              logo: o.logo ? "1" : "0", lpos: o.lpos, lsize: o.lsize, lop: String(o.lop) };
   try {
     let id;
     if (sess.file) {
@@ -892,6 +961,11 @@ async function enterDesktop(info) {
   $("#link").placeholder = "Paste a YouTube, TikTok or video link";
   $(".tag").textContent = "Desktop app · runs on this computer";
   const tl = $(".toplink"); tl.href = "classic"; tl.removeAttribute("target"); tl.setAttribute("aria-label", "Classic view"); tl.querySelector("span").textContent = "Classic view";
+  try {                                            // the app's logo is the one that renders
+    const r = await fetch("api/brand/logo", { cache: "no-store" });
+    if (r.ok) { const b = await r.blob(); setBrand(await new Promise(res => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.readAsDataURL(b); })); }
+    else if (r.status === 404) setBrand(null);
+  } catch {}
   try {                                            // past jobs on this computer, newest first
     const list = await api("api/jobs");
     const busy = j => (j.status === "queued" || j.status === "running") && !j.has_result;   // an edit on a finished job doesn't count
@@ -1294,7 +1368,7 @@ addEventListener("keydown", e => {
 // ---------------------------------------------------------------- studio
 const studio = createStudio({
   X, esc, toast, fmtTC, icon, IS_WEBKIT,
-  list: () => boardList(), srcURL, lookFrom, queueRender, jobFor, jobLabel,
+  list: () => boardList(), srcURL, lookFrom, queueRender, jobFor, jobLabel, brand: () => brand.url,
   onClose(c) { renderBoard(); if (c) { select(c.uid); document.querySelector(`.clip[data-uid="${c.uid}"] [data-edit]`)?.focus(); } },
   onWords(sess) { txState.dirty = true; if (sess === active && !$("#pTx").hidden) renderTranscript(); },
 });
@@ -1340,7 +1414,7 @@ const params = new URLSearchParams(location.search);
 const urlSet = [...params.keys()].some(k => k in DEF);
 applySettings(urlSet ? {} : store.get(LKEY, {}));
 for (const [k, v] of params) if (k in DEF) setChip(k, v, false);
-loadLog(); paintQueue(); renderBoard();
+paintBrand(); loadLog(); paintQueue(); renderBoard();
 const src = params.get("src");   // e.g. ?src=sample.mp4 (same-origin or CORS-enabled)
 if (src) {
   try {

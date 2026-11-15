@@ -89,6 +89,13 @@ kbd{font:500 11px var(--f-mono);border:1px solid var(--line2);border-bottom-widt
 .btn.pri:hover:not(:disabled){background:#ffd24a;border-color:#ffd24a}
 .btn.sm{min-height:34px;padding:5px 10px;font-size:13px}
 .btn.ghost{background:none;border-color:transparent;color:var(--mute)}
+.vh{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+.brand-hint{font-size:12.5px;color:var(--mute);margin:10px 0 8px;line-height:1.45}
+.logo-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.logo-prev{width:44px;height:44px;border-radius:8px;border:1px solid var(--line);display:grid;place-items:center;overflow:hidden;
+  background:repeating-conic-gradient(var(--panel2) 0 25%,var(--panel) 0 50%) 0 0/12px 12px}
+.logo-prev img{max-width:100%;max-height:100%;object-fit:contain}
+#brandOpts .chips.off{opacity:.45}
 .btn.ghost:hover:not(:disabled){color:var(--text);background:var(--panel2);border-color:transparent}
 .btn[aria-pressed=true]{background:rgba(242,194,48,.12);border-color:rgba(242,194,48,.5);color:var(--slate)}
 
@@ -291,6 +298,7 @@ label.t{display:block;font-size:12px;color:var(--mute);margin:12px 0 6px;font-we
 .st-cap.boxed span.ln{background:#000;padding:.08em .22em;box-decoration-break:clone;-webkit-box-decoration-break:clone}
 .st-cap .hl{color:var(--hl)}
 .st-cap.pop .hl{font-size:1.12em;line-height:0}
+.st-logo{position:absolute;object-fit:contain;pointer-events:none}
 .st-hook{position:absolute;left:var(--ml);right:var(--ml);text-align:center;pointer-events:none;font:900 calc(var(--hs)*1cqw)/1.25 "Cap Black",var(--f-disp)}
 .st-hook span{background:#fff;color:#111;padding:.18em .35em;box-decoration-break:clone;-webkit-box-decoration-break:clone}
 .st-transport{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:center}
@@ -439,6 +447,26 @@ dialog::backdrop{background:rgba(0,0,0,.6)}
       <div class="chips" data-k="layout"><button class="chip" data-v="fit" aria-pressed="true">Full frame + blur</button><button class="chip" data-v="crop">Fill (crop)</button></div>
     </details>
 
+    <details class="grp" id="brandGrp">
+      <summary><span class="eyebrow">Brand</span><span class="sumv" id="brandSum"></span></summary>
+      <p class="hint brand-hint">Your logo in a top corner of every clip, under the captions. PNG with a transparent background works best.</p>
+      <div class="logo-row">
+        <div class="logo-prev" id="logoPrev" hidden><img alt="Your logo"></div>
+        <button class="btn sm" id="logoPick" type="button">Add a logo</button>
+        <input type="file" id="logoFile" accept="image/png,image/jpeg,image/webp" class="vh">
+        <button class="btn sm ghost" id="logoDel" type="button">Remove</button>
+      </div>
+      <div id="brandOpts">
+        <div class="chips" data-k="logo" style="margin-top:10px"><button class="chip" data-v="1" aria-pressed="true">Logo on clips</button><button class="chip" data-v="0">No logo</button></div>
+        <label class="t">Corner</label>
+        <div class="chips" data-k="lpos"><button class="chip" data-v="tl" aria-pressed="true">Top left</button><button class="chip" data-v="tr">Top right</button></div>
+        <label class="t">Size</label>
+        <div class="chips" data-k="lsize"><button class="chip" data-v="s">Small</button><button class="chip" data-v="m" aria-pressed="true">Medium</button><button class="chip" data-v="l">Large</button></div>
+        <label class="t">Opacity</label>
+        <div class="chips" data-k="lop"><button class="chip" data-v="0.5">50%</button><button class="chip" data-v="0.7" aria-pressed="true">70%</button><button class="chip" data-v="1">100%</button></div>
+      </div>
+    </details>
+
     <details class="grp">
       <summary><span class="eyebrow">Edits</span></summary>
       <div class="chips" data-k="enhance" style="margin-top:10px"><button class="chip" data-v="1" aria-pressed="true">Enhance audio + picture</button><button class="chip" data-v="0">No enhancement</button></div>
@@ -527,6 +555,7 @@ dialog::backdrop{background:rgba(0,0,0,.6)}
         <canvas id="stBg" width="36" height="64" aria-hidden="true"></canvas>
         <video id="stVid" playsinline preload="auto"></video>
         <video id="stOut" class="out hide" playsinline controls preload="metadata"></video>
+        <img class="st-logo" id="stLogo" alt="" aria-hidden="true" hidden>
         <div class="st-hook" id="stHook" aria-hidden="true"></div>
         <div class="st-cap" id="stCap" aria-hidden="true"></div>
       </div>
@@ -563,6 +592,12 @@ dialog::backdrop{background:rgba(0,0,0,.6)}
           <label class="t">Framing</label>
           <div class="chips" data-ek="layout"><button class="chip" data-v="fit">Full frame + blur</button><button class="chip" data-v="crop">Fill (crop)</button></div>
           <p class="pnote" id="stCropHint">With Fill, drag the picture to reframe it.</p>
+          <div id="stBrand">
+            <label class="t">Logo</label>
+            <div class="chips" data-ek="logo"><button class="chip" data-v="1">On</button><button class="chip" data-v="0">Off</button></div>
+            <div class="chips" data-ek="lpos" style="margin-top:6px"><button class="chip" data-v="tl">Top left</button><button class="chip" data-v="tr">Top right</button></div>
+            <div class="chips" data-ek="lsize" style="margin-top:6px"><button class="chip" data-v="s">Small</button><button class="chip" data-v="m">Medium</button><button class="chip" data-v="l">Large</button></div>
+          </div>
           <label class="t">Edits</label>
           <div class="chips" data-ek="tighten"><button class="chip" data-v="1">Cut dead air + um/uh</button><button class="chip" data-v="0">Keep pauses</button></div>
         </div>

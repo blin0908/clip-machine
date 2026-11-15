@@ -23,6 +23,10 @@ HERE = Path(__file__).resolve().parent
 JOBS = Path(os.environ.get("CLIP_JOBS") or HERE / "jobs")      # CLIP_JOBS / CLIP_KEY: tests run an isolated server
 JOBS.mkdir(parents=True, exist_ok=True)
 PORT = int(os.environ.get("CLIP_PORT", 8765))
+def logo_file():
+    """The brand logo laid over clips (uploaded from the workspace, always PNG); None when there isn't one."""
+    p = JOBS / "_brand" / "logo.png"
+    return p if p.is_file() else None
 KEY_FILE = HERE / ".access_key"
 if not os.environ.get("CLIP_KEY") and not KEY_FILE.exists():
     KEY_FILE.write_text(secrets.token_urlsafe(8))
@@ -88,7 +92,7 @@ def worker():
                               hook=o.get("hook", True), tighten=o.get("tighten", True),
                               version=o.get("version", "both"), cta=o.get("cta", ""),
                               enhance=o.get("enhance", True), style=o.get("style", "pop"), progress=progress,
-                              look={k: o[k] for k in ("format", "hl", "size", "pos") if k in o})
+                              look={k: o[k] for k in LOOK_KEYS if k in o}, logo=logo_file())
             job.update(status="done", pct=100, msg="Done", result=res)
             # the source is kept so clips can be edited and re-rendered; deleting the job frees the space
         except Exception as e:
@@ -108,7 +112,7 @@ def run_edit(jid, p):
         job.update(pct=pct, msg=msg)
     try:
         res = clipper.edit_cut(JOBS / jid, p["clip"], p["cut"], p["start"], p["end"], p["title"], p["words"],
-                               p.get("style"), progress, look=p.get("look"), cta=p.get("cta"))
+                               p.get("style"), progress, look=p.get("look"), cta=p.get("cta"), logo=logo_file())
         job.update(status="done", pct=100, msg="Edit saved", result=res, edit_error=None, edit_rev=job.get("edit_rev", 0) + 1)
     except Exception as e:
         traceback.print_exc()
@@ -145,6 +149,9 @@ def load_history():
                 pass
 
 
+LOOK_KEYS = ("format", "hl", "size", "pos", "logo", "lpos", "lsize", "lop")
+
+
 def new_job(source, form, upload_dir=None):
     jid = time.strftime("%m%d-%H%M%S-") + uuid.uuid4().hex[:4]
     (JOBS / jid).mkdir()
@@ -170,7 +177,7 @@ def new_job(source, form, upload_dir=None):
         "captions": str(form.get("captions", "1")) in ("1", "true", "on"),
         "model": form.get("model", "base") if form.get("model") in ("tiny", "base", "small", "medium") else "base",
         "crop_x": num("crop_x", 0.5, 0, 1),
-        **clipper.clean_look({k: form.get(k) for k in ("format", "hl", "size", "pos")}),
+        **clipper.clean_look({k: form.get(k) for k in LOOK_KEYS}),
     }
     opts.pop("cy", None)
     if upload_dir:
@@ -266,6 +273,32 @@ def source(jid):
     if not video.exists():
         abort(404)
     return send_file(video, conditional=True)
+
+
+@app.get("/api/brand/logo")
+def get_logo():
+    p = logo_file()
+    if not p:
+        abort(404)
+    return send_file(p, mimetype="image/png", max_age=0)
+
+
+@app.post("/api/brand/logo")
+def put_logo():
+    data = request.get_data(cache=False)
+    if not data.startswith(b"\x89PNG\r\n\x1a\n") or len(data) > 2 * 1024 ** 2:
+        return jsonify(error="Send the logo as a PNG under 2 MB."), 400
+    d = JOBS / "_brand"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "logo.tmp").write_bytes(data)
+    os.replace(d / "logo.tmp", d / "logo.png")
+    return jsonify(ok=True)
+
+
+@app.delete("/api/brand/logo")
+def del_logo():
+    (JOBS / "_brand" / "logo.png").unlink(missing_ok=True)
+    return jsonify(ok=True)
 
 
 @app.get("/api/info")

@@ -28,6 +28,15 @@ const [type, launch] = TYPES[name];
 let fails = 0;
 const check = (ok, what, detail = "") => { if (!ok) fails++; console.log(`${ok ? "PASS" : "FAIL"}  ${name}: ${what}${detail ? "  · " + detail : ""}`); return ok; };
 const mod = process.platform === "darwin" ? "Meta" : "Control";
+const RED_PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAACAAAAAQCAYAAAB3AH1ZAAAAI0lEQVR4nO3OIQEAAAwEoetfeovxBoGnq1tKQEBAQEBAYB142QD8LgetqmMAAAAASUVORK5CYII=", "base64");
+// the colour of one pixel of a clip's video at t seconds (canvas readback)
+const pixel = (uid, x, y, t = 1) => page.evaluate(async ([u, x, y, t]) => {
+  const v = document.querySelector(`#out .clip[data-uid="${u}"] video`);
+  v.muted = true; if (v.readyState < 2) { v.load(); await new Promise(r => { v.addEventListener("loadeddata", r, { once: true }); setTimeout(r, 8000); }); }
+  v.currentTime = t; await new Promise(r => { v.addEventListener("seeked", r, { once: true }); setTimeout(r, 4000); });
+  const c = document.createElement("canvas"); c.width = v.videoWidth; c.height = v.videoHeight;
+  const g = c.getContext("2d"); g.drawImage(v, 0, 0); return [...g.getImageData(x, y, 1, 1).data.slice(0, 3)];
+}, [uid, x, y, t]);
 
 await mkdir(OUT, { recursive: true });
 const browser = await type.launch({ headless: true, ...launch });
@@ -46,11 +55,22 @@ const srcOf = uid => page.locator(`#out .clip[data-uid="${uid}"] video`).getAttr
 try {
   await page.goto(BASE + "?model=Xenova/whisper-tiny.en&n=2&version=both&platform=tiktok", { waitUntil: "load" });
   await page.evaluate(() => localStorage.clear());
+
+  // ---- brand kit: a logo in the top-right corner at full opacity, on every clip
+  await page.setInputFiles("#logoFile", { name: "logo.png", mimeType: "image/png", buffer: RED_PNG });
+  await page.waitForFunction(() => !document.querySelector("#logoPrev").hidden);
+  await page.locator('.chips[data-k="lpos"] [data-v="tr"]').dispatchEvent("click");   // inside a folded section
+  await page.locator('.chips[data-k="lop"] [data-v="1"]').dispatchEvent("click");
+  check(/logo · top right/.test(await page.locator("#brandSum").textContent()), "logo added and set to top right", await page.locator("#brandSum").textContent());
+
   await page.setInputFiles("#file", join(MEDIA, "talk_80s.mp4"));
   await page.click("#go");
   await idle();
   const uids = await page.$$eval("#out .clip", a => a.map(x => x.dataset.uid));
   check(uids.length >= 2, "two clips to work with", String(uids.length));
+  // 720x1280 web render: the logo box is 86 px, 36 px from the right edge, 58 px from the top
+  const px = await pixel(uids[0], 640, 72);
+  check(px[0] > 180 && px[1] < 90 && px[2] < 90, "the logo is burned into the top-right corner", px.join(","));
 
   // ---- card tabs: short ↔ long
   const card = page.locator(`#out .clip[data-uid="${uids[0]}"]`);
@@ -65,6 +85,8 @@ try {
   // ---- unsaved edits survive switching clips; Reset restores
   await card.locator("[data-edit]").click();
   await page.locator("#studio:not(.hide)").waitFor();
+  const lg = await page.$eval("#stLogo", el => !el.hidden && el.style.right !== "" && el.getBoundingClientRect().width > 0);
+  check(lg, "studio preview shows the logo in its corner");
   const len0 = await page.locator("#stLen").textContent();
   await page.click('[data-nudge="end:-1"]'); await page.click('[data-nudge="end:-1"]');
   const len1 = await page.locator("#stLen").textContent();

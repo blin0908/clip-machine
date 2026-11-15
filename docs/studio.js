@@ -132,12 +132,14 @@ export function createStudio(api) {
   const B = v => v ? "1" : "0";
   function paintLook() {
     const L = ST.d.look;
-    const val = { captions: B(L.captions), style: L.style, hl: (L.hl || "").toUpperCase(), size: L.size, pos: L.pos, hook: B(L.hook), format: L.format, layout: L.layout, tighten: B(L.tighten) };
+    const val = { captions: B(L.captions), style: L.style, hl: (L.hl || "").toUpperCase(), size: L.size, pos: L.pos, hook: B(L.hook), format: L.format, layout: L.layout, tighten: B(L.tighten),
+                  logo: B(L.logo), lpos: L.lpos || "tl", lsize: L.lsize || "m" };
     root.querySelectorAll(".chips[data-ek]").forEach(g => g.querySelectorAll(".chip[data-v]").forEach(b => b.setAttribute("aria-pressed", b.dataset.v.toUpperCase() === String(val[g.dataset.ek]).toUpperCase())));
     if (/^#[0-9a-f]{6}$/i.test(L.hl)) $("stHlc").value = L.hl.toLowerCase();
     const sw = [...root.querySelectorAll('.chips[data-ek="hl"] .chip[data-v]')];
     $("stHlc").parentElement.dataset.on = !sw.some(b => b.getAttribute("aria-pressed") === "true");
     $("stCropHint").hidden = L.layout !== "crop";
+    $("stBrand").hidden = !api.brand();                      // no logo added yet: nothing to switch on
     const ed = $("stHeadline"); if (document.activeElement !== ed) ed.value = ST.d.title;
     const ct = $("stCta"); if (document.activeElement !== ct) ct.value = ST.d.cta || "";
   }
@@ -172,7 +174,7 @@ export function createStudio(api) {
     const b = e.target.closest(".chip[data-v]"); if (!b) return;
     hist();
     const k = g.dataset.ek, v = b.dataset.v;
-    ST.d.look[k] = ["captions", "hook", "tighten"].includes(k) ? v === "1" : v;
+    ST.d.look[k] = ["captions", "hook", "tighten", "logo"].includes(k) ? v === "1" : v;
     if (k === "format") fitFrame();
     changed();
   }));
@@ -273,6 +275,15 @@ export function createStudio(api) {
     else if (lay.align === 8) cap.style.top = (lay.marginV / lay.PY * 100) + "%";
     else { cap.style.top = "50%"; cap.style.transform = "translateY(-50%)"; }
     hook.style.top = (lay.hookTop / lay.PY * 100) + "%";
+    const lg = $("stLogo"), url = api.brand();               // the logo, placed exactly where the render puts it
+    lg.hidden = !(L.logo && url);
+    if (!lg.hidden) {
+      const b = X.logoBox(L.format, L);
+      if (lg.getAttribute("src") !== url) lg.src = url;
+      Object.assign(lg.style, { width: b.box / b.W * 100 + "%", height: b.box / b.H * 100 + "%", top: b.my / b.H * 100 + "%",
+        left: b.right ? "" : b.mx / b.W * 100 + "%", right: b.right ? b.mx / b.W * 100 + "%" : "", opacity: X.logoOpacity(L.lop),
+        objectPosition: b.right ? "right top" : "left top" });
+    }
     ST._capKey = null;
   }
   function paintCaption(t) {

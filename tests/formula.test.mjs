@@ -156,6 +156,21 @@ print(json.dumps(out))`], { input: JSON.stringify({ m, cases }), encoding: "utf8
   assert.equal(X.assColour("nope"), "&H00F0FF&");
 });
 
+test("the brand logo sits in the same place in both engines", () => {
+  const cases = [];
+  for (const format of ["9:16", "4:5", "1:1", "16:9"]) for (const lpos of ["tl", "tr"]) for (const lsize of ["s", "m", "l"])
+    for (const lop of [0.5, "0.7", 1, "junk"]) for (const hd of [true, false]) cases.push({ format, look: { lpos, lsize, lop }, hd });
+  const py = JSON.parse(execFileSync(PY, ["-c", `
+import sys, json; sys.path.insert(0, ${JSON.stringify(ROOT)})
+import clipper
+a = json.loads(sys.stdin.read())
+print(json.dumps([clipper.logo_chain(c["format"], c["look"], "[pv]", 1, 1080 if c["hd"] else 720) for c in a]))`], { input: JSON.stringify(cases), encoding: "utf8" }).trim().split("\n").at(-1));
+  cases.forEach((c, i) => assert.equal(X.logoChain(c.format, c.look, "[pv]", 1, c.hd), py[i], JSON.stringify(c)));
+  assert.match(X.logoChain("9:16", { lpos: "tr" }, "[pv]", 1), /overlay=x=W-w-54:y=86$/);
+  assert.equal(X.logoOpacity("junk"), 0.7);
+  assert.equal(X.logoOpacity(0.95), 1);
+});
+
 test("caption groups drive both the preview and the subtitle file", () => {
   const m = { start: 0, end: 5, words: [W("a", 0.2, 0.5), W("um", 0.6, 0.8), W("b", 0.9, 1.2), W("c", 1.3, 1.6), W("d", 1.7, 2.0)] };
   const g = X.captionGroups(m, { style: "pop" });
