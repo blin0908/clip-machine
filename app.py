@@ -269,7 +269,8 @@ def info():
 @app.get("/api/jobs")
 def list_jobs():
     out = sorted(jobs.values(), key=lambda j: -j.get("created", 0))[:30]
-    return jsonify([{k: j.get(k) for k in ("id", "status", "pct", "msg", "label", "created")} for j in out])
+    return jsonify([{**{k: j.get(k) for k in ("id", "status", "pct", "msg", "label", "created")}, "has_result": bool(j.get("result"))}
+                    for j in out])
 
 
 @app.get("/api/jobs/<jid>")

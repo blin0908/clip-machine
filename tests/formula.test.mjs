@@ -4,12 +4,12 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { resolve } from "node:path";
 
 const ROOT = resolve(fileURLToPath(new URL(".", import.meta.url)), "..");
 globalThis.fetch = async () => ({ json: async () => JSON.parse(readFileSync(resolve(ROOT, "docs/formula.json"), "utf8")) });
-const X = await import(resolve(ROOT, "docs/formula.js"));
+const X = await import(pathToFileURL(resolve(ROOT, "docs/formula.js")).href);
 await X.loadFormula();
 
 const PY = process.env.PYTHON || [".venv/bin/python", ".venv/Scripts/python.exe"].map(p => resolve(ROOT, p)).find(existsSync) || "python";
@@ -165,7 +165,7 @@ test("caption groups drive both the preview and the subtitle file", () => {
 });
 
 test(".zip export is a valid archive", async () => {
-  const { zip, crc32, slug } = await import(resolve(ROOT, "docs/zip.js"));
+  const { zip, crc32, slug } = await import(pathToFileURL(resolve(ROOT, "docs/zip.js")).href);
   assert.equal(crc32(new TextEncoder().encode("123456789")).toString(16), "cbf43926");
   assert.equal(slug("Héllo, World! Ünïcode’s clip"), "hello-world-unicode-s-clip");
   const files = [{ name: "01-a.mp4", data: new Blob([new Uint8Array(5000).map((_, i) => i % 251)]) }, { name: "01-captions ü.txt", data: "hi ü" }];

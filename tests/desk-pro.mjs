@@ -99,6 +99,21 @@ try {
   const [dl] = await Promise.all([page.waitForEvent("download", { timeout: 60000 }), page.click("#zip")]);
   check((await dl.createReadStream()) && /\.zip$/.test(dl.suggestedFilename()), ".zip export", dl.suggestedFilename());
 
+  // ---- close the tab mid-run and come back: the job is still followed in the queue and its clips load
+  await page.setInputFiles("#file", join(MEDIA, "talk_40s.mp4"));
+  await page.click("#go");
+  await page.waitForFunction(async () => (await (await fetch("api/jobs", { cache: "no-store" })).json()).some(j => j.status === "running" && !j.has_result),
+    null, { timeout: 60000, polling: 300 });   // the app has the video and is working on it
+  await page.reload({ waitUntil: "load" });
+  await page.waitForFunction(() => document.body.classList.contains("desk"));
+  await page.waitForFunction(() => document.querySelectorAll(".qi").length > 0, null, { timeout: 10000 });
+  const resumed = await page.$$eval(".qi", q => q.map(x => x.dataset.st));
+  check(resumed[0] === "running", "a running job is still shown after reopening", resumed.join(", "));
+  await page.waitForFunction(() => document.querySelector(".qi")?.dataset.st === "done", null, { timeout: 300000, polling: 1000 });
+  await page.click(".qi >> nth=0");
+  await page.waitForFunction(() => document.querySelectorAll("#out .clip").length > 0, null, { timeout: 20000 });
+  check(true, "its clips load when it finishes", `${await page.locator("#out .clip").count()} clip(s)`);
+
   // ---- cancel
   await page.setInputFiles("#file", join(MEDIA, "talk_80s.mp4"));
   await page.click("#go");
@@ -115,6 +130,15 @@ try {
   await page.click(".qi >> nth=0");
   await page.waitForFunction(() => document.querySelectorAll("#out .clip").length > 0, null, { timeout: 15000 });
   check(saved >= 2, "past jobs reload with their clips", `${saved} saved, ${await page.locator("#out .clip").count()} clips in the first`);
+
+  // ---- removing a past job deletes it from the computer: it stays gone after a reload
+  page.once("dialog", d => d.accept());
+  await page.locator(".qi .x").first().click();
+  await page.waitForFunction(n => document.querySelectorAll(".qi").length === n - 1, saved, { timeout: 10000 });
+  await page.reload({ waitUntil: "load" });
+  await page.waitForFunction(() => document.body.classList.contains("desk"));
+  await page.waitForTimeout(1500);
+  check(await page.locator(".qi").count() === saved - 1, "removed job stays deleted after a reload", `${saved} → ${await page.locator(".qi").count()}`);
 } catch (e) {
   check(false, "desktop workflow", e.message.split("\n")[0]);
   await page.screenshot({ path: join(HERE, "web-out", "desk-pro.png"), fullPage: true }).catch(() => {});

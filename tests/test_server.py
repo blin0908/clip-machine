@@ -146,6 +146,8 @@ class ServerTest(unittest.TestCase):
         self.assertEqual((r.status_code, r.data), (206, b"2345"))                  # seeking works
         r.close()
         self.assertEqual(self.c.get("/api/jobs/nope/transcript", headers=self.k).status_code, 404)
+        row = next(j for j in self.c.get("/api/jobs", headers=self.k).get_json() if j["id"] == jid)
+        self.assertTrue(row["has_result"])                                          # the page can tell an edit from a first run
 
     def test_pages(self):
         self.assertEqual(self.c.get("/api/info", headers=self.k).get_json()["desktop"], True)

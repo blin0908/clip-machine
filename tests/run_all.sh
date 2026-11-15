@@ -20,5 +20,6 @@ B=chrome-desktop,chrome-android
 [[ "$1" == "all" ]] && B=chrome-desktop,chrome-android,firefox-desktop,webkit-desktop,webkit-iphone
 step "web suite ($B)";           BROWSER=$B node web-stress.mjs | grep --line-buffered -v "^   …" | tee web-last.log; grep -q " 0 fail" web-last.log
 step "web workflow ($B)";        BROWSER=$B node web-pro.mjs | tee web-pro-last.log; grep -q "all checks passed" web-pro-last.log
+step "edge cases (Chrome)";       node web-edge.mjs | tee web-edge-last.log; grep -q "all checks passed" web-edge-last.log
 step "desktop workspace";        node desk-pro.mjs | tee desk-pro-last.log; grep -q "all checks passed" desk-pro-last.log
 print -P "\n%F{green}All tests passed.%f"

@@ -344,7 +344,7 @@ function setActive(s) {
   active = s; selUid = null; txState.dirty = true;
   paintQueue(); renderBoard();
   if (!$("#pTx").hidden) renderTranscript();
-  if (s?.remote && !s.loaded && !s.loading) {             // a past desktop job: fetch its clips and transcript
+  if (s?.remote && !s.loaded && !s.loading && s.status === "done") {             // a past desktop job: fetch its clips and transcript
     s.loading = true;
     api(`api/jobs/${encodeURIComponent(s.jid)}`).then(j => loadRemote(s, j)).catch(e => { s.status = "error"; s.err = friendly(e); })
       .finally(() => { s.loading = false; paintQueue(); if (active === s) { renderBoard(); if (!$("#pTx").hidden) renderTranscript(); } });
@@ -383,13 +383,21 @@ $("#queue").addEventListener("click", e => {
   const it = e.target.closest(".qi"); if (it) setActive(sessions.find(s => s.id === +it.dataset.sid));
 });
 $("#queue").addEventListener("keydown", e => { if ((e.key === "Enter" || e.key === " ") && e.target.classList.contains("qi")) { e.preventDefault(); e.target.click(); } });
-function removeSession(id) {
+async function removeSession(id) {
   const s = sessions.find(x => x.id === id); if (!s || s.status === "running" || s.status === "queued") return;
-  if (s.clips.some(c => c.kept) && !confirm(`Remove "${s.name}" and its kept clips?`)) return;
+  if (jobNow?.sess === s) { toast("Wait for this video's edit to finish rendering."); return; }
+  if (s.remote) {                                   // desktop app: removing deletes the job and its files from this computer
+    if (!confirm(`Delete "${s.name}" from this computer? Its clips and the saved video are removed.`)) return;
+    const r = await fetch(`api/jobs/${encodeURIComponent(s.jid)}`, { method: "DELETE" }).catch(() => null);
+    if (!r || (!r.ok && r.status !== 404)) { toast("Couldn't delete it. Check the desktop app is still running."); return; }
+  } else if (s.clips.some(c => c.kept) && !confirm(`Remove "${s.name}" and its kept clips?`)) return;
+  for (let i = jobs.length - 1; i >= 0; i--) if (jobs[i].sess === s) {   // drop its edits still waiting to render
+    const [j] = jobs.splice(i, 1); j.state = "failed"; j.resolve?.({ ok: false, msg: "The video was removed." });
+  }
   for (const c of s.clips) revokeClip(c);
   if (s.url) URL.revokeObjectURL(s.url);
   sessions = sessions.filter(x => x !== s);
-  if (EE?.mounted === s.id) EE.mounted = null;
+  for (const E of [EE, E0]) if (E?.mounted === s.id) { E.mounted = null; E.file = null; }
   if (active === s) { active = null; setActive(sessions.at(-1) || null); }
   paintQueue(); paintGo(); renderBoard();
 }
@@ -713,7 +721,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 async function api(url, body) {
   const r = await fetch(url, body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : { cache: "no-store" });
   const j = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(j.error || (r.status === 403 ? "The desktop app needs its access link again: open the link it printed when it started." : `The desktop app answered ${r.status}.`));
+  if (!r.ok) throw Object.assign(new Error(j.error || (r.status === 403 ? "The desktop app needs its access link again: open the link it printed when it started." : `The desktop app answered ${r.status}.`)), { status: r.status });
   return j;
 }
 let curXHR = null;
@@ -731,6 +739,33 @@ function upload(url, fd, onPct) {
 const oFromJob = o => ({ platform: o.platform || "all", n: o.n || 5, version: o.version || "both", hd: true, captions: o.captions !== false, hook: o.hook !== false,
   tighten: o.tighten !== false, enhance: o.enhance !== false, layout: o.layout === "crop" ? "crop" : "fit", style: o.style || "pop",
   hl: o.hl || "#FFF000", size: o.size || "m", pos: o.pos || "bottom", format: o.format || "9:16" });
+// Poll a desktop job until it finishes. A missed answer or two (the app busy, the laptop waking up) is retried;
+// only a real error, a deleted job, or about 30 s without any answer stops it.
+async function pollRemote(id, tick) {
+  for (let miss = 0; ;) {
+    await sleep(800);
+    let j;
+    try { j = await api(`api/jobs/${encodeURIComponent(id)}`); miss = 0; }
+    catch (err) {
+      if (err.status === 404) throw new Error("The desktop app no longer has this job. It may have been deleted.");
+      if (err.status === 403 || ++miss > 35) throw err;
+      continue;
+    }
+    if (j.status === "error") throw new Error(j.msg === "Cancelled" ? "Cancelled." : (j.msg || "Something went wrong."));
+    if (j.status === "done") return j;
+    tick(j);
+  }
+}
+// A job still running when the page was opened (the tab was closed mid-run): follow it in the queue.
+async function watchRemote(sess) {
+  try {
+    await pollRemote(sess.jid, j => { sess.pct = j.pct || 0; sess.msg = j.status === "queued" ? "Waiting in line" : `${j.msg || "Working"} · ${Math.round(j.pct || 0)}%`; paintQueueItem(sess); if (active === sess) renderBoard(); });
+    sess.status = "done"; sess.msg = "";
+    toast(`${sess.name}: clips ready`);
+    if (active === sess) { active = null; setActive(sess); }
+  } catch (err) { sess.status = "error"; sess.err = friendly(err); }
+  finally { paintQueue(); paintGo(); if (active === sess) renderBoard(); }
+}
 async function processRemote(sess) {
   const o = runOpts();
   sess.status = "running"; sess.pct = 0; sess.msg = "Starting"; sess.err = null; sess.dropped = 0;
@@ -748,13 +783,9 @@ async function processRemote(sess) {
       id = (await upload("api/jobs", fd, p => setStage("Sending the video to the app…", p * 0.15, `${Math.round(p)}% of ${mb(sess.file.size)} MB`))).id;
     } else id = (await api("api/jobs", { url: sess.link, label: sess.link, ...b })).id;
     sess.jid = id;
-    for (;;) {
-      await sleep(800);
-      const j = await api(`api/jobs/${encodeURIComponent(id)}`);
-      if (j.status === "error") throw new Error(j.msg === "Cancelled" ? "Cancelled." : (j.msg || "Something went wrong."));
-      if (j.status === "done") { await loadRemote(sess, j); break; }
-      setStage(j.status === "queued" ? "Waiting in line…" : (j.msg || "Working…"), j.pct || 0, j.status === "running" ? "Running on this computer · you can close this tab" : "");
-    }
+    const j = await pollRemote(id, j => setStage(j.status === "queued" ? "Waiting in line…" : (j.msg || "Working…"), j.pct || 0,
+      j.status === "running" ? "Running on this computer · you can close this tab and come back" : ""));
+    await loadRemote(sess, j);
     sess.status = "done";
     if (sess.clips.length) toast(`${sess.title}: ${sess.clips.length} clip${sess.clips.length > 1 ? "s" : ""} ready`);
   } catch (err) {
@@ -822,9 +853,13 @@ async function enterDesktop(info) {
   const tl = $(".toplink"); tl.href = "classic"; tl.removeAttribute("target"); tl.setAttribute("aria-label", "Classic view"); tl.querySelector("span").textContent = "Classic view";
   try {                                            // past jobs on this computer, newest first
     const list = await api("api/jobs");
-    for (const j of list.filter(j => j.status === "done").slice(0, 15))
-      sessions.push({ id: nextId++, jid: j.id, file: null, link: null, name: String(j.label || j.id).split("/").pop().slice(0, 80), title: String(j.label || j.id).slice(0, 80),
-                      status: "done", remote: true, loaded: false, clips: [], pct: 0, msg: "", url: null });
+    const busy = j => (j.status === "queued" || j.status === "running") && !j.has_result;   // an edit on a finished job doesn't count
+    for (const j of list.filter(j => j.status === "done" || busy(j) || (j.has_result && j.status !== "error")).slice(0, 15)) {
+      const s = { id: nextId++, jid: j.id, file: null, link: null, name: String(j.label || j.id).split("/").pop().slice(0, 80), title: String(j.label || j.id).slice(0, 80),
+                  status: busy(j) ? "running" : "done", remote: true, loaded: false, clips: [], pct: j.pct || 0, msg: busy(j) ? "Working" : "", url: null };
+      sessions.push(s);
+      if (busy(j)) watchRemote(s);
+    }
   } catch {}
 }
 
@@ -969,11 +1004,11 @@ function renderBoard() {
   const out = $("#out");
   if (!s) { out.innerHTML = ""; return; }
   if (!s.clips.length) {
-    if (s.remote && !s.loaded) { out.innerHTML = `<div class="card note" style="color:var(--mute);padding:24px;text-align:center">Loading "${esc(s.name)}"…</div>`; return; }
+    if (s.remote && !s.loaded && s.status === "done") { out.innerHTML = `<div class="card note" style="color:var(--mute);padding:24px;text-align:center">Loading "${esc(s.name)}"…</div>`; return; }
     const note = t => `<div class="card note msg-note" style="color:var(--mute);font-size:14px;padding:24px;border:1px dashed var(--line2);border-radius:12px;text-align:center">${t}</div>`;
     out.innerHTML = s.status === "error" ? `<div class="card err">${linkDesktop(esc(s.err))}</div>`
       : s.status === "done" ? `<div class="card msg">No moment in "${esc(s.title)}" passed the quality gate. Try a different video, or turn off "Cut dead air" under Edits.</div>`
-      : s.status === "running" ? note("Working on it. Clips appear here as each one passes the quality gate.")
+      : s.status === "running" ? note(s.remote ? `Working on it on this computer (${esc(s.msg || "starting")}). The clips appear here when it finishes.` : "Working on it. Clips appear here as each one passes the quality gate.")
       : s.status === "queued" ? note(`"${esc(s.title)}" is in the queue.`)
       : note(`<b style="color:var(--text)">${esc(s.name)}</b> is ready. Check the settings on the left, then press <b style="color:var(--text)">Find the moments</b>.`);
     return;
