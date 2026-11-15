@@ -224,11 +224,41 @@ export function shorten(m, segs, loud, lo, hi) {
 }
 
 // ---------------------------------------------------------------- edit decisions
-export function keepIntervals(m, tighten) {
+// Fine-grained quiet map (absolute level every 50 ms). Browser Whisper stretches a word's timing over the pause after
+// it, so word gaps alone miss real dead air; this finds it from the audio itself.
+// "Quiet" = 25 dB under typical speech level, which lines up with the gate's −45 dB check after loudness normalising.
+export function quietMap(pcm, step = 0.05) {
+  const hop = Math.round(SR * step), n = Math.floor(pcm.length / hop), db = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    let s = 0;
+    for (let j = i * hop, k = j + hop; j < k; j++) s += pcm[j] * pcm[j];
+    db[i] = 10 * Math.log10(s / hop + 1e-12);
+  }
+  const sorted = Array.from(db).sort((a, b) => a - b);
+  const speech = sorted[Math.floor(n * 0.7)] ?? -20;
+  return { step, db, thr: speech - 25 };
+}
+// Quiet runs inside [a, b] (absolute seconds) at least minLen long, as [start, end] pairs.
+export function quietRuns(q, a, b, minLen = 0.5) {
+  if (!q) return [];
+  const out = []; let run = null;
+  const i0 = Math.max(0, Math.floor(a / q.step)), i1 = Math.min(q.db.length, Math.ceil(b / q.step));
+  for (let i = i0; i <= i1; i++) {
+    const quiet = i < i1 && q.db[i] < q.thr;
+    if (quiet && run == null) run = i;
+    if (!quiet && run != null) { const s = run * q.step, e = i * q.step; if (e - s >= minLen) out.push([s, e]); run = null; }
+  }
+  return out;
+}
+export const longestQuiet = (q, a, b) => quietRuns(q, a, b, 0).reduce((m, [s, e]) => Math.max(m, e - s), 0);
+
+export function keepIntervals(m, tighten, q = null) {
   const dur = m.end - m.start;
   const ws = m.words.filter(w => w.s >= m.start && w.s <= m.end);
   if (!tighten || ws.length < 2) return [[0, dur]];
   const cut = [];
+  // dead air the audio shows, trimmed to leave ~0.15 s of breath on each side
+  for (const [s, e] of quietRuns(q, m.start, m.end, 0.5)) cut.push([s - m.start + 0.15, e - m.start - 0.15]);
   for (let i = 1; i < ws.length; i++) {
     const gs = ws[i - 1].e - m.start + 0.18, ge = ws[i].s - m.start - 0.12;
     if (ge - gs > 0.35) cut.push([gs, ge]);

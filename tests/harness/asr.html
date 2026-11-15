@@ -1,0 +1,31 @@
+<!doctype html><meta charset="utf-8"><title>ASR speed</title>
+<script type="module">
+// Times the speech worker under different device/precision settings on tests/media/speech.wav.
+// window.runASR({ model, cfg, seconds }) → { load, first, total, words, text }
+window.runASR = async ({ model, cfg, seconds = 9999, runs = 1 }) => {
+  const ab = await (await fetch("/media/speech.wav")).arrayBuffer();
+  const ctx = new OfflineAudioContext(1, 16000, 16000);
+  let pcm = (await ctx.decodeAudioData(ab)).getChannelData(0);
+  pcm = pcm.subarray(0, Math.min(pcm.length, seconds * 16000));
+  const dur = pcm.length / 16000, windows = [];
+  for (let s = 0; s < dur - 0.5; s += 28) windows.push([s, Math.min(dur, s + 28)]);
+  const w = new Worker("/docs/asr-worker.js", { type: "module" });
+  const out = [];
+  for (let r = 0; r < runs; r++) {
+    const t0 = performance.now(); let tLoad = null, tFirst = null;
+    const words = await new Promise((res, rej) => {
+      w.onmessage = ({ data: d }) => {
+        if (d.type === "device" && tLoad == null) tLoad = performance.now() - t0;
+        if (d.type === "progress" && tFirst == null) tFirst = performance.now() - t0;
+        if (d.type === "done") res(d.words);
+        if (d.type === "error") rej(new Error(d.message));
+      };
+      w.postMessage({ audio: pcm.slice(), windows, model, cfg });
+    });
+    out.push({ load: Math.round(tLoad ?? 0), first: Math.round(tFirst), total: Math.round(performance.now() - t0), words: words.length, audio: Math.round(dur),
+               text: words.map(x => x.w).join(" ").slice(0, 160), times: words.slice(0, 6).map(x => x.s.toFixed(2)).join(",") });
+  }
+  w.terminate();
+  return out;
+};
+</script>

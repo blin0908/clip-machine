@@ -8,7 +8,7 @@ const CORE = "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/esm";
 const PN = { tiktok: "TikTok", reels: "Reels", shorts: "YT Shorts", facebook: "Facebook", snapchat: "Snapchat", x: "X" };
 const opts = { platform: "all", n: "3", version: "both", quality: "fast", model: "Xenova/whisper-base.en",
                captions: "1", hook: "1", tighten: "1", enhance: "1", layout: "fit", style: "pop" };
-let ffmpeg = null, logs = [], wakeLock = null, results = [], S = null, busy = false, srcFile = null;   // S = current session (source, transcript, settings)
+let wakeLock = null, results = [], S = null, busy = false, srcFile = null;   // S = current session (source, transcript, settings)
 
 // ---------------------------------------------------------------- UI wiring
 document.querySelectorAll(".chips").forEach(g => g.addEventListener("click", e => {
@@ -28,7 +28,7 @@ function showPlat() {
   $("#vboth").disabled = $("#vlong").disabled = !l;
   if (!l && opts.version !== "short") $("#vshort").click();
 }
-$("#file").onchange = e => { const f = e.target.files[0]; $("#fname").textContent = f ? `📎 ${f.name} (${(f.size / 1e6).toFixed(0)} MB)` : "Choose a video"; $("#go").disabled = !f; };
+$("#file").onchange = e => { const f = e.target.files[0]; $("#fname").textContent = f ? `📎 ${f.name} (${(f.size / 1e6).toFixed(0)} MB)` : "Choose a video"; $("#go").disabled = !f; if (f) preloadASR(); };
 $("#cancel").onclick = () => linkAbort ? linkAbort.abort() : location.reload();
 
 function setStage(label, pct, msg = "") {
@@ -38,19 +38,45 @@ function setStage(label, pct, msg = "") {
 }
 const STAGES = { load: [0, 8], audio: [8, 14], asr: [14, 60], score: [60, 62], render: [62, 100] };
 const stage = (k, pct, label, msg) => { const [a, b] = STAGES[k]; setStage(label, a + (b - a) * pct / 100, msg); };
+// stage timings for benchmarks: window.__perf = [{ k, ms }, ...]
+const perf = { t: 0, rows: [], start() { this.rows = []; this.t = performance.now(); window.__perf = this.rows; },
+  lap(k) { const n = performance.now(); this.rows.push({ k, ms: Math.round(n - this.t) }); this.t = n; } };
 
 // ---------------------------------------------------------------- ffmpeg helpers
-async function getFFmpeg(quiet = false) {
-  if (ffmpeg) return ffmpeg;
+// One engine = one ffmpeg.wasm worker, which is single-threaded. E0 probes, reads audio and re-renders edits; on
+// multi-core computers extra engines render different moments at the same time (each keeps its own files + log).
+const newEngine = () => ({ ff: null, logs: [], cache: new Map() });
+const E0 = newEngine();
+let core = null, font = null;
+const getCore = () => core ||= Promise.all([toBlobURL(`${CORE}/ffmpeg-core.js`, "text/javascript"), toBlobURL(`${CORE}/ffmpeg-core.wasm`, "application/wasm")])
+  .catch(e => { core = null; throw e; });
+const getFont = () => font ||= fetch("./fonts/Montserrat-Black.ttf").then(r => r.arrayBuffer()).catch(e => { font = null; throw e; });
+async function loadEngine(E, quiet = false) {
+  if (E.ff) return E.ff;
   if (!quiet) stage("load", 10, "Loading video engine…", "First run downloads ~30 MB. It's cached after that.");
-  ffmpeg = new FFmpeg();
-  ffmpeg.on("log", ({ message }) => { logs.push(message); if (logs.length > 4000) logs.splice(0, 2000); });
-  await ffmpeg.load({ coreURL: await toBlobURL(`${CORE}/ffmpeg-core.js`, "text/javascript"),
-                      wasmURL: await toBlobURL(`${CORE}/ffmpeg-core.wasm`, "application/wasm") });
-  await ffmpeg.createDir("/fonts");
-  await ffmpeg.writeFile("/fonts/Montserrat-Black.ttf", new Uint8Array(await (await fetch("./fonts/Montserrat-Black.ttf")).arrayBuffer()));
-  await ffmpeg.createDir("/in");
-  return ffmpeg;
+  const ff = new FFmpeg();
+  ff.on("log", ({ message }) => { E.logs.push(message); if (E.logs.length > 4000) E.logs.splice(0, 2000); });
+  const [coreURL, wasmURL] = await getCore();
+  await ff.load({ coreURL, wasmURL });
+  await ff.createDir("/fonts");
+  await ff.writeFile("/fonts/Montserrat-Black.ttf", new Uint8Array((await getFont()).slice(0)));   // a copy: writeFile hands its buffer to the worker
+  await ff.createDir("/in");
+  E.ff = ff;
+  return ff;
+}
+const getFFmpeg = quiet => loadEngine(E0, quiet);
+// How many clips to render at once: several on desktop Chrome/Firefox/Edge, one where memory is tight
+// (Safari and every iOS browser hit a WebAssembly memory ceiling; phones in general have little to spare).
+function renderSlots() {
+  if (IS_WEBKIT || /Android|Mobi/i.test(UA)) return 1;
+  const cores = navigator.hardwareConcurrency || 2, gb = navigator.deviceMemory || 4;
+  return Math.max(1, Math.min(3, Math.floor(cores / 2), Math.floor(gb / 2)));
+}
+async function spareEngine() {               // an extra engine with the current source mounted
+  const E = newEngine();
+  await withTimeout(loadEngine(E, true), 40000);
+  await E.ff.mount("WORKERFS", { files: [srcFile] }, "/in");
+  return E;
 }
 // Safari/WebKit can run out of WebAssembly memory after transcribing a longer video: the video engine then
 // stalls without an error (tested: WebKit fails above ~1 min of speech on an 8 GB Mac; Chrome and Firefox don't).
@@ -158,25 +184,24 @@ $("#linkForm").onsubmit = async e => {
   }
 };
 const withTimeout = (p, ms) => Promise.race([p, new Promise((_, bad) => setTimeout(() => bad(new Error(OOM)), ms))]);
-const fsCache = new Map();                // small files we wrote (captions), replayed into a fresh engine
-async function writeFS(path, data) { fsCache.set(path, data); await ffmpeg.writeFile(path, data); }
-async function resetFFmpeg() {            // a fresh engine with the source re-mounted, to recover a stalled worker
-  try { ffmpeg?.terminate(); } catch {}
-  ffmpeg = null;
+async function writeFS(path, data, E = E0) { E.cache.set(path, data); await E.ff.writeFile(path, data); }
+async function resetFFmpeg(E = E0) {      // a fresh engine with the source re-mounted, to recover a stalled worker
+  try { E.ff?.terminate(); } catch {}
+  E.ff = null;
   await withTimeout((async () => {
-    await getFFmpeg(true);
-    if (srcFile) await ffmpeg.mount("WORKERFS", { files: [srcFile] }, "/in");
-    for (const [p, d] of fsCache) await ffmpeg.writeFile(p, d);
+    await loadEngine(E, true);
+    if (srcFile) await E.ff.mount("WORKERFS", { files: [srcFile] }, "/in");
+    for (const [p, d] of E.cache) await E.ff.writeFile(p, d);
   })(), 40000);
 }
-async function run(args, onTime, retry = true) {
-  logs = [];
+async function run(args, onTime, retry = true, E = E0) {
+  E.logs = [];
   // stalled = the engine never printed a single line within 60 s (WebKit's out-of-memory signature). A long silence
   // mid-run is NOT treated as a stall: slow browsers (Firefox, older phones) can go quiet while loading caption fonts.
   const t0 = Date.now(); let last = 0, stalled = false;
   const h = ({ time }) => { last = Date.now(); if (onTime && time > 0) onTime(time / 1e6); };
   const lg = () => { last = Date.now(); };
-  const ff = ffmpeg;
+  const ff = E.ff;
   ff.on("progress", h); ff.on("log", lg);
   const wd = setInterval(() => {
     const now = Date.now();
@@ -184,12 +209,12 @@ async function run(args, onTime, retry = true) {
   }, 3000);
   try {
     const code = await ff.exec(args);
-    return { code, log: logs.join("\n") };
+    return { code, log: E.logs.join("\n") };
   } catch (e) {
     if (!stalled) throw e;
     if (!retry) throw new Error(OOM);
-    await resetFFmpeg();
-    return run(args, onTime, false);
+    await resetFFmpeg(E);
+    return run(args, onTime, false, E);
   } finally {
     clearInterval(wd); try { ff.off("progress", h); ff.off("log", lg); } catch {}
   }
@@ -204,16 +229,23 @@ function probeLog(log) {
 }
 
 // ---------------------------------------------------------------- transcription
+// The speech worker keeps its model loaded between videos (and starts loading it when a file is picked), except on
+// Safari/iOS, where the worker is dropped after each run to leave WebAssembly memory for the video engine.
+let asrW = null;
+const asrWorker = () => asrW ||= new Worker(new URL("./asr-worker.js", import.meta.url), { type: "module" });
+const dropASR = () => { try { asrW?.terminate(); } catch {} asrW = null; };
+function preloadASR() { if (!IS_WEBKIT) asrWorker().postMessage({ type: "preload", model: opts.model }); }
 function transcribe(pcm, windows, model) {
   return new Promise((resolve, reject) => {
-    const w = new Worker(new URL("./asr-worker.js", import.meta.url), { type: "module" });
+    const w = asrWorker();
     let dev = "";
     w.onmessage = ({ data: d }) => {
-      if (d.type === "load") stage("asr", 0, "Loading speech model…", `${(d.loaded / 1e6).toFixed(0)} / ${(d.total / 1e6).toFixed(0)} MB (cached after first use)`);
-      if (d.type === "device") dev = d.device === "webgpu" ? " · GPU" : "";
+      if (d.type === "load") stage("asr", 0, d.loaded < d.total ? "Loading speech model…" : "Preparing speech model…",
+        d.loaded < d.total ? `${(d.loaded / 1e6).toFixed(0)} / ${(d.total / 1e6).toFixed(0)} MB (cached after first use)` : "Takes a moment on the first video only.");
+      if (d.type === "device") { dev = d.device === "webgpu" ? " · GPU" : ""; perf.lap(`model load (${d.device})`); }
       if (d.type === "progress") stage("asr", 100 * d.done / d.total, "Transcribing…", `${X.fmtT(d.upto)} done${dev}`);
-      if (d.type === "done") { w.terminate(); resolve(d.words); }
-      if (d.type === "error") { w.terminate(); reject(new Error("Speech model: " + d.message)); }
+      if (d.type === "done") { if (IS_WEBKIT) dropASR(); resolve(d.words); }
+      if (d.type === "error") { dropASR(); reject(new Error("Speech model: " + d.message)); }
     };
     w.postMessage({ audio: pcm, windows, model });
   });
@@ -231,11 +263,17 @@ function filterGraph(m, keep, info, o, hasASS) {
     pre += `,select='${sel}',setpts=N/FRAME_RATE/TB`; apre = `aselect='${sel}',asetpts=N/SR/TB`;
   }
   let vf;
-  if (o.layout === "crop") vf = `scale=-2:${H},crop=${W}:${H}`;
-  else vf = `split[a][b];[a]scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},boxblur=${o.hd ? 24 : 16}:4,eq=brightness=-0.08[bg];` +
-            `[b]scale=${W}:${H}:force_original_aspect_ratio=decrease[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2`;
+  const sharpen = o.enhance ? ",unsharp=5:5:0.45:5:5:0,eq=contrast=1.04:saturation=1.07" : "";
+  if (o.layout === "crop") vf = `scale=-2:${H},crop=${W}:${H}${sharpen}`;
+  else {
+    // blurred backdrop: blur a 1/8-size copy and scale it up (looks the same, ~5x less work than blurring full size);
+    // only the visible video gets sharpened, since sharpening a blur is wasted work
+    const bw = Math.round(W / 16) * 2, bh = Math.round(H / 16) * 2;
+    vf = `split[a][b];[a]scale=${bw}:${bh}:force_original_aspect_ratio=increase,crop=${bw}:${bh},boxblur=${o.hd ? 3 : 2}:2,` +
+         `scale=${W}:${H}:flags=bilinear,eq=brightness=-0.08[bg];` +
+         `[b]scale=${W}:${H}:force_original_aspect_ratio=decrease${sharpen}[fg];[bg][fg]overlay=(W-w)/2:(H-h)/2`;
+  }
   if (o.enhance) {
-    vf += ",unsharp=5:5:0.45:5:5:0,eq=contrast=1.04:saturation=1.07";
     if (keep.length > 1) {
       let t = 0; const z = [];
       keep.forEach(([a, b], k) => { const s = t; t += b - a; if (k % 2) z.push(`between(on,${Math.floor(s * fps)},${Math.max(Math.floor(t * fps) - 1, Math.floor(s * fps))})`); });
@@ -252,38 +290,44 @@ function filterGraph(m, keep, info, o, hasASS) {
       `[aw]showwaves=s=${W}x${Math.round(H * 0.22)}:mode=cline:colors=0xFFE600:rate=${fps}[wv];` +
       `[bg][wv]overlay=0:(H-h)/2:shortest=1,format=yuv420p${ass},setsar=1[v];[am]${aout}`, fps, W, H, audiogram: true };
   }
-  return { fc: `[0:v]${pre},${vf}[v];[0:a]${apre},${clean}loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[a]`, fps, W, H };
+  return { fc: `[0:v]${pre},${vf}[v];[0:a]${apre},${aout}`, fps, W, H };
 }
 
-async function renderClip(path, info, m, o, cta, onPct) {
-  const keep = X.keepIntervals(m, o.tighten);
+async function renderClip(path, info, m, o, cta, onPct, E = E0) {
+  const keep = X.keepIntervals(m, o.tighten, S?.quiet);
   const plat = X.F.platforms[o.platform];
   const hasASS = (o.captions && m.words.length) || (o.hook && m.title) || cta;
-  if (hasASS) await writeFS("/sub.ass", X.buildASS(m, plat, keep, { captions: o.captions, hook: o.hook, cta, style: o.style }));
+  if (hasASS) await writeFS("/sub.ass", X.buildASS(m, plat, keep, { captions: o.captions, hook: o.hook, cta, style: o.style }), E);
   const { fc, fps, W, H, audiogram } = filterGraph(m, keep, info, o, hasASS);
   const dur = m.end - m.start, expected = keep.reduce((a, [x, y]) => a + y - x, 0);
-  const r = await run(["-ss", m.start.toFixed(3), "-t", dur.toFixed(3), "-i", path, "-filter_complex", fc, "-map", "[v]", "-map", "[a]",
+  // the quality detectors ride along on the render (black/freeze on the final picture, silence/loudness on the final audio),
+  // so the clip isn't decoded a second time just to check it
+  const taps = `;[v]split[vo][vq];[vq]blackdetect=d=0.5:pix_th=0.10,freezedetect=n=-60dB:d=2,nullsink` +
+               `;[a]asplit[ao][aq];[aq]silencedetect=n=-45dB:d=2,ebur128=peak=true,anullsink`;
+  const r = await run(["-ss", m.start.toFixed(3), "-t", dur.toFixed(3), "-i", path, "-filter_complex", fc + taps, "-map", "[vo]", "-map", "[ao]",
     "-c:v", "libx264", "-preset", o.hd ? "veryfast" : "ultrafast", "-crf", o.hd ? "20" : "22", "-pix_fmt", "yuv420p",
     "-r", String(fps), "-g", String(fps * 2), "-c:a", "aac", "-b:a", "160k", "-ar", "48000", "-movflags", "+faststart", "-shortest", "/out.mp4"],
-    t => onPct(Math.min(85, 85 * t / Math.max(expected, 1))));
+    t => onPct(Math.min(95, 95 * t / Math.max(expected, 1))), true, E);
+  perf.lap(`render ${expected.toFixed(0)}s`);
   if (r.code !== 0) throw new Error("Render failed: " + r.log.split("\n").slice(-4).join(" "));
-  // measure the finished file
-  const q = await run(["-hide_banner", "-nostats", "-i", "/out.mp4", "-vf", "blackdetect=d=0.5:pix_th=0.10,freezedetect=n=-60dB:d=2",
-    "-af", "silencedetect=n=-45dB:d=2,ebur128=peak=true", "-f", "null", "-"], t => onPct(85 + 13 * t / Math.max(expected, 1)));
-  const data = await ffmpeg.readFile("/out.mp4");
-  await run(["-ss", "0.6", "-i", "/out.mp4", "-frames:v", "1", "-vf", "scale=360:-2", "/thumb.jpg"]);
-  let thumb = null; try { thumb = URL.createObjectURL(new Blob([(await ffmpeg.readFile("/thumb.jpg")).buffer], { type: "image/jpeg" })); await ffmpeg.deleteFile("/thumb.jpg"); } catch {}
-  await ffmpeg.deleteFile("/out.mp4");
+  // format, size and length come from the finished file itself (a header read, no decoding)
+  const q = await run(["-hide_banner", "-i", "/out.mp4"], null, true, E);
+  perf.lap("check");
+  const data = await E.ff.readFile("/out.mp4");
+  await run(["-ss", "0.6", "-i", "/out.mp4", "-frames:v", "1", "-vf", "scale=360:-2", "/thumb.jpg"], null, true, E);
+  let thumb = null; try { thumb = URL.createObjectURL(new Blob([(await E.ff.readFile("/thumb.jpg")).buffer], { type: "image/jpeg" })); await E.ff.deleteFile("/thumb.jpg"); } catch {}
+  await E.ff.deleteFile("/out.mp4");
+  perf.lap("thumb");
   const blob = new Blob([data.buffer], { type: "video/mp4" });
-  const quality = qualityChecks(q.log, { expected, W, H, sizeMB: blob.size / 1e6, m, captions: o.captions, audiogram });
+  const quality = qualityChecks(q.log, r.log, { expected, W, H, sizeMB: blob.size / 1e6, m, captions: o.captions, audiogram });
   const fillers = o.tighten ? m.words.filter(w => w.s >= m.start && w.s <= m.end && X.F.fillerSet.has(w.w.toLowerCase().replace(/[^a-z]/g, ""))).length : 0;
   return { blob, url: URL.createObjectURL(blob), thumb, quality, duration: +expected.toFixed(1), cuts: keep.length - 1, fps,
            size_mb: +(blob.size / 1e6).toFixed(1), fillers_cut: fillers, enhanced: o.enhance, srt: X.buildSRT(m, keep) };
 }
 
-function qualityChecks(log, { expected, W, H, sizeMB, m, captions, audiogram }) {
+function qualityChecks(fileLog, log, { expected, W, H, sizeMB, m, captions, audiogram }) {
   const c = [], add = (k, ok, detail, hard) => c.push({ k, ok: !!ok, detail, hard });
-  const p = probeLog(log);
+  const p = probeLog(fileLog);
   add("Upload-ready format", p.vcodec === "h264" && p.acodec === "aac" && p.width === W && p.height === H && p.square,
     `${p.vcodec} ${p.width}×${p.height} + ${p.acodec}${p.square ? "" : ", non-square pixels"}`, true);
   add("Length matches the edit", Math.abs(p.duration - expected) < 0.8, `${p.duration.toFixed(1)}s (expected ${expected.toFixed(1)}s)`, true);
@@ -303,10 +347,14 @@ function qualityChecks(log, { expected, W, H, sizeMB, m, captions, audiogram }) 
 }
 const passed = q => q.every(x => x.ok || !x.hard);
 
-async function makeCut(path, info, m, o, cta, onPct) {
-  let r = await renderClip(path, info, m, o, cta, onPct);
+// Failures the safe mode (no cuts, no enhancement) can't fix: the content itself is silent or black.
+const CONTENT = new Set(["No dead silence", "No black frames"]);
+async function makeCut(path, info, m, o, cta, onPct, E = E0) {
+  let r = await renderClip(path, info, m, o, cta, onPct, E);
+  const hardFails = r.quality.filter(x => !x.ok && x.hard);
+  if (hardFails.length && hardFails.every(x => CONTENT.has(x.k))) return r;   // skip a retry that would fail the same way
   if (!passed(r.quality)) {                                        // re-render once in safe mode
-    r = await renderClip(path, info, m, { ...o, tighten: false, enhance: false }, cta, onPct);
+    r = await renderClip(path, info, m, { ...o, tighten: false, enhance: false }, cta, onPct, E);
     r.retried = true;
   }
   return r;
@@ -318,15 +366,18 @@ async function go(file) {
               hook: opts.hook === "1", tighten: opts.tighten === "1", enhance: opts.enhance === "1", layout: opts.layout, style: opts.style };
   if (busy) return toast("Already working. Cancel first to start over.");
   busy = true;
+  let spares = [];
   revokeAll();
   const cta = $("#cta").value.trim().slice(0, 80);
   $("#out").innerHTML = ""; $("#setup").classList.add("busy");
   try { wakeLock = await navigator.wakeLock?.request("screen"); } catch {}
   try {
+    perf.start();
     await getFFmpeg();
-    try { await ffmpeg.unmount("/in"); } catch {}
+    perf.lap("engine");
+    try { await E0.ff.unmount("/in"); } catch {}
     srcFile = file;
-    await ffmpeg.mount("WORKERFS", { files: [file] }, "/in");
+    await E0.ff.mount("WORKERFS", { files: [file] }, "/in");
     const path = "/in/" + file.name;
     const info = probeLog((await run(["-hide_banner", "-i", path])).log);
     if (!info.duration) throw new Error("Couldn't read that file. Try an MP4 or MOV.");
@@ -338,12 +389,16 @@ async function go(file) {
     stage("audio", 0, "Reading audio…");
     const a = await run(["-i", path, "-vn", "-ac", "1", "-ar", "16000", "-f", "f32le", "/audio.raw"], t => stage("audio", 100 * t / info.duration, "Reading audio…", `${X.fmtT(t)} / ${X.fmtT(info.duration)}`));
     if (a.code !== 0) throw new Error("Couldn't decode the audio.");
-    const raw = await ffmpeg.readFile("/audio.raw"); await ffmpeg.deleteFile("/audio.raw");
+    const raw = await E0.ff.readFile("/audio.raw"); await E0.ff.deleteFile("/audio.raw");
     const pcm = new Float32Array(raw.buffer, raw.byteOffset, Math.floor(raw.byteLength / 4));
     let peak = 0; for (let k = 0; k < pcm.length; k += 4) { const x = Math.abs(pcm[k]); if (x > peak) peak = x; }
     if (peak < 1e-4) throw new Error("The audio is silent, so there's nothing to clip. Check the file has sound.");
-    const loud = X.loudnessCurve(pcm);
+    const loud = X.loudnessCurve(pcm), quiet = X.quietMap(pcm);
+    perf.lap("probe+audio");
+    // warm up extra engines for parallel rendering while the speech model works (a failed one is simply not used)
+    spares = Array.from({ length: renderSlots() - 1 }, () => spareEngine().catch(e => { console.warn("spare engine failed:", e?.message || e); return null; }));
     const words = await transcribe(pcm, X.asrWindows(loud, info.duration), opts.model);
+    perf.lap("transcribe");
     stage("score", 50, "Finding the best moments…");
     const segs = X.segmentsFromWords(words);
     const plat = X.F.platforms[o.platform];
@@ -351,24 +406,51 @@ async function go(file) {
     const pool = X.findMoments(segs, loud, info.duration, o.n + 3, o.platform, version);
     const title = file.name.replace(/\.[^.]+$/, "");
     results = []; let dropped = 0;
-    S = { path, info, words, segs, loud, o, cta, version, title };
-    for (const m of pool) {
-      if (results.length >= o.n) break;
-      const i = results.length, base = 100 * i / o.n, span = 100 / o.n;
-      const p = x => stage("render", base + span * x / 100, `Rendering + checking clip ${i + 1} of ${o.n}`, "Keep this tab open.");
+    S = { path, info, words, segs, loud, quiet, o, cta, version, title };
+    perf.lap("score");
+    const engines = [E0, ...(await Promise.all(spares)).filter(Boolean)];
+    perf.lap(`engines x${engines.length}`);
+    // Each engine takes the next-best moment, renders its long + short cut, then takes another, until n clips pass.
+    // Moments render side by side, but clips are always shown in score order.
+    const frac = new Map(), wins = [];
+    let next = 0, inflight = 0, ok = 0, failed = null;
+    const show = () => {
+      const f = [...frac.values()].reduce((a, x) => a + x, 0);
+      stage("render", 100 * Math.min(1, (ok + f) / o.n), engines.length > 1 ? `Rendering + checking clips · ${ok} of ${o.n} done` : `Rendering + checking clip ${Math.min(ok + 1, o.n)} of ${o.n}`,
+            engines.length > 1 ? `${engines.length} at a time · keep this tab open.` : "Keep this tab open.");
+    };
+    // with "Cut dead air" off, a moment holding a 2 s silence would fail the gate: skip it before rendering
+    const tooQuiet = mm => !o.tighten && X.longestQuiet(quiet, mm.start, mm.end) > 1.9;
+    async function moment(m, E, idx) {
+      if (tooQuiet(m)) return null;
+      const p = x => { frac.set(idx, x / 100); show(); };
       m.captions = X.postCopy(m, title);
-      const long = await makeCut(path, info, m, o, version !== "short" ? cta : "", x => p(version === "both" ? x * 0.6 : x));
-      if (!passed(long.quality)) { dropped++; continue; }
+      const long = await makeCut(path, info, m, o, version !== "short" ? cta : "", x => p(version === "both" ? x * 0.6 : x), E);
+      if (!passed(long.quality)) return null;
       const clip = { ...m, ...long, range: `${X.fmtT(m.start)}–${X.fmtT(m.end)}`, short: null, view: "long" };
       if (version === "both") {
         const sm = X.shorten(m, segs, loud, ...plat.short);
-        if (sm) {
-          const s = await makeCut(path, info, sm, o, "", x => p(60 + x * 0.4));
+        if (sm && !tooQuiet(sm)) {
+          const s = await makeCut(path, info, sm, o, "", x => p(60 + x * 0.4), E);
           if (passed(s.quality)) { clip.short = { ...s, start: sm.start, end: sm.end, title: sm.title, range: `${X.fmtT(sm.start)}–${X.fmtT(sm.end)}` }; clip.view = "short"; }
         }
       }
-      results.push(clip); renderResults(title, dropped);
+      return clip;
     }
+    async function worker(E) {
+      while (!failed && ok + inflight < o.n && next < pool.length) {
+        const idx = next++; inflight++;
+        try {
+          const clip = await moment(pool[idx], E, idx);
+          if (clip) { ok++; wins.push({ idx, clip }); wins.sort((a, b) => a.idx - b.idx); results = wins.map(w => w.clip); renderResults(title, dropped); }
+          else dropped++;
+        } catch (e) { failed ||= e; }
+        finally { inflight--; frac.delete(idx); show(); }
+      }
+    }
+    show();
+    await Promise.all(engines.map(worker));      // workers never reject; the first error stops new work, then surfaces
+    if (failed) throw failed;
     // the source stays mounted so clips can be edited and re-rendered; it's released when the next video starts
     $("#prog").classList.add("hide");
     if (!results.length) $("#out").innerHTML = `<div class="card msg">No moment passed the quality gate. Try a different video or turn off "Cut dead air".</div>`;
@@ -378,6 +460,8 @@ async function go(file) {
     $("#prog").classList.add("hide");
     $("#out").innerHTML = `<div class="card err">⚠ ${linkDesktop(esc(err.message || err))}</div>`;
   } finally {
+    // spare engines are per run (memory); E0 keeps the source mounted for edits
+    for (const sp of spares) sp.then(E => { try { E?.ff?.terminate(); } catch {} });
     busy = false;
     $("#setup").classList.remove("busy");
     try { await wakeLock?.release(); } catch {}
