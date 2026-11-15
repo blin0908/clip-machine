@@ -6,3 +6,9 @@ results_log.json
 .claude/
 docs/sample.mp4
 .DS_Store
+tests/media/
+tests/out/
+tests/node_modules/
+tests/web-out/
+dist/
+tests/*.log

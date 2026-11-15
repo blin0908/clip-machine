@@ -93,6 +93,13 @@ details summary::-webkit-details-marker{display:none}
 .st{font-size:12px;color:var(--mute)}
 .x{background:none;color:var(--mute);padding:4px 8px}
 .hide{display:none}
+.edbtn{width:100%;margin-top:10px;padding:10px;font-size:14px;font-weight:700;border-radius:10px}
+.editor{border-top:1px solid var(--line);margin-top:12px;padding-top:4px}
+.trim{display:flex;gap:8px;align-items:center;margin-bottom:8px}
+.trim span{width:44px;color:var(--mute);font-size:13px}
+.trim button{flex:1;padding:9px;font-size:13px;font-weight:600;border-radius:10px}
+.lines{display:grid;gap:6px}
+.ed-line{padding:9px 10px;font-size:15px}
 .foot{color:var(--mute);font-size:13px;margin-top:28px}
 .foot a{color:var(--text)}
 .toast{position:fixed;left:50%;bottom:calc(24px + env(safe-area-inset-bottom));transform:translateX(-50%);background:#fff;color:#000;padding:10px 16px;border-radius:99px;font-size:14px;font-weight:600;opacity:0;transition:opacity .2s;pointer-events:none;z-index:9}
@@ -129,6 +136,8 @@ details summary::-webkit-details-marker{display:none}
       <div class="chips" data-k="enhance"><button class="chip" data-v="1" aria-pressed="true">Enhance: clean audio, sharpen, punch-ins</button><button class="chip" data-v="0">No enhancement</button></div>
       <div class="chips" data-k="tighten" style="margin-top:8px"><button class="chip" data-v="1" aria-pressed="true">Cut dead air + um/uh</button><button class="chip" data-v="0">Keep pauses</button></div>
       <div class="chips" data-k="captions" style="margin-top:8px"><button class="chip" data-v="1" aria-pressed="true">Word-by-word captions</button><button class="chip" data-v="0">No captions</button></div>
+      <label class="t">Caption style</label>
+      <div class="chips" data-k="style"><button class="chip" data-v="pop" aria-pressed="true">Pop</button><button class="chip" data-v="clean">Clean</button><button class="chip" data-v="boxed">Boxed</button></div>
       <div class="chips" data-k="hook" style="margin-top:8px"><button class="chip" data-v="1" aria-pressed="true">Headline for first 3s</button><button class="chip" data-v="0">No headline</button></div>
       <label class="t" for="cta">End-card question (long cut only)</label>
       <input id="cta" class="txt" maxlength="80" placeholder="e.g. Which one would you pick?">

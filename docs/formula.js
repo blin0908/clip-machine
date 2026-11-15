@@ -189,7 +189,7 @@ function title(m, segs) {
   const strength = t => F.hypeEntries.filter(([k]) => t.toLowerCase().includes(k)).reduce((a, [, w]) => a + w, 0)
     + count(HOOK_RX(), t) * 0.7 + (t.match(/!/g) || []).length - Math.abs(t.length - 45) / 25;
   let best = sents.reduce((a, b) => strength(b) > strength(a) ? b : a).replace(/^[\s.,-]+|[\s.,-]+$/g, "");
-  best = best.replace(/\b(um+|uh+|erm|hmm+)\b,?\s*/gi, "").trim().replace(/^(and|but|so|because|like)[,\s]+/i, "");
+  best = best.replace(/\b(um+|uh+m?|erm|er|hmm+|ah+|mhm)\b,?\s*/gi, "").trim().replace(/^(and|but|so|because|like)[,\s]+/i, "");
   best = best.charAt(0).toUpperCase() + best.slice(1);
   if (best.length > 60) best = best.slice(0, 60).replace(/\s+\S*$/, "").replace(/[,;:-]+$/, "") + "…";
   return best;
@@ -256,11 +256,20 @@ export function remap(t, keep) {
 const assTime = t => { t = Math.max(t, 0); const h = Math.floor(t / 3600), m = Math.floor(t % 3600 / 60), s = (t % 60).toFixed(2).padStart(5, "0"); return `${h}:${String(m).padStart(2, "0")}:${s}`; };
 const clean = w => w.replace(/\\/g, "").replace(/{/g, "(").replace(/}/g, ")").toUpperCase();
 
-export function buildASS(m, plat, keep, { captions = true, hook = true, cta = "" } = {}) {
+// Caption styles: pop = bold white, active word yellow + scaled; clean = plain white phrases; boxed = white on black box.
+export const STYLES = { pop: "Pop (active word highlight)", clean: "Clean (plain phrases)", boxed: "Boxed (black box)" };
+
+export function buildASS(m, plat, keep, { captions = true, hook = true, cta = "", style = "pop" } = {}) {
   const R = plat.right, font = "Montserrat Thin Black";   // the family name stored inside fonts/Montserrat-Black.ttf
+  const CAPS = {
+    pop:   `Style: Cap,${font},84,&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,0,0,0,0,100,100,0,0,1,7,3,2,${R},${R},${plat.cap_bottom},1`,
+    clean: `Style: Cap,${font},70,&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,4,2,2,${R},${R},${plat.cap_bottom},1`,
+    boxed: `Style: Cap,${font},72,&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,3,16,0,2,${R},${R},${plat.cap_bottom},1`,
+  };
+  const cap = CAPS[style] || CAPS.pop;
   let out = `[Script Info]\nScriptType: v4.00+\nPlayResX: 1080\nPlayResY: 1920\nWrapStyle: 0\n\n[V4+ Styles]\n` +
     `Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n` +
-    `Style: Cap,${font},84,&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,0,0,0,0,100,100,0,0,1,7,3,2,${R},${R},${plat.cap_bottom},1\n` +
+    `${cap}\n` +
     `Style: Hook,${font},58,&H00111111,&H00111111,&H00FFFFFF,&H00000000,0,0,0,0,100,100,0,0,3,20,0,8,${R + 20},${R + 20},${plat.hook_top},1\n` +
     `Style: Cta,${font},58,&H00111111,&H00111111,&H0000E6FF,&H00000000,0,0,0,0,100,100,0,0,3,20,0,8,${R + 20},${R + 20},${plat.hook_top},1\n\n` +
     `[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n`;
@@ -270,17 +279,76 @@ export function buildASS(m, plat, keep, { captions = true, hook = true, cta = ""
   if (cta) { const tot = keep.reduce((a, [x, y]) => a + y - x, 0); L.push(`Dialogue: 1,${assTime(Math.max(3.4, tot - 2.8))},${assTime(tot)},Cta,,0,0,0,,{\\fad(150,0)}${safe(cta)}`); }
   const words = captions ? spoken(m.words.filter(w => w.s >= m.start - 0.05 && w.s <= m.end)) : [];
   const T = t => remap(t - m.start, keep);
-  const groups = []; for (let i = 0; i < words.length; i += 3) groups.push(words.slice(i, i + 3));
+  const per = style === "clean" ? 4 : 3;
+  const groups = []; for (let i = 0; i < words.length; i += per) groups.push(words.slice(i, i + per));
   groups.forEach((g, gi) => {
     const gEnd = gi + 1 < groups.length ? groups[gi + 1][0].s : g.at(-1).e + 0.3;
+    if (style === "clean") {             // one event per phrase, no per-word highlight
+      const s = T(g[0].s); let e = T(gEnd); if (e - s > 3.5) e = s + 3.5;
+      L.push(`Dialogue: 0,${assTime(s)},${assTime(Math.max(e, s + 0.05))},Cap,,0,0,0,,${g.map(x => safe(x.w)).join(" ")}`);
+      return;
+    }
     g.forEach((w, wi) => {
       const s = T(w.s); let e = T(wi + 1 < g.length ? g[wi + 1].s : gEnd);
       if (e - s > 1.6) e = s + 1.6;
-      const parts = g.map((x, k) => k === wi ? `{\\c&H00F0FF&\\fscx112\\fscy112}${clean(x.w)}{\\c&HFFFFFF&\\fscx100\\fscy100}` : clean(x.w));
+      const hi = style === "boxed" ? `{\\c&H00F0FF&}` : `{\\c&H00F0FF&\\fscx112\\fscy112}`;
+      const lo = style === "boxed" ? `{\\c&HFFFFFF&}` : `{\\c&HFFFFFF&\\fscx100\\fscy100}`;
+      const parts = g.map((x, k) => k === wi ? `${hi}${clean(x.w)}${lo}` : clean(x.w));
       L.push(`Dialogue: 0,${assTime(s)},${assTime(Math.max(e, s + 0.05))},Cap,,0,0,0,,${parts.join(" ")}`);
     });
   });
   return out + L.join("\n") + "\n";
+}
+
+// ---------------------------------------------------------------- editor helpers
+/** Caption lines (≈6 spoken words) inside a cut, each holding references to its word objects. */
+export function captionLines(words, start, end, per = 6) {
+  const ws = spoken(words.filter(w => w.s >= start - 0.05 && w.s <= end));
+  const out = [];
+  for (let i = 0; i < ws.length; i += per) { const g = ws.slice(i, i + per); out.push({ s: g[0].s, e: g.at(-1).e, text: g.map(w => w.w).join(" "), words: g }); }
+  return out;
+}
+
+/** Apply edited line texts to a transcript (in place). Same word count keeps every timing; otherwise the
+ *  new words are spread across the line's time span by length. Empty text removes the words from captions. */
+export function applyLineEdits(transcript, lines, texts) {
+  lines.forEach((ln, i) => {
+    const t = (texts[i] ?? ln.text).trim();
+    if (t === ln.text) return;
+    const toks = t.split(/\s+/).filter(Boolean);
+    let repl;
+    if (toks.length === ln.words.length) repl = ln.words.map((w, k) => ({ ...w, w: toks[k] }));
+    else {
+      const total = toks.reduce((a, x) => a + x.length + 1, 0) || 1, span = Math.max(ln.e - ln.s, 0.1);
+      let t0 = ln.s;
+      repl = toks.map(x => { const d = span * (x.length + 1) / total; const w = { w: x, s: t0, e: t0 + d * 0.9 }; t0 += d; return w; });
+    }
+    const first = transcript.indexOf(ln.words[0]);
+    if (first < 0) return;
+    const drop = new Set(ln.words);
+    const kept = transcript.filter(w => !drop.has(w));
+    const at = kept.findIndex(w => w.s > ln.words[0].s - 1e-6 && transcript.indexOf(w) > first);
+    kept.splice(at < 0 ? kept.length : at, 0, ...repl);
+    transcript.splice(0, transcript.length, ...kept.sort((a, b) => a.s - b.s));
+  });
+  return transcript;
+}
+
+/** Move a cut's start or end to the previous/next word boundary in the full transcript. */
+export function nudge(transcript, start, end, which, dir) {
+  const ws = spoken(transcript);
+  if (which === "start") {
+    const cands = dir < 0 ? ws.filter(w => w.s < start - 0.05) : ws.filter(w => w.s > start + 0.2);
+    const w = dir < 0 ? cands.at(-1) : cands[0];
+    if (!w || (dir > 0 && w.s > end - 3)) return { start, end };
+    const prev = ws[ws.indexOf(w) - 1];             // never start inside the word before
+    return { start: +Math.min(w.s, Math.max(0, w.s - 0.12, prev ? prev.e + 0.02 : 0)).toFixed(2), end };
+  }
+  const cands = dir < 0 ? ws.filter(w => w.e < end - 0.45) : ws.filter(w => w.e > end - 0.3);
+  const w = dir < 0 ? cands.at(-1) : cands[0];
+  if (!w || (dir < 0 && w.e < start + 3)) return { start, end };
+  const next = ws[ws.indexOf(w) + 1];               // never end inside the word after (it would show in captions, half-spoken)
+  return { start, end: +Math.max(w.s + 0.1, Math.min(w.e + 0.35, next ? next.s - 0.01 : Infinity)).toFixed(2) };
 }
 
 export function buildSRT(m, keep) {

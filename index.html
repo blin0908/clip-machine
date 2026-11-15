@@ -98,6 +98,13 @@ h2{font-size:18px;margin:22px 0 10px}
 .copyrow button{flex:1 1 45%;padding:9px;font-size:13px;font-weight:600;border-radius:10px}
 .toast{position:fixed;left:50%;bottom:calc(24px + env(safe-area-inset-bottom));transform:translateX(-50%);background:#fff;color:#000;padding:10px 16px;border-radius:99px;font-size:14px;font-weight:600;opacity:0;transition:opacity .2s;pointer-events:none}
 .toast.on{opacity:1}
+.edbtn{width:100%;margin-top:10px;padding:10px;font-size:14px;font-weight:700;border-radius:10px}
+.editor{border-top:1px solid var(--line);margin-top:12px;padding-top:4px}
+.trim{display:flex;gap:8px;align-items:center;margin-bottom:8px}
+.trim span{width:44px;color:var(--mute);font-size:13px}
+.trim button{flex:1;padding:9px;font-size:13px;font-weight:600;border-radius:10px}
+.lines{display:grid;gap:6px}
+.ed-line{padding:9px 10px;font-size:15px}
 </style>
 </head>
 <body>
@@ -141,6 +148,7 @@ h2{font-size:18px;margin:22px 0 10px}
       <div class="chips" data-k="hook"><button type="button" class="chip" data-v="1" aria-pressed="true">Headline for first 3s</button><button type="button" class="chip" data-v="0">No headline</button></div>
       <div class="chips" data-k="tighten" style="margin-top:8px"><button type="button" class="chip" data-v="1" aria-pressed="true">Cut dead air + um/uh</button><button type="button" class="chip" data-v="0">Keep pauses</button></div>
       <div class="chips" data-k="enhance" style="margin-top:8px"><button type="button" class="chip" data-v="1" aria-pressed="true">Enhance (clean audio, sharpen, punch-ins)</button><button type="button" class="chip" data-v="0">No enhancement</button></div>
+      <div class="chips" data-k="style" style="margin-top:8px"><button type="button" class="chip" data-v="pop" aria-pressed="true">Pop captions</button><button type="button" class="chip" data-v="clean">Clean</button><button type="button" class="chip" data-v="boxed">Boxed</button></div>
       <label class="t" for="cta">End-card call to action (long cut only)</label>
       <input id="cta" type="text" maxlength="80" placeholder="e.g. Which one would you pick?" class="txt">
       <p class="pnote">Ask one relevant question. The short cut stays clean so its payoff isn't interrupted.</p>
@@ -175,7 +183,8 @@ h2{font-size:18px;margin:22px 0 10px}
 
 <script>
 const $ = s => document.querySelector(s);
-const opts = {n:"5", len:"auto-auto", layout:"fit", captions:"1", model:"base", platform:"all", hook:"1", tighten:"1", version:"both", enhance:"1"};
+const opts = {n:"5", len:"auto-auto", layout:"fit", captions:"1", model:"base", platform:"all", hook:"1", tighten:"1", version:"both", enhance:"1", style:"pop"};
+let X = null;  // formula.js helpers (captionLines, nudge, applyLineEdits), loaded on first edit
 let PLAT = {};
 fetch("/api/platforms").then(r => r.json()).then(p => { PLAT = p; showPlat(); });
 function showPlat(){ const p = PLAT[opts.platform]; if (!p) return;
@@ -209,7 +218,7 @@ $("#f").onsubmit = async e => {
   const url = $("#url").value.trim(), file = $("#file").files[0];
   if (!url && !file) return toast("Paste a link or pick a video");
   const [mn, mx] = opts.len.split("-");
-  const fields = {n:opts.n, min:mn, max:mx, layout:opts.layout, captions:opts.captions, model:opts.model, crop_x:$("#cx").value, platform:opts.platform, hook:opts.hook, tighten:opts.tighten, version:opts.version, cta:$("#cta").value.trim(), enhance:opts.enhance};
+  const fields = {n:opts.n, min:mn, max:mx, layout:opts.layout, captions:opts.captions, model:opts.model, crop_x:$("#cx").value, platform:opts.platform, hook:opts.hook, tighten:opts.tighten, version:opts.version, cta:$("#cta").value.trim(), enhance:opts.enhance, style:opts.style};
   $("#go").disabled = true;
   try {
     let r;
@@ -255,7 +264,7 @@ function watch(id){
 }
 
 function render(j){
-  const r = j.result, base = "/files/" + j.id + "/";
+  const r = j.result, base = "/files/" + j.id + "/", vq = j.edit_rev ? "?v=" + j.edit_rev : "";
   if (!r.clips.length) { $("#out").innerHTML = `<div class="card msg">No clear moments found. Try shorter clip lengths.</div>`; return; }
   const order = r.platform && r.platform !== "all" ? [r.platform] : ["tiktok","reels","shorts","facebook"];
   const pubPlats = r.platform && r.platform !== "all" ? [r.platform] : ["tiktok","reels","shorts","facebook"];
@@ -265,14 +274,16 @@ function render(j){
         <div class="acts"><a class="dl" href="${base + v.file}?dl=1" download>Save ${c.short ? (v === c ? "long" : "short") + " cut" : "clip"}</a></div>`;
   $("#out").innerHTML = `<h2>${esc(r.title)}</h2>${r.platform_note ? `<p class="pnote">Formatted for <b>${esc(r.platform_name)}</b>. ${esc(r.platform_note)}</p>` : ""}${pub}${r.dropped_for_quality ? `<p class="pnote">Quality gate replaced ${r.dropped_for_quality} clip${r.dropped_for_quality > 1 ? "s" : ""} that failed a hard check.</p>` : ""}<div class="clips">` + r.clips.map((c, i) => `
     <article class="clip" data-i="${i}">
-      <video src="${base + (c.short ? c.short.file : c.file)}" poster="${base + (c.short ? c.short.thumb : c.thumb)}" controls playsinline preload="none"></video>
+      <video src="${base + (c.short ? c.short.file : c.file) + vq}" poster="${base + (c.short ? c.short.thumb : c.thumb) + vq}" controls playsinline preload="none"></video>
       <div class="b">
         ${c.short ? `<div class="vtabs"><button data-cut="short" aria-pressed="true">Short · ${c.short.duration}s</button><button data-cut="long" aria-pressed="false">Long · ${c.duration}s</button></div>` : ""}
         <div class="top"><span class="score">${c.score}</span><span class="when">${esc(c.range)}</span></div>
-        <div class="ttl">${esc(c.title)}</div>
+        <div class="ttl">${esc((c.short || c).title || c.title)}</div>
         <p class="why">${c.reasons.map(esc).join(" · ")}</p>
         <ul class="check">${(c.checklist || []).map(x => `<li class="${x.ok ? "ok" : "no"}"><b>${x.ok ? "✓" : "✗"}</b> ${esc(x.k)}${x.ev ? `<span class="ev">${esc(x.ev)}</span>` : ""}${x.tip ? ` <span>${esc(x.tip)}</span>` : ""}</li>`).join("")}</ul>
         <div class="cutbox">${cutBody(c, c.short || c)}</div>
+        <button class="sec edbtn" data-edit>✎ Edit this cut (trim, captions, style)</button>
+        <div class="editor hide"></div>
         <div class="copyrow">${c.captions ? order.filter(k => c.captions[k]).map(k => `<button class="sec" data-copy="${esc(c.captions[k])}">Copy ${PN[k]} caption</button>`).join("") : `<button class="sec" data-copy="${esc(c.title + " " + c.hashtags.join(" "))}">Copy caption</button>`}</div>
         <details style="margin-top:10px"><summary style="margin:0">Log a post</summary>
           <form class="logf" data-clip="${i}">
@@ -290,6 +301,7 @@ function render(j){
       </div>
     </article>`).join("") + `</div>`;
   $("#out")._job = j;
+  if (j.edit_error) $("#out").insertAdjacentHTML("afterbegin", `<div class="card err">⚠ ${esc(j.edit_error)}</div>`);
   $("#out").querySelectorAll(".logf").forEach(setMetricLabels);
   $("#out").scrollIntoView({behavior:"smooth"});
 }
@@ -314,15 +326,97 @@ $("#out").addEventListener("submit", async e => {
   toast("Result saved"); f.reset(); setMetricLabels(f); loadLog();
 });
 $("#out").addEventListener("click", e => {
+  const art0 = e.target.closest(".clip");
+  if (art0) {
+    const c0 = $("#out")._job.result.clips[+art0.dataset.i];
+    if (e.target.closest("[data-edit]")) return openEditor(art0, c0);
+    const nd = e.target.closest("[data-nudge]");
+    if (nd) { const [which, dir] = nd.dataset.nudge.split(":"); keepTyped(art0, c0); Object.assign(c0.ed, X.nudge(c0.wl, c0.ed.start, c0.ed.end, which, +dir)); return drawEditor(art0, c0); }
+    const es = e.target.closest("[data-estyle]");
+    if (es) { c0.ed.style = es.dataset.estyle; art0.querySelectorAll("[data-estyle]").forEach(x => x.setAttribute("aria-pressed", x === es)); return; }
+    if (e.target.closest("[data-ecancel]")) return art0.querySelector(".editor").classList.add("hide");
+    if (e.target.closest("[data-rerender]")) return submitEdit(art0, c0);
+  }
   const b = e.target.closest("[data-cut]"); if (!b) return;
-  const art = b.closest(".clip"), j = $("#out")._job, c = j.result.clips[+art.dataset.i], base = "/files/" + j.id + "/";
+  const art = b.closest(".clip"), j = $("#out")._job, c = j.result.clips[+art.dataset.i], base = "/files/" + j.id + "/", vq = j.edit_rev ? "?v=" + j.edit_rev : "";
+  c.view = b.dataset.cut; art.querySelector(".editor").classList.add("hide");
   const v = b.dataset.cut === "short" ? c.short : c;
   art.querySelectorAll("[data-cut]").forEach(x => x.setAttribute("aria-pressed", x === b));
-  const vid = art.querySelector("video"); vid.src = base + v.file; vid.poster = base + v.thumb;
+  art.querySelector(".ttl").textContent = v.title || c.title;
+  const vid = art.querySelector("video"); vid.src = base + v.file + vq; vid.poster = base + v.thumb + vq;
   art.querySelector(".cutbox").innerHTML = qualityHTML(v) + `
         <div class="meta">${v.size_mb ?? "?"} MB · ${v.fps ?? "?"} fps · ${v.duration}s${v.cuts ? ` · ${v.cuts} pause${v.cuts > 1 ? "s" : ""} cut` : ""}</div>
         <div class="acts"><a class="dl" href="${base + v.file}?dl=1" download>Save ${b.dataset.cut} cut</a></div>`;
 });
+// ---- clip editor: trim to word boundaries, fix captions, change headline/style, re-render on the Mac
+async function openEditor(art, c){
+  const j = $("#out")._job;
+  try {
+    if (!X) { X = await import("/formula.js"); await X.loadFormula(); }
+    if (!j._words) {
+      const segs = await fetch("/files/" + j.id + "/transcript.json").then(r => { if (!r.ok) throw 0; return r.json(); });
+      j._words = segs.flatMap(s => s.words || []);
+    }
+  } catch { return toast("Couldn't load the transcript for this job"); }
+  const cut = c.view === "long" || !c.short ? "long" : "short", v = cut === "short" ? c.short : c;
+  if (!c.wl || c.wlCut !== cut) {
+    c.wlCut = cut; c.wl = j._words.map(w => ({...w}));
+    if (v.edited) {   // a saved edit: lay its corrected words over the original transcript
+      const saved = await fetch("/files/" + j.id + "/" + v.file.replace(/\.mp4$/, ".words.json") + "?v=" + (j.edit_rev || 0)).then(r => r.ok ? r.json() : null).catch(() => null);
+      if (saved?.length) {
+        const a = saved[0].s - 0.01, b = saved.at(-1).s + 0.01;
+        c.wl = c.wl.filter(w => w.s < a || w.s > b).concat(saved.map(w => ({...w}))).sort((x, y) => x.s - y.s);
+      }
+    }
+  }
+  c.ed = {cut, start: v.start ?? c.start, end: v.end ?? c.end, title: v.title ?? c.title, style: v.style || j.result.style || opts.style || "pop"};
+  drawEditor(art, c);
+  const ed = art.querySelector(".editor"); ed.classList.remove("hide"); ed.scrollIntoView({behavior:"smooth", block:"nearest"});
+}
+function drawEditor(art, c){
+  const ed = c.ed, t = x => `${X.fmtT(x)}.${Math.round(x * 10) % 10}`;
+  c.lines = X.captionLines(c.wl, ed.start, ed.end);
+  art.querySelector(".editor").innerHTML = `
+    <label class="t">Headline (first 3 seconds)</label>
+    <input class="txt ed-title" maxlength="90" value="${esc(ed.title)}">
+    <label class="t">Trim <span class="st">${t(ed.start)} → ${t(ed.end)} · ${(ed.end - ed.start).toFixed(1)}s before cuts</span></label>
+    <div class="trim"><span>Start</span><button type="button" class="sec" data-nudge="start:-1">◀ earlier</button><button type="button" class="sec" data-nudge="start:1">later ▶</button></div>
+    <div class="trim"><span>End</span><button type="button" class="sec" data-nudge="end:-1">◀ earlier</button><button type="button" class="sec" data-nudge="end:1">later ▶</button></div>
+    <label class="t">Captions: fix any misheard words</label>
+    <div class="lines">${c.lines.map((l, i) => `<input class="txt ed-line" data-line="${i}" value="${esc(l.text)}" aria-label="Caption line ${i + 1}">`).join("") || '<p class="msg">No speech in this cut.</p>'}</div>
+    <label class="t">Caption style</label>
+    <div class="chips">${Object.entries(X.STYLES).map(([k, n]) => `<button type="button" class="chip" data-estyle="${k}" aria-pressed="${k === ed.style}">${esc(n)}</button>`).join("")}</div>
+    <div class="acts" style="margin-top:14px"><button type="button" class="dl" data-rerender>Re-render this cut</button><button type="button" class="sec" data-ecancel>Close</button></div>`;
+}
+function keepTyped(art, c){
+  const texts = [...art.querySelectorAll(".ed-line")].map(x => x.value);
+  if (texts.length) X.applyLineEdits(c.wl, c.lines, texts);
+  c.ed.title = art.querySelector(".ed-title")?.value.trim() || c.ed.title;
+}
+async function submitEdit(art, c){
+  keepTyped(art, c);
+  const j = $("#out")._job, ed = c.ed, btn = art.querySelector("[data-rerender]");
+  const words = c.wl.filter(w => w.s >= ed.start - 0.5 && w.s <= ed.end + 0.5);
+  btn.disabled = true; btn.textContent = "Sending…";
+  const r = await fetch(`/api/jobs/${j.id}/edit`, {method:"POST", headers:{"Content-Type":"application/json"},
+    body: JSON.stringify({clip: +art.dataset.i, cut: ed.cut, start: ed.start, end: ed.end, title: ed.title, style: ed.style, words})}).then(x => x.json()).catch(() => ({error: "Couldn't reach your Mac"}));
+  if (r.error) { btn.disabled = false; btn.textContent = "Re-render this cut"; return toast(r.error); }
+  watchEdit(j.id, +art.dataset.i);
+}
+function watchEdit(id, clipIdx){
+  current = id; clearInterval(timer);
+  const tick = async () => {
+    const j = await fetch("/api/jobs/" + id).then(r => r.json()).catch(() => null);
+    if (!j || current !== id) return;
+    if (j.status === "done") {
+      clearInterval(timer); $("#prog").classList.add("hide"); render(j);
+      toast(j.edit_error ? "Edit failed: previous version kept" : "Edit saved");
+      $("#out").querySelector(`.clip[data-i="${clipIdx}"]`)?.scrollIntoView({behavior:"smooth", block:"center"});
+    } else showProg(j.status === "queued" ? "Waiting…" : "Re-rendering…", j.pct, j.msg);
+  };
+  tick(); timer = setInterval(tick, 1000);
+}
+
 async function loadLog(){
   const rows = await fetch("/api/log").then(r => r.json()).catch(() => []);
   $("#logtbl").innerHTML = rows.length ? `<div class="lwrap"><table class="ltable"><tr><th>Platform</th><th>Clip</th><th>At</th><th>Views</th><th>Metrics</th><th></th></tr>` +

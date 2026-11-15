@@ -3,7 +3,9 @@
     .venv/bin/python app.py          (or double-click Start Clip Machine.command)
 """
 import json
+import math
 import os
+import sys
 import secrets
 import socket
 import threading
@@ -55,7 +57,12 @@ def remember(resp):
 
 def worker():
     while True:
-        jid = queue.get()
+        item = queue.get()
+        if isinstance(item, tuple):          # ("edit", jid, payload): re-render one cut
+            run_edit(*item[1:])
+            queue.task_done()
+            continue
+        jid = item
         job = jobs[jid]
         job["status"] = "running"
 
@@ -70,17 +77,33 @@ def worker():
                               crop_x=o["crop_x"], platform=o.get("platform", "all"),
                               hook=o.get("hook", True), tighten=o.get("tighten", True),
                               version=o.get("version", "both"), cta=o.get("cta", ""),
-                              enhance=o.get("enhance", True), progress=progress)
+                              enhance=o.get("enhance", True), style=o.get("style", "pop"), progress=progress)
             job.update(status="done", pct=100, msg="Done", result=res)
-            if not o.get("keep_source"):
-                for f in (JOBS / jid).glob("source.*"):
-                    f.unlink(missing_ok=True)
+            # the source is kept so clips can be edited and re-rendered; deleting the job frees the space
         except Exception as e:
             traceback.print_exc()
             job.update(status="error", msg=str(e)[:600])
         finally:
             save(jid)
             queue.task_done()
+
+
+def run_edit(jid, p):
+    job = jobs.get(jid)
+    if not job:
+        return
+    job.update(status="editing", pct=0, msg="Re-rendering your edit")
+    def progress(stage, pct, msg=""):
+        job.update(pct=pct, msg=msg)
+    try:
+        res = clipper.edit_cut(JOBS / jid, p["clip"], p["cut"], p["start"], p["end"], p["title"], p["words"],
+                               p.get("style"), progress)
+        job.update(status="done", pct=100, msg="Edit saved", result=res, edit_error=None, edit_rev=job.get("edit_rev", 0) + 1)
+    except Exception as e:
+        traceback.print_exc()
+        job.update(status="done", pct=100, msg="Done", edit_error=str(e)[:400])
+    finally:
+        save(jid)
 
 
 def save(jid):
@@ -120,6 +143,7 @@ def new_job(source, form):
         "version": form.get("version") if form.get("version") in ("both", "short", "long") else "both",
         "cta": str(form.get("cta") or "")[:80],
         "enhance": str(form.get("enhance", "1")) in ("1", "true", "on"),
+        "style": form.get("style") if form.get("style") in clipper.CAPTION_STYLES else "pop",
         "layout": form.get("layout", "fit") if form.get("layout") in ("fit", "crop", "original") else "fit",
         "captions": str(form.get("captions", "1")) in ("1", "true", "on"),
         "model": form.get("model", "base") if form.get("model") in ("tiny", "base", "small", "medium") else "base",
@@ -153,6 +177,26 @@ def create():
     return jsonify(id=new_job(url, data))
 
 
+@app.post("/api/jobs/<jid>/edit")
+def edit(jid):
+    job = jobs.get(jid)
+    if not job or job["status"] != "done" or not job.get("result"):
+        return jsonify(error="That job isn't finished."), 400
+    d = request.get_json(silent=True) or {}
+    try:
+        clip = int(d.get("clip", -1)); cut = d.get("cut")
+        assert 0 <= clip < len(job["result"]["clips"]) and cut in ("long", "short")
+        assert all(math.isfinite(float(d[k])) for k in ("start", "end")) and float(d["end"]) > float(d["start"])
+        payload = {"clip": clip, "cut": cut, "start": float(d["start"]), "end": float(d["end"]),
+                   "title": str(d.get("title", ""))[:90], "words": list(d.get("words") or [])[:5000],
+                   "style": d.get("style")}
+    except Exception:
+        return jsonify(error="Bad edit request."), 400
+    job.update(status="queued", msg="Edit waiting in line", edit_error=None)
+    queue.put(("edit", jid, payload))
+    return jsonify(ok=True)
+
+
 @app.get("/api/jobs")
 def list_jobs():
     out = sorted(jobs.values(), key=lambda j: -j.get("created", 0))[:30]
@@ -168,7 +212,7 @@ def get_job(jid):
 
 @app.delete("/api/jobs/<jid>")
 def del_job(jid):
-    if jid not in jobs or jobs[jid]["status"] in ("queued", "running"):
+    if jid not in jobs or jobs[jid]["status"] in ("queued", "running", "editing"):
         abort(400)
     import shutil
     shutil.rmtree(JOBS / jid, ignore_errors=True)
@@ -247,6 +291,17 @@ def platforms():
     return jsonify(clipper.PLATFORMS)
 
 
+@app.get("/formula.js")
+@app.get("/formula.json")
+def formula_files():
+    # the desktop page reuses the web app's caption/trim logic (docs/ in the repo, web/ in the release zip)
+    name = request.path.lstrip("/")
+    for d in (HERE / "docs", HERE / "web"):
+        if (d / name).exists():
+            return send_from_directory(d, name)
+    abort(404)
+
+
 @app.get("/")
 def index():
     return send_from_directory(HERE, "index.html")
@@ -278,6 +333,11 @@ def lan_ip():
 
 
 if __name__ == "__main__":
+    for _s in (sys.stdout, sys.stderr):   # Windows consoles: never crash on ✓/✗ or emoji
+        try:
+            _s.reconfigure(errors="replace")
+        except Exception:
+            pass
     load_history()
     threading.Thread(target=worker, daemon=True).start()
     url = f"http://{lan_ip()}:{PORT}/?key={KEY}"

@@ -7,8 +7,8 @@ const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": 
 const CORE = "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/esm";
 const PN = { tiktok: "TikTok", reels: "Reels", shorts: "YT Shorts", facebook: "Facebook", snapchat: "Snapchat", x: "X" };
 const opts = { platform: "all", n: "3", version: "both", quality: "fast", model: "Xenova/whisper-base.en",
-               captions: "1", hook: "1", tighten: "1", enhance: "1", layout: "fit" };
-let ffmpeg = null, logs = [], wakeLock = null, results = [];
+               captions: "1", hook: "1", tighten: "1", enhance: "1", layout: "fit", style: "pop" };
+let ffmpeg = null, logs = [], wakeLock = null, results = [], S = null, busy = false, srcFile = null;   // S = current session (source, transcript, settings)
 
 // ---------------------------------------------------------------- UI wiring
 document.querySelectorAll(".chips").forEach(g => g.addEventListener("click", e => {
@@ -40,9 +40,9 @@ const STAGES = { load: [0, 8], audio: [8, 14], asr: [14, 60], score: [60, 62], r
 const stage = (k, pct, label, msg) => { const [a, b] = STAGES[k]; setStage(label, a + (b - a) * pct / 100, msg); };
 
 // ---------------------------------------------------------------- ffmpeg helpers
-async function getFFmpeg() {
+async function getFFmpeg(quiet = false) {
   if (ffmpeg) return ffmpeg;
-  stage("load", 10, "Loading video engine…", "First run downloads ~30 MB. It's cached after that.");
+  if (!quiet) stage("load", 10, "Loading video engine…", "First run downloads ~30 MB. It's cached after that.");
   ffmpeg = new FFmpeg();
   ffmpeg.on("log", ({ message }) => { logs.push(message); if (logs.length > 4000) logs.splice(0, 2000); });
   await ffmpeg.load({ coreURL: await toBlobURL(`${CORE}/ffmpeg-core.js`, "text/javascript"),
@@ -52,20 +52,58 @@ async function getFFmpeg() {
   await ffmpeg.createDir("/in");
   return ffmpeg;
 }
-async function run(args, onTime) {
+// Safari/WebKit can run out of WebAssembly memory after transcribing a longer video: the video engine then
+// stalls without an error (tested: WebKit fails above ~1 min of speech on an 8 GB Mac; Chrome and Firefox don't).
+const UA = navigator.userAgent;
+const IS_IOS = /iPhone|iPad|iPod/.test(UA) || (/Macintosh/.test(UA) && navigator.maxTouchPoints > 1);   // every iOS browser is WebKit
+const IS_WEBKIT = IS_IOS || (/AppleWebKit/.test(UA) && !/Chrome|Chromium|Edg|Firefox|Android/.test(UA));
+const OOM = "This browser ran out of memory for video editing. " + (IS_IOS
+  ? "On iPhone and iPad every browser uses Safari's engine, which tops out around a minute of video. Use a shorter video, or a computer with Chrome or the free desktop app."
+  : "Safari is the usual cause with videos over about a minute. Try Chrome, Edge or Firefox, a shorter video, or the free desktop app.");
+const withTimeout = (p, ms) => Promise.race([p, new Promise((_, bad) => setTimeout(() => bad(new Error(OOM)), ms))]);
+const fsCache = new Map();                // small files we wrote (captions), replayed into a fresh engine
+async function writeFS(path, data) { fsCache.set(path, data); await ffmpeg.writeFile(path, data); }
+async function resetFFmpeg() {            // a fresh engine with the source re-mounted, to recover a stalled worker
+  try { ffmpeg?.terminate(); } catch {}
+  ffmpeg = null;
+  await withTimeout((async () => {
+    await getFFmpeg(true);
+    if (srcFile) await ffmpeg.mount("WORKERFS", { files: [srcFile] }, "/in");
+    for (const [p, d] of fsCache) await ffmpeg.writeFile(p, d);
+  })(), 40000);
+}
+async function run(args, onTime, retry = true) {
   logs = [];
-  const h = ({ time }) => onTime && time > 0 && onTime(time / 1e6);
-  ffmpeg.on("progress", h);
-  const code = await ffmpeg.exec(args);
-  ffmpeg.off("progress", h);
-  return { code, log: logs.join("\n") };
+  // stalled = the engine never printed a single line within 60 s (WebKit's out-of-memory signature). A long silence
+  // mid-run is NOT treated as a stall: slow browsers (Firefox, older phones) can go quiet while loading caption fonts.
+  const t0 = Date.now(); let last = 0, stalled = false;
+  const h = ({ time }) => { last = Date.now(); if (onTime && time > 0) onTime(time / 1e6); };
+  const lg = () => { last = Date.now(); };
+  const ff = ffmpeg;
+  ff.on("progress", h); ff.on("log", lg);
+  const wd = setInterval(() => {
+    const now = Date.now();
+    if (!last && now - t0 > 60000) { stalled = true; clearInterval(wd); try { ff.terminate(); } catch {} }
+  }, 3000);
+  try {
+    const code = await ff.exec(args);
+    return { code, log: logs.join("\n") };
+  } catch (e) {
+    if (!stalled) throw e;
+    if (!retry) throw new Error(OOM);
+    await resetFFmpeg();
+    return run(args, onTime, false);
+  } finally {
+    clearInterval(wd); try { ff.off("progress", h); ff.off("log", lg); } catch {}
+  }
 }
 function probeLog(log) {
   const d = log.match(/Duration: (\d+):(\d+):([\d.]+)/);
-  const v = log.match(/Video: (\w+).*?, (\d{2,5})x(\d{2,5})/);
+  const v = log.split("\n").filter(l => !/attached pic/.test(l)).join("\n").match(/Video: (\w+).*?, (\d{2,5})x(\d{2,5})/);  // cover art isn't video
   const fps = log.match(/([\d.]+) fps/);
   return { duration: d ? +d[1] * 3600 + +d[2] * 60 + +d[3] : 0, vcodec: v?.[1], width: v ? +v[2] : 0, height: v ? +v[3] : 0,
-           fps: fps ? +fps[1] : 30, hasVideo: !!v, acodec: (log.match(/Audio: (\w+)/) || [])[1] };
+           fps: fps ? +fps[1] : 30, hasVideo: !!v, acodec: (log.match(/Audio: (\w+)/) || [])[1],
+           square: !/SAR (?!1:1)\d+:\d+/.test(log.match(/Video: .*/)?.[0] || "") };
 }
 
 // ---------------------------------------------------------------- transcription
@@ -108,7 +146,15 @@ function filterGraph(m, keep, info, o, hasASS) {
     }
   }
   if (hasASS) vf += ",ass=/sub.ass:fontsdir=/fonts";
+  vf += ",setsar=1";   // square pixels: scale/crop rounding otherwise leaves SAR 10240:10239 (players show 719 px)
   const clean = o.enhance ? "highpass=f=80,afftdn=nr=10:nf=-40,equalizer=f=3200:t=q:w=1.2:g=2.5,acompressor=threshold=-20dB:ratio=2.5:attack=10:release=150:makeup=2," : "";
+  const aout = `${clean}loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[a]`;
+  if (!info.hasVideo) {    // audio-only source (podcast, voice memo): captions over a moving waveform
+    const ass = hasASS ? ",ass=/sub.ass:fontsdir=/fonts" : "";
+    return { fc: `[0:a]${apre},asplit[aw][am];color=c=0x101018:s=${W}x${H}:r=${fps}[bg];` +
+      `[aw]showwaves=s=${W}x${Math.round(H * 0.22)}:mode=cline:colors=0xFFE600:rate=${fps}[wv];` +
+      `[bg][wv]overlay=0:(H-h)/2:shortest=1,format=yuv420p${ass},setsar=1[v];[am]${aout}`, fps, W, H, audiogram: true };
+  }
   return { fc: `[0:v]${pre},${vf}[v];[0:a]${apre},${clean}loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[a]`, fps, W, H };
 }
 
@@ -116,8 +162,8 @@ async function renderClip(path, info, m, o, cta, onPct) {
   const keep = X.keepIntervals(m, o.tighten);
   const plat = X.F.platforms[o.platform];
   const hasASS = (o.captions && m.words.length) || (o.hook && m.title) || cta;
-  if (hasASS) await ffmpeg.writeFile("/sub.ass", X.buildASS(m, plat, keep, { captions: o.captions, hook: o.hook, cta }));
-  const { fc, fps, W, H } = filterGraph(m, keep, info, o, hasASS);
+  if (hasASS) await writeFS("/sub.ass", X.buildASS(m, plat, keep, { captions: o.captions, hook: o.hook, cta, style: o.style }));
+  const { fc, fps, W, H, audiogram } = filterGraph(m, keep, info, o, hasASS);
   const dur = m.end - m.start, expected = keep.reduce((a, [x, y]) => a + y - x, 0);
   const r = await run(["-ss", m.start.toFixed(3), "-t", dur.toFixed(3), "-i", path, "-filter_complex", fc, "-map", "[v]", "-map", "[a]",
     "-c:v", "libx264", "-preset", o.hd ? "veryfast" : "ultrafast", "-crf", o.hd ? "20" : "22", "-pix_fmt", "yuv420p",
@@ -132,16 +178,17 @@ async function renderClip(path, info, m, o, cta, onPct) {
   let thumb = null; try { thumb = URL.createObjectURL(new Blob([(await ffmpeg.readFile("/thumb.jpg")).buffer], { type: "image/jpeg" })); await ffmpeg.deleteFile("/thumb.jpg"); } catch {}
   await ffmpeg.deleteFile("/out.mp4");
   const blob = new Blob([data.buffer], { type: "video/mp4" });
-  const quality = qualityChecks(q.log, { expected, W, H, sizeMB: blob.size / 1e6, m, captions: o.captions });
+  const quality = qualityChecks(q.log, { expected, W, H, sizeMB: blob.size / 1e6, m, captions: o.captions, audiogram });
   const fillers = o.tighten ? m.words.filter(w => w.s >= m.start && w.s <= m.end && X.F.fillerSet.has(w.w.toLowerCase().replace(/[^a-z]/g, ""))).length : 0;
   return { blob, url: URL.createObjectURL(blob), thumb, quality, duration: +expected.toFixed(1), cuts: keep.length - 1, fps,
            size_mb: +(blob.size / 1e6).toFixed(1), fillers_cut: fillers, enhanced: o.enhance, srt: X.buildSRT(m, keep) };
 }
 
-function qualityChecks(log, { expected, W, H, sizeMB, m, captions }) {
+function qualityChecks(log, { expected, W, H, sizeMB, m, captions, audiogram }) {
   const c = [], add = (k, ok, detail, hard) => c.push({ k, ok: !!ok, detail, hard });
   const p = probeLog(log);
-  add("Upload-ready format", p.vcodec === "h264" && p.acodec === "aac" && p.width === W && p.height === H, `${p.vcodec} ${p.width}×${p.height} + ${p.acodec}`, true);
+  add("Upload-ready format", p.vcodec === "h264" && p.acodec === "aac" && p.width === W && p.height === H && p.square,
+    `${p.vcodec} ${p.width}×${p.height} + ${p.acodec}${p.square ? "" : ", non-square pixels"}`, true);
   add("Length matches the edit", Math.abs(p.duration - expected) < 0.8, `${p.duration.toFixed(1)}s (expected ${expected.toFixed(1)}s)`, true);
   add("Under upload size limits", sizeMB < 250, `${sizeMB.toFixed(1)} MB`, true);
   const I = [...log.matchAll(/I:\s+(-?[\d.]+) LUFS/g)].at(-1)?.[1], P = [...log.matchAll(/Peak:\s+(-?[\d.]+|-inf) dBFS/g)].at(-1)?.[1];
@@ -150,7 +197,7 @@ function qualityChecks(log, { expected, W, H, sizeMB, m, captions }) {
   const freeze = [...log.matchAll(/freeze_duration: ([\d.]+)/g)].reduce((a, x) => a + +x[1], 0);
   add("Even loudness (−14 LUFS ±2)", I != null && +I >= -16.5 && +I <= -11.5, I != null ? `${I} LUFS` : "not measured", false);
   add("No clipping", P == null || P === "-inf" || +P <= -0.3, `true peak ${P} dBFS`, false);
-  add("No black frames", black < 0.5, `${black.toFixed(1)}s black`, true);
+  add("No black frames", audiogram || black < 0.5, audiogram ? "audiogram (dark card by design)" : `${black.toFixed(1)}s black`, true);
   add("No dead silence", !silence.length, silence.length ? `${Math.max(...silence).toFixed(1)}s silent stretch` : "none over 2s", true);
   add("Picture keeps moving", freeze < 0.6 * Math.max(p.duration, 1), freeze ? `${freeze.toFixed(1)}s frozen` : "no long freezes", false);
   const sw = X.spoken(m.words.filter(w => w.s >= m.start && w.s <= m.end));
@@ -171,23 +218,33 @@ async function makeCut(path, info, m, o, cta, onPct) {
 // ---------------------------------------------------------------- pipeline
 async function go(file) {
   const o = { platform: opts.platform, n: +opts.n, version: opts.version, hd: opts.quality === "hd", captions: opts.captions === "1",
-              hook: opts.hook === "1", tighten: opts.tighten === "1", enhance: opts.enhance === "1", layout: opts.layout };
+              hook: opts.hook === "1", tighten: opts.tighten === "1", enhance: opts.enhance === "1", layout: opts.layout, style: opts.style };
+  if (busy) return toast("Already working. Cancel first to start over.");
+  busy = true;
+  revokeAll();
   const cta = $("#cta").value.trim().slice(0, 80);
   $("#out").innerHTML = ""; $("#setup").classList.add("busy");
   try { wakeLock = await navigator.wakeLock?.request("screen"); } catch {}
   try {
     await getFFmpeg();
     try { await ffmpeg.unmount("/in"); } catch {}
+    srcFile = file;
     await ffmpeg.mount("WORKERFS", { files: [file] }, "/in");
     const path = "/in/" + file.name;
     const info = probeLog((await run(["-hide_banner", "-i", path])).log);
     if (!info.duration) throw new Error("Couldn't read that file. Try an MP4 or MOV.");
     if (!info.acodec) throw new Error("That video has no audio track, so there's nothing to transcribe.");
+    if (info.duration < 3) throw new Error("That video is under 3 seconds, too short to clip.");
+    if (info.duration > 3 * 3600) throw new Error("That video is over 3 hours. Trim it first, or use the desktop app.");
+    if (IS_WEBKIT && info.duration > 75) toast(IS_IOS ? "Heads up: on iPhone/iPad, videos over about a minute can run out of memory. Shorter videos work best." : "Heads up: Safari can run out of memory on videos over about a minute. Chrome handles long videos best.");
+    else if (info.duration > 45 * 60) toast(`Long video (${X.fmtT(info.duration)}): this can take a while. Keep the tab open and the screen on.`);
     stage("audio", 0, "Reading audio…");
     const a = await run(["-i", path, "-vn", "-ac", "1", "-ar", "16000", "-f", "f32le", "/audio.raw"], t => stage("audio", 100 * t / info.duration, "Reading audio…", `${X.fmtT(t)} / ${X.fmtT(info.duration)}`));
     if (a.code !== 0) throw new Error("Couldn't decode the audio.");
     const raw = await ffmpeg.readFile("/audio.raw"); await ffmpeg.deleteFile("/audio.raw");
     const pcm = new Float32Array(raw.buffer, raw.byteOffset, Math.floor(raw.byteLength / 4));
+    let peak = 0; for (let k = 0; k < pcm.length; k += 4) { const x = Math.abs(pcm[k]); if (x > peak) peak = x; }
+    if (peak < 1e-4) throw new Error("The audio is silent, so there's nothing to clip. Check the file has sound.");
     const loud = X.loudnessCurve(pcm);
     const words = await transcribe(pcm, X.asrWindows(loud, info.duration), opts.model);
     stage("score", 50, "Finding the best moments…");
@@ -197,6 +254,7 @@ async function go(file) {
     const pool = X.findMoments(segs, loud, info.duration, o.n + 3, o.platform, version);
     const title = file.name.replace(/\.[^.]+$/, "");
     results = []; let dropped = 0;
+    S = { path, info, words, segs, loud, o, cta, version, title };
     for (const m of pool) {
       if (results.length >= o.n) break;
       const i = results.length, base = 100 * i / o.n, span = 100 / o.n;
@@ -204,17 +262,17 @@ async function go(file) {
       m.captions = X.postCopy(m, title);
       const long = await makeCut(path, info, m, o, version !== "short" ? cta : "", x => p(version === "both" ? x * 0.6 : x));
       if (!passed(long.quality)) { dropped++; continue; }
-      const clip = { ...m, ...long, range: `${X.fmtT(m.start)}–${X.fmtT(m.end)}`, short: null };
+      const clip = { ...m, ...long, range: `${X.fmtT(m.start)}–${X.fmtT(m.end)}`, short: null, view: "long" };
       if (version === "both") {
         const sm = X.shorten(m, segs, loud, ...plat.short);
         if (sm) {
           const s = await makeCut(path, info, sm, o, "", x => p(60 + x * 0.4));
-          if (passed(s.quality)) clip.short = { ...s, range: `${X.fmtT(sm.start)}–${X.fmtT(sm.end)}` };
+          if (passed(s.quality)) { clip.short = { ...s, start: sm.start, end: sm.end, title: sm.title, range: `${X.fmtT(sm.start)}–${X.fmtT(sm.end)}` }; clip.view = "short"; }
         }
       }
       results.push(clip); renderResults(title, dropped);
     }
-    try { await ffmpeg.unmount("/in"); } catch {}
+    // the source stays mounted so clips can be edited and re-rendered; it's released when the next video starts
     $("#prog").classList.add("hide");
     if (!results.length) $("#out").innerHTML = `<div class="card msg">No moment passed the quality gate. Try a different video or turn off "Cut dead air".</div>`;
     else toast(`${results.length} clip${results.length > 1 ? "s" : ""} ready`);
@@ -223,11 +281,15 @@ async function go(file) {
     $("#prog").classList.add("hide");
     $("#out").innerHTML = `<div class="card err">⚠ ${esc(err.message || err)}</div>`;
   } finally {
+    busy = false;
     $("#setup").classList.remove("busy");
     try { await wakeLock?.release(); } catch {}
   }
 }
 $("#go").onclick = () => { const f = $("#file").files[0]; if (f) go(f); };
+function revokeAll() {
+  for (const c of results) for (const v of [c, c.short]) if (v) { URL.revokeObjectURL(v.url); if (v.thumb) URL.revokeObjectURL(v.thumb); }
+}
 
 // ---------------------------------------------------------------- results UI
 function qualityHTML(v) {
@@ -246,16 +308,18 @@ function renderResults(title, dropped) {
   const pub = order.map(k => X.F.platforms[k]?.publish?.length ? `<details class="card tight"><summary>Before you post on <b>${esc(X.F.platforms[k].name)}</b></summary><ul class="pub">${X.F.platforms[k].publish.map(x => `<li>${esc(x)}</li>`).join("")}</ul><div class="judge">Judge it by: ${X.F.platforms[k].judge.map(esc).join(" · ")}</div></details>` : "").join("");
   $("#out").innerHTML = `<h2>${esc(title)}</h2><p class="pnote">Formatted for <b>${esc(plat.name)}</b>. ${esc(plat.note)}</p>${pub}` +
     (dropped ? `<p class="pnote">The quality gate replaced ${dropped} clip${dropped > 1 ? "s" : ""} that failed a hard check.</p>` : "") +
-    `<div class="clips">` + results.map((c, i) => { c.idx = String(i + 1).padStart(2, "0"); const v = c.short || c; return `
+    `<div class="clips">` + results.map((c, i) => { c.idx = String(i + 1).padStart(2, "0"); const v = c.view === "short" && c.short ? c.short : c; return `
     <article class="clip" data-i="${i}">
       <video src="${v.url}" ${v.thumb ? `poster="${v.thumb}"` : ""} controls playsinline preload="metadata"></video>
       <div class="b">
-        ${c.short ? `<div class="vtabs"><button data-cut="short" aria-pressed="true">Short · ${c.short.duration}s</button><button data-cut="long" aria-pressed="false">Long · ${c.duration}s</button></div>` : ""}
+        ${c.short ? `<div class="vtabs"><button data-cut="short" aria-pressed="${v === c.short}">Short · ${c.short.duration}s</button><button data-cut="long" aria-pressed="${v === c}">Long · ${c.duration}s</button></div>` : ""}
         <div class="top"><span class="score">${c.score}</span><span class="when">${esc(c.range)}</span></div>
-        <div class="ttl">${esc(c.title)}</div>
+        <div class="ttl">${esc((c.view === "short" && c.short ? c.short.title : c.title) || c.title)}</div>
         <p class="why">${c.reasons.map(esc).join(" · ")}</p>
         <ul class="check">${c.checklist.map(x => `<li class="${x.ok ? "ok" : "no"}"><b>${x.ok ? "✓" : "✗"}</b> ${esc(x.k)}<span class="ev">${esc(x.ev)}</span>${x.tip ? ` <span>${esc(x.tip)}</span>` : ""}</li>`).join("")}</ul>
-        <div class="cutbox">${cutHTML(c, v, c.short ? "short" : "long")}</div>
+        <div class="cutbox">${cutHTML(c, v, v === c ? "long" : "short")}</div>
+        <button class="sec edbtn" data-edit>✎ Edit this cut: captions, trim, headline, style</button>
+        <div class="editor hide"></div>
         <div class="copyrow">${order.filter(k => c.captions[k]).map(k => `<button class="sec" data-copy="${esc(c.captions[k])}">Copy ${PN[k]} caption</button>`).join("")}</div>
         <details style="margin-top:10px"><summary>Log a post</summary>${logForm(i, !!c.short)}</details>
       </div>
@@ -274,7 +338,17 @@ $("#out").addEventListener("click", async e => {
     art.querySelectorAll("[data-cut]").forEach(x => x.setAttribute("aria-pressed", x === cutBtn));
     const vid = art.querySelector("video"); vid.src = v.url; if (v.thumb) vid.poster = v.thumb;
     art.querySelector(".cutbox").innerHTML = cutHTML(c, v, cutBtn.dataset.cut);
+    c.view = cutBtn.dataset.cut;
+    art.querySelector(".ttl").textContent = v.title || c.title;
+    art.querySelector(".editor").classList.add("hide");
   }
+  if (e.target.closest("[data-edit]")) openEditor(art, c);
+  const nd = e.target.closest("[data-nudge]");
+  if (nd) { const [which, dir] = nd.dataset.nudge.split(":"); keepTyped(art, c); const r = X.nudge(c.wl, c.ed.start, c.ed.end, which, +dir); Object.assign(c.ed, r); drawEditor(art, c); }
+  const es = e.target.closest("[data-estyle]");
+  if (es) { c.ed.style = es.dataset.estyle; art.querySelectorAll("[data-estyle]").forEach(x => x.setAttribute("aria-pressed", x === es)); }
+  if (e.target.closest("[data-ecancel]")) art.querySelector(".editor").classList.add("hide");
+  if (e.target.closest("[data-rerender]")) rerender(art, c);
   const sh = e.target.closest("[data-share]");
   if (sh) {
     const v = sh.dataset.share === "short" ? c.short : c;
@@ -283,6 +357,58 @@ $("#out").addEventListener("click", async e => {
     else { const a = document.createElement("a"); a.href = v.url; a.download = f.name; a.click(); }
   }
 });
+
+// ---------------------------------------------------------------- clip editor
+function openEditor(art, c) {
+  if (!S) return toast("Run a video first.");
+  const cut = c.view === "short" && c.short ? "short" : "long", v = cut === "short" ? c.short : c;
+  c.wl ??= S.words.map(w => ({ ...w }));                       // this clip's own editable copy of the transcript
+  c.ed = { cut, start: v.start, end: v.end, title: v.title ?? c.title, style: S.o.style || "pop" };
+  drawEditor(art, c);
+  art.querySelector(".editor").classList.remove("hide");
+  art.querySelector(".editor").scrollIntoView({ behavior: "smooth", block: "nearest" });
+}
+function drawEditor(art, c) {
+  const ed = c.ed;
+  c.lines = X.captionLines(c.wl, ed.start, ed.end);
+  art.querySelector(".editor").innerHTML = `
+    <label class="t">Headline (first 3 seconds)</label>
+    <input class="txt ed-title" maxlength="90" value="${esc(ed.title)}">
+    <label class="t">Trim <span class="st">${X.fmtT(ed.start)}.${String(Math.round(ed.start * 10) % 10)} → ${X.fmtT(ed.end)}.${String(Math.round(ed.end * 10) % 10)} · ${(ed.end - ed.start).toFixed(1)}s before cuts</span></label>
+    <div class="trim"><span>Start</span><button class="sec" data-nudge="start:-1">◀ earlier</button><button class="sec" data-nudge="start:1">later ▶</button></div>
+    <div class="trim"><span>End</span><button class="sec" data-nudge="end:-1">◀ earlier</button><button class="sec" data-nudge="end:1">later ▶</button></div>
+    <label class="t">Captions: fix any misheard words</label>
+    <div class="lines">${c.lines.map((l, i) => `<input class="txt ed-line" data-line="${i}" value="${esc(l.text)}" aria-label="Caption line ${i + 1}">`).join("") || '<p class="msg">No speech in this cut.</p>'}</div>
+    <label class="t">Caption style</label>
+    <div class="chips">${Object.entries(X.STYLES).map(([k, n]) => `<button class="chip" data-estyle="${k}" aria-pressed="${k === ed.style}">${esc(n)}</button>`).join("")}</div>
+    <div class="acts" style="margin-top:14px"><button class="dl" data-rerender>Re-render this cut</button><button class="sec" data-ecancel>Close</button></div>
+    <p class="pnote ed-status"></p>`;
+}
+function keepTyped(art, c) {          // fold typed caption fixes into the clip's transcript before redrawing
+  const texts = [...art.querySelectorAll(".ed-line")].map(x => x.value);
+  if (texts.length) X.applyLineEdits(c.wl, c.lines, texts);
+  c.ed.title = art.querySelector(".ed-title")?.value.trim() ?? c.ed.title;
+}
+async function rerender(art, c) {
+  if (busy) return toast("Wait for the current render to finish.");
+  keepTyped(art, c);
+  const ed = c.ed, btn = art.querySelector("[data-rerender]"), status = art.querySelector(".ed-status");
+  const m = { start: ed.start, end: ed.end, title: ed.title, words: c.wl.filter(w => w.s >= ed.start - 0.5 && w.s <= ed.end + 0.5) };
+  const o = { ...S.o, style: ed.style };
+  busy = true; btn.disabled = true;
+  try {
+    const r = await makeCut(S.path, S.info, m, o, ed.cut === "long" && S.version !== "short" ? S.cta : "", x => { btn.textContent = `Rendering… ${Math.round(x)}%`; });
+    if (!passed(r.quality)) { status.textContent = "That edit failed the quality gate (see the badge). Your previous version is kept."; return; }
+    const target = ed.cut === "short" ? c.short : c;
+    URL.revokeObjectURL(target.url); if (target.thumb) URL.revokeObjectURL(target.thumb);
+    Object.assign(target, r, { start: ed.start, end: ed.end, title: ed.title, range: `${X.fmtT(ed.start)}–${X.fmtT(ed.end)}` });
+    if (ed.cut === "long") c.title = ed.title;
+    c.view = ed.cut;
+    renderResults(S.title, 0);
+    toast("Re-rendered and re-checked");
+  } catch (err) { status.textContent = "⚠ " + (err.message || err); }
+  finally { busy = false; if (btn.isConnected) { btn.disabled = false; btn.textContent = "Re-render this cut"; } }
+}
 
 // ---------------------------------------------------------------- results log (stored on this device)
 const LOGKEY = "clipmachine.log";
@@ -322,6 +448,8 @@ $("#csv").onclick = () => {
 };
 
 // ---------------------------------------------------------------- boot
+// offline support: app files + ffmpeg core are cached after the first visit (http(s) only, not file://)
+if ("serviceWorker" in navigator && location.protocol.startsWith("http")) navigator.serviceWorker.register("sw.js").catch(() => {});
 await X.loadFormula();
 showPlat(); loadLog();
 // URL presets, e.g. ?platform=tiktok&n=1&version=short (handy for sharing a setup)

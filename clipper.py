@@ -22,30 +22,35 @@ from pathlib import Path
 import numpy as np
 
 HERE = Path(__file__).resolve().parent
-BIN = HERE / ".venv" / "bin"
+IS_WIN = os.name == "nt"
+BIN = HERE / ".venv" / ("Scripts" if IS_WIN else "bin")
+EXE = ".exe" if IS_WIN else ""
 
 
 def _tool(name: str) -> str:
-    for cand in (BIN / name, Path.home() / ".local" / "bin" / name):
+    for cand in (BIN / (name + EXE), Path.home() / ".local" / "bin" / (name + EXE)):
         if cand.exists():
             return str(cand)
     found = shutil.which(name)
     if not found and name in ("ffmpeg", "ffprobe"):
-        try:  # portable fallback installed by Install.command
+        try:  # portable ffmpeg from the static-ffmpeg package (macOS, Windows, Linux)
             import static_ffmpeg
             static_ffmpeg.add_paths(weak=True)
             found = shutil.which(name)
         except Exception:
             pass
     if not found:
-        raise RuntimeError(f"{name} not found. Install it or put it on PATH.")
+        raise RuntimeError(f"{name} not found. Run the installer again, or install {name} and put it on PATH.")
     return found
 
 
 FFMPEG = _tool("ffmpeg")
 FFPROBE = _tool("ffprobe")
 YTDLP = _tool("yt-dlp")
-FONT_DIR = "/System/Library/Fonts/Supplemental"
+# Captions use the bundled Montserrat Black (OFL) so output looks the same on macOS, Windows, Linux and the web app.
+FONT_DIR = str(next((d for d in (HERE / "docs" / "fonts", HERE / "fonts") if (d / "Montserrat-Black.ttf").exists()),
+                    HERE / "fonts"))
+CAP_FONT = "Montserrat Thin Black"   # the family name stored inside Montserrat-Black.ttf (libass matches on it)
 
 SR = 16000          # analysis sample rate
 HOP = 0.5           # loudness resolution (seconds)
@@ -97,12 +102,19 @@ def fetch(source: str, workdir: Path, progress=_noop) -> tuple[Path, str]:
 
 
 def probe(path: Path) -> dict:
-    out = subprocess.run(
-        [FFPROBE, "-v", "error", "-print_format", "json", "-show_format", "-show_streams", str(path)],
-        capture_output=True, text=True, check=True).stdout
-    info = json.loads(out)
-    v = next((s for s in info["streams"] if s["codec_type"] == "video"), None)
+    r = subprocess.run([FFPROBE, "-v", "error", "-print_format", "json", "-show_format", "-show_streams", str(path)],
+                       capture_output=True, text=True)
+    try:
+        info = json.loads(r.stdout)
+        assert r.returncode == 0 and info.get("streams")
+    except Exception:
+        raise RuntimeError("Couldn't read that file. It may be corrupt, still downloading, or an unsupported format. "
+                           "Try an MP4 or MOV.")
+    v = next((s for s in info["streams"] if s["codec_type"] == "video"
+              and s.get("disposition", {}).get("attached_pic") != 1), None)   # ignore album-art "video"
+    a = next((s for s in info["streams"] if s["codec_type"] == "audio"), None)
     return {
+        "has_audio": a is not None,
         "duration": float(info["format"].get("duration", 0)),
         "width": int(v["width"]) if v else 0,
         "height": int(v["height"]) if v else 0,
@@ -122,12 +134,12 @@ def _fps(r):
 # ---------------------------------------------------------------- audio analysis
 def extract_audio(video: Path, wav: Path):
     subprocess.run([FFMPEG, "-y", "-v", "error", "-i", str(video), "-vn", "-ac", "1",
-                    "-ar", str(SR), "-c:a", "pcm_s16le", str(wav)], check=True)
+                    "-ar", str(SR), "-f", "s16le", str(wav)], check=True)   # headerless PCM: no WAV-header guessing
 
 
 def loudness_curve(wav: Path) -> np.ndarray:
     """Per-HOP loudness in dB, z-scored against the whole video."""
-    raw = np.fromfile(wav, dtype=np.int16, offset=44).astype(np.float32) / 32768.0
+    raw = np.fromfile(wav, dtype=np.int16).astype(np.float32) / 32768.0
     hop = int(SR * HOP)
     n = len(raw) // hop
     if n == 0:
@@ -140,6 +152,11 @@ def loudness_curve(wav: Path) -> np.ndarray:
     return (db - np.median(db)) / sd
 
 
+def audio_peak_db(wav: Path) -> float:
+    raw = np.fromfile(wav, dtype=np.int16)
+    return float(20 * np.log10(max(int(np.abs(raw).max()) if raw.size else 0, 1) / 32768))
+
+
 # ---------------------------------------------------------------- transcription
 _MODEL_CACHE = {}
 
@@ -150,7 +167,7 @@ def transcribe(wav: Path, model_size="base", progress=_noop, duration=None) -> l
     if model_size not in _MODEL_CACHE:
         _MODEL_CACHE[model_size] = WhisperModel(model_size, device="cpu", compute_type="int8")
     model = _MODEL_CACHE[model_size]
-    audio = np.fromfile(wav, dtype=np.int16, offset=44).astype(np.float32) / 32768.0
+    audio = np.fromfile(wav, dtype=np.int16).astype(np.float32) / 32768.0
     segs_iter, info = model.transcribe(audio, word_timestamps=True, vad_filter=True,
                                        beam_size=1, condition_on_previous_text=False,
                                        # nudges Whisper to write out "um/uh" instead of silently dropping them
@@ -470,7 +487,7 @@ def _title(m, segs):
         return (sum(w for k, w in HYPE.items() if k in low) + len(HOOK_RX.findall(t)) * 0.7
                 + t.count("!") - abs(len(t) - 45) / 25)
     best = max(sents, key=strength).strip(" .,-")
-    best = re.sub(r"\b(um+|uh+|erm|hmm+)\b,?\s*", "", best, flags=re.I).strip()
+    best = re.sub(r"\b(um+|uh+m?|erm|er|hmm+|ah+|mhm)\b,?\s*", "", best, flags=re.I).strip()
     best = re.sub(r"^(and|but|so|because|like)[,\s]+", "", best, flags=re.I)
     best = best[0].upper() + best[1:] if best else best
     if len(best) > 60:
@@ -591,9 +608,18 @@ def _clean(w):
     return w.replace("\\", "").replace("{", "(").replace("}", ")").upper()
 
 
-def write_ass(m: Moment, path: Path, plat: dict, keep, captions=True, hook=True, cta=""):
+CAPTION_STYLES = ("pop", "clean", "boxed")
+
+
+def write_ass(m: Moment, path: Path, plat: dict, keep, captions=True, hook=True, cta="", style="pop"):
     """Word-by-word captions (3-word groups, active word highlighted) + a top headline for the first 3 s."""
     R = plat["right"]
+    style = style if style in CAPTION_STYLES else "pop"
+    cap_style = {
+        "pop":   f"Style: Cap,{CAP_FONT},84,&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,0,0,0,0,100,100,0,0,1,7,3,2,{R},{R},{plat['cap_bottom']},1",
+        "clean": f"Style: Cap,{CAP_FONT},70,&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,4,2,2,{R},{R},{plat['cap_bottom']},1",
+        "boxed": f"Style: Cap,{CAP_FONT},72,&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,3,16,0,2,{R},{R},{plat['cap_bottom']},1",
+    }[style]
     hdr = f"""[Script Info]
 ScriptType: v4.00+
 PlayResX: 1080
@@ -602,9 +628,9 @@ WrapStyle: 0
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Cap,Arial Black,84,&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,-1,0,0,0,100,100,0,0,1,7,3,2,{R},{R},{plat['cap_bottom']},1
-Style: Hook,Arial Black,58,&H00111111,&H00111111,&H00FFFFFF,&H00000000,-1,0,0,0,100,100,0,0,3,20,0,8,{R + 20},{R + 20},{plat['hook_top']},1
-Style: Cta,Arial Black,58,&H00111111,&H00111111,&H0000E6FF,&H00000000,-1,0,0,0,100,100,0,0,3,20,0,8,{R + 20},{R + 20},{plat['hook_top']},1
+{cap_style}
+Style: Hook,{CAP_FONT},58,&H00111111,&H00111111,&H00FFFFFF,&H00000000,0,0,0,0,100,100,0,0,3,20,0,8,{R + 20},{R + 20},{plat['hook_top']},1
+Style: Cta,{CAP_FONT},58,&H00111111,&H00111111,&H0000E6FF,&H00000000,0,0,0,0,100,100,0,0,3,20,0,8,{R + 20},{R + 20},{plat['hook_top']},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -617,16 +643,23 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         lines.append(f"Dialogue: 1,{_ass_time(max(3.4, total - 2.8))},{_ass_time(total)},Cta,,0,0,0,,{{\\fad(150,0)}}{cta.replace('{', '(').replace('}', ')')}")
     words = spoken([w for w in m.words if m.start - 0.05 <= w["s"] <= m.end]) if captions else []
     T = lambda t: remap(t - m.start, keep)
-    groups = [words[i:i + 3] for i in range(0, len(words), 3)]
+    per = 4 if style == "clean" else 3
+    groups = [words[i:i + per] for i in range(0, len(words), per)]
+    hi, lo = ((r"{\c&H00F0FF&}", r"{\c&HFFFFFF&}") if style == "boxed"
+              else (r"{\c&H00F0FF&\fscx112\fscy112}", r"{\c&HFFFFFF&\fscx100\fscy100}"))
     for gi, g in enumerate(groups):
         g_end = groups[gi + 1][0]["s"] if gi + 1 < len(groups) else g[-1]["e"] + 0.3
+        if style == "clean":   # one event per phrase, no per-word highlight
+            s0 = T(g[0]["s"]); e0 = min(T(g_end), s0 + 3.5)
+            text = " ".join(x["w"].replace("{", "(").replace("}", ")") for x in g)
+            lines.append(f"Dialogue: 0,{_ass_time(s0)},{_ass_time(max(e0, s0 + 0.05))},Cap,,0,0,0,,{text}")
+            continue
         for wi, w in enumerate(g):
             s = T(w["s"])
             e = T(g[wi + 1]["s"] if wi + 1 < len(g) else g_end)
             if e - s > 1.6:
                 e = s + 1.6
-            parts = [(r"{\c&H00F0FF&\fscx112\fscy112}" + _clean(x["w"]) + r"{\c&HFFFFFF&\fscx100\fscy100}")
-                     if k == wi else _clean(x["w"]) for k, x in enumerate(g)]
+            parts = [(hi + _clean(x["w"]) + lo) if k == wi else _clean(x["w"]) for k, x in enumerate(g)]
             lines.append(f"Dialogue: 0,{_ass_time(s)},{_ass_time(max(e, s + 0.05))},Cap,,0,0,0,,{' '.join(parts)}")
     path.write_text(hdr + "\n".join(lines) + "\n", encoding="utf-8")
 
@@ -644,7 +677,7 @@ def write_srt(m: Moment, path: Path, keep):
 
 # ---------------------------------------------------------------- render
 def render(video: Path, m: Moment, out: Path, layout="fit", captions=True, crop_x=0.5, info=None,
-           platform="all", hook=True, tighten=True, cta="", enhance=True):
+           platform="all", hook=True, tighten=True, cta="", enhance=True, style="pop"):
     info = info or probe(video)
     plat = PLATFORMS.get(platform, PLATFORMS["all"])
     dur = m.end - m.start
@@ -689,19 +722,23 @@ def render(video: Path, m: Moment, out: Path, layout="fit", captions=True, crop_
     ass = out.with_suffix(".ass")
     overlay = layout != "original" and ((captions and m.words) or (hook and m.title) or cta)
     if overlay:
-        write_ass(m, ass, plat, keep, captions, hook, cta)
+        write_ass(m, ass, plat, keep, captions, hook, cta, style)
         vf += f",ass='{_ffesc(str(ass))}':fontsdir='{_ffesc(FONT_DIR)}'"
 
     if info["has_video"]:
         cmd = [FFMPEG, "-y", "-v", "error", "-ss", f"{m.start:.3f}", "-t", f"{dur:.3f}", "-i", str(video)]
-        vchain = f"[0:v]{pre},{vf}[v]"
-    else:  # audio-only source: black card
-        cmd = [FFMPEG, "-y", "-v", "error", "-ss", f"{m.start:.3f}", "-t", f"{dur:.3f}", "-i", str(video),
-               "-f", "lavfi", "-i", f"color=c=black:s=1080x1920:r={fps}:d={dur:.3f}"]
-        vchain = f"[1:v]{pre}" + (f",ass='{_ffesc(str(ass))}':fontsdir='{_ffesc(FONT_DIR)}'" if overlay else "") + "[v]"
+        vchain = f"[0:v]{pre},{vf},setsar=1[v]"   # square pixels: scale/crop rounding otherwise leaves SAR 10240:10239
     clean = ("highpass=f=80,afftdn=nr=10:nf=-40,equalizer=f=3200:t=q:w=1.2:g=2.5,"
              "acompressor=threshold=-20dB:ratio=2.5:attack=10:release=150:makeup=2,") if enhance else ""
-    achain = f"[0:a]{apre},{clean}loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[a]"
+    if info["has_video"]:
+        achain = f"[0:a]{apre},{clean}loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[a]"
+    else:  # audio-only source (podcast, voice memo): audiogram = moving waveform on a dark card + captions
+        cmd = [FFMPEG, "-y", "-v", "error", "-ss", f"{m.start:.3f}", "-t", f"{dur:.3f}", "-i", str(video),
+               "-f", "lavfi", "-i", f"color=c=0x101018:s=1080x1920:r={fps}:d={dur:.3f}"]
+        subs = f",ass='{_ffesc(str(ass))}':fontsdir='{_ffesc(FONT_DIR)}'" if overlay else ""
+        vchain = (f"[0:a]{apre},asplit[am][aw];[aw]showwaves=s=1080x420:mode=cline:rate={fps}:colors=0xFFE600,"
+                  f"format=yuva420p[w];[1:v][w]overlay=0:(H-h)/2-260:shortest=1{subs},setsar=1[v]")
+        achain = f"[am]{clean}loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo[a]"
     cmd += ["-sws_flags", "lanczos", "-filter_complex", f"{vchain};{achain}", "-map", "[v]", "-map", "[a]",
             # H.264 High, 8-12 Mbps ceiling, 2 s GOP, AAC 48 kHz: accepted everywhere, well under size caps
             "-c:v", "libx264", "-profile:v", "high", "-preset", "veryfast", "-crf", "19",
@@ -716,6 +753,7 @@ def render(video: Path, m: Moment, out: Path, layout="fit", captions=True, crop_
     fillers = sum(1 for w in m.words if m.start <= w["s"] <= m.end and is_filler(w)) if tighten else 0
     return {"final_duration": round(sum(b - a for a, b in keep), 1), "cuts": len(keep) - 1, "fps": fps,
             "size_mb": round(out.stat().st_size / 1e6, 1), "fillers_cut": fillers, "enhanced": enhance,
+            "_audiogram": not info["has_video"],
             "_expected": sum(b - a for a, b in keep), "_layout": layout}
 
 
@@ -735,8 +773,10 @@ def quality_check(out: Path, stats: dict, m: Moment, captions=True, size_cap_mb=
     a = next((x for x in info.get("streams", []) if x["codec_type"] == "audio"), {})
     dur = float(info.get("format", {}).get("duration", 0))
     vertical = stats.get("_layout") == "original" or (v.get("width"), v.get("height")) == (1080, 1920)
-    add("Upload-ready format", v.get("codec_name") == "h264" and a.get("codec_name") == "aac" and vertical,
-        f"{v.get('codec_name')} {v.get('width')}×{v.get('height')} + {a.get('codec_name')}", True)
+    square = v.get("sample_aspect_ratio", "1:1") in ("1:1", "0:1", "N/A")
+    add("Upload-ready format", v.get("codec_name") == "h264" and a.get("codec_name") == "aac" and vertical and square,
+        f"{v.get('codec_name')} {v.get('width')}×{v.get('height')} + {a.get('codec_name')}"
+        + ("" if square else f", non-square pixels {v.get('sample_aspect_ratio')}"), True)
     exp = stats.get("_expected", dur)
     add("Length matches the edit", abs(dur - exp) < 0.8, f"{dur:.1f}s (expected {exp:.1f}s)", True)
     add("Under upload size limits", stats.get("size_mb", 0) < size_cap_mb, f"{stats.get('size_mb')} MB", True)
@@ -755,7 +795,10 @@ def quality_check(out: Path, stats: dict, m: Moment, captions=True, size_cap_mb=
     P = float(peak[-1]) if peak and peak[-1] != "-inf" else None
     add("Even loudness (−14 LUFS ±2)", I is not None and -16.5 <= I <= -11.5, f"{I} LUFS" if I is not None else "not measured", False)
     add("No clipping", P is None or P <= -0.3, f"true peak {P} dBFS", False)
-    add("No black frames", black < 0.5, f"{black:.1f}s black", True)
+    if stats.get("_audiogram"):
+        add("No black frames", True, "audiogram card (intentional dark background)", True)
+    else:
+        add("No black frames", black < 0.5, f"{black:.1f}s black", True)
     add("No dead silence", not silence, f"{max(silence):.1f}s silent stretch" if silence else "none over 2s", True)
     add("Picture keeps moving", freeze < 0.6 * max(dur, 1), f"{freeze:.1f}s frozen" if freeze else "no long freezes", False)
     sw = spoken([w for w in m.words if m.start <= w["s"] <= m.end])
@@ -770,7 +813,8 @@ def _passed(checks):
 
 
 def _ffesc(p):
-    return p.replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
+    """Escape a path for use inside an ffmpeg filter argument (works for Windows 'C:\\…' paths too)."""
+    return p.replace("\\", "/").replace(":", "\\:").replace("'", "\\'")
 
 
 def fmt_t(t):
@@ -781,21 +825,25 @@ def fmt_t(t):
 # ---------------------------------------------------------------- pipeline
 def run(source, outdir: Path, n=5, min_len=None, max_len=None, layout="fit", captions=True,
         model="base", crop_x=0.5, platform="all", hook=True, tighten=True, version="both", cta="",
-        enhance=True, progress=_noop) -> dict:
+        enhance=True, style="pop", progress=_noop) -> dict:
     """version: 'both' = long cut + a short cut with the same opening; 'short' or 'long' = one cut."""
     outdir.mkdir(parents=True, exist_ok=True)
     video, title = fetch(source, outdir, progress)
     info = probe(video)
     if info["duration"] < 3:
-        raise RuntimeError("That video is too short to clip.")
+        raise RuntimeError("That video is too short to clip (under 3 seconds).")
+    if not info["has_audio"]:
+        raise RuntimeError("That video has no audio track, so there's nothing to transcribe or score.")
     plat = PLATFORMS.get(platform, PLATFORMS["all"])
     if not plat["long"] and version != "short":
         version = "short"
     custom = bool(min_len or max_len)
     progress("analyze", 0, "Analysing audio")
-    wav = outdir / "audio.wav"
+    wav = outdir / "audio.pcm"
     extract_audio(video, wav)
     loud = loudness_curve(wav)
+    if audio_peak_db(wav) < -55:
+        raise RuntimeError("The audio is silent, so there's nothing to clip. Check the file has sound.")
     progress("analyze", 100, "Audio analysed")
     segs = transcribe(wav, model, progress, info["duration"])
     (outdir / "transcript.json").write_text(json.dumps(segs))
@@ -804,12 +852,15 @@ def run(source, outdir: Path, n=5, min_len=None, max_len=None, layout="fit", cap
 
     def make(mm, path, use_cta):
         """Render, measure, and if a hard check fails re-render once with safe settings."""
-        st = render(video, mm, path, layout, captions, crop_x, info, platform, hook, tighten, use_cta, enhance)
+        st = render(video, mm, path, layout, captions, crop_x, info, platform, hook, tighten, use_cta, enhance, style)
         qc = quality_check(path, st, mm, captions)
-        if not _passed(qc):
-            st = render(video, mm, path, layout, captions, crop_x, info, platform, hook, False, use_cta, False)
+        for safe_tighten in ((tighten, False) if tighten else (False,)):
+            if _passed(qc):
+                break
+            st = render(video, mm, path, layout, captions, crop_x, info, platform, hook, safe_tighten, use_cta, False, style)
             qc = quality_check(path, st, mm, captions)
             st["retried"] = True
+            st["_tighten"] = safe_tighten
         return st, qc
 
     for m in pool:
@@ -824,7 +875,7 @@ def run(source, outdir: Path, n=5, min_len=None, max_len=None, layout="fit", cap
         if not _passed(qc):
             dropped += 1
             continue                      # quality gate: replace with the next-best moment
-        write_srt(m, outdir / f"{name}.srt", keep_intervals(m, tighten and not stats.get("retried")))
+        write_srt(m, outdir / f"{name}.srt", keep_intervals(m, stats.get("_tighten", tighten)))
         d = asdict(m)
         d.pop("words")
         d.update({k: v for k, v in stats.items() if not k.startswith("_")})
@@ -835,14 +886,18 @@ def run(source, outdir: Path, n=5, min_len=None, max_len=None, layout="fit", cap
             if sm:
                 sst, sqc = make(sm, outdir / f"{name}_short.mp4", "")
                 if _passed(sqc):
-                    write_srt(sm, outdir / f"{name}_short.srt", keep_intervals(sm, tighten and not sst.get("retried")))
+                    write_srt(sm, outdir / f"{name}_short.srt", keep_intervals(sm, sst.get("_tighten", tighten)))
                     d["short"] = dict({k: v for k, v in sst.items() if not k.startswith("_")},
                                       file=f"{name}_short.mp4", thumb=f"{name}_short.jpg", quality=sqc,
+                                      start=sm.start, end=sm.end, title=sm.title,
                                       srt=f"{name}_short.srt", duration=sst["final_duration"],
                                       range=f"{fmt_t(sm.start)}–{fmt_t(sm.end)}")
         clips.append(d)
     progress("render", 100, "Done")
     wav.unlink(missing_ok=True)
+    (outdir / "session.json").write_text(json.dumps({
+        "video": str(video), "settings": dict(layout=layout, captions=captions, crop_x=crop_x, platform=platform, hook=hook,
+                                              tighten=tighten, enhance=enhance, style=style, cta=cta, version=version)}))
     result = {"dropped_for_quality": dropped, "title": title, "source": source, "duration": info["duration"], "platform": platform,
               "platform_name": plat["name"], "platform_note": plat["note"], "judge": plat["judge"],
               "publish": plat["publish"], "version": version, "clips": clips}
@@ -850,7 +905,72 @@ def run(source, outdir: Path, n=5, min_len=None, max_len=None, layout="fit", cap
     return result
 
 
+def edit_cut(outdir: Path, idx: int, cut: str, start: float, end: float, title: str, words: list,
+             style: str | None = None, progress=_noop) -> dict:
+    """Re-render one cut after a manual edit (trim, caption fixes, headline, style) and re-run the quality gate.
+    The previous file is only replaced if the new render passes every hard check."""
+    sess = json.loads((outdir / "session.json").read_text())
+    res = json.loads((outdir / "result.json").read_text())
+    st_ = sess["settings"]
+    video = Path(sess["video"])
+    if not video.exists():
+        raise RuntimeError("The source video is gone (deleted or moved), so this clip can't be re-rendered.")
+    info = probe(video)
+    clip = res["clips"][idx]
+    target = clip if cut == "long" else clip.get("short")
+    if target is None:
+        raise RuntimeError("That clip has no short cut.")
+    if not (math.isfinite(float(start)) and math.isfinite(float(end))):
+        raise RuntimeError("Bad trim points.")
+    start, end = max(0.0, float(start)), min(info["duration"], float(end))
+    if end - start < 2:
+        raise RuntimeError("The trimmed clip is too short.")
+    try:
+        ws = [{"w": str(w["w"])[:40], "s": float(w["s"]), "e": float(w["e"])} for w in words][:5000]
+        assert all(math.isfinite(w["s"]) and math.isfinite(w["e"]) for w in ws)
+    except Exception:
+        raise RuntimeError("The caption edits were malformed, so nothing was changed.")
+    m = Moment(start=start, end=end, title=str(title)[:90], words=ws)
+    style = style if style in CAPTION_STYLES else st_.get("style", "pop")
+    use_cta = st_.get("cta", "") if (cut == "long" and st_.get("version") != "short") else ""
+    tmp = outdir / f"_edit_{target['file']}"
+    progress("render", 10, "Re-rendering")
+    args = (video, m, tmp, st_["layout"], st_["captions"], st_["crop_x"], info, st_["platform"], st_["hook"])
+    stats = render(*args, st_["tighten"], use_cta, st_["enhance"], style)
+    qc = quality_check(tmp, stats, m, st_["captions"])
+    if not _passed(qc):
+        progress("render", 60, "Re-rendering in safe mode")
+        stats = render(*args, st_["tighten"], use_cta, False, style)
+        qc = quality_check(tmp, stats, m, st_["captions"])
+        stats["retried"] = True
+    if not _passed(qc):
+        tmp.unlink(missing_ok=True)
+        for x in (".ass", ".jpg"):
+            tmp.with_suffix(x).unlink(missing_ok=True)
+        raise RuntimeError("That edit failed the quality gate (" + ", ".join(c["k"] for c in qc if c["hard"] and not c["ok"])
+                           + "). Your previous version is kept.")
+    final = outdir / target["file"]
+    tmp.replace(final)
+    for x in (".ass", ".jpg"):
+        if tmp.with_suffix(x).exists():
+            tmp.with_suffix(x).replace(final.with_suffix(x))
+    write_srt(m, outdir / target["srt"], keep_intervals(m, st_["tighten"]))
+    (outdir / target["file"]).with_suffix(".words.json").write_text(json.dumps(ws))   # caption fixes survive a reload
+    target.update({k: v for k, v in stats.items() if not k.startswith("_")})
+    target.update(quality=qc, duration=stats["final_duration"], start=round(start, 2), end=round(end, 2),
+                  range=f"{fmt_t(start)}–{fmt_t(end)}", style=style, edited=True)
+    target["title"] = m.title
+    (outdir / "result.json").write_text(json.dumps(res, indent=2))
+    progress("render", 100, "Done")
+    return res
+
+
 if __name__ == "__main__":
+    for _s in (sys.stdout, sys.stderr):   # Windows consoles: never crash on ✓/✗ or emoji
+        try:
+            _s.reconfigure(errors="replace")
+        except Exception:
+            pass
     import argparse
     ap = argparse.ArgumentParser(description="Find the best moments in a video and cut vertical clips.")
     ap.add_argument("source", help="video URL or local file")
@@ -867,6 +987,7 @@ if __name__ == "__main__":
     ap.add_argument("--version", choices=["both", "short", "long"], default="both",
                     help="both = long cut + short cut with the same opening")
     ap.add_argument("--cta", default="", help="end-card text on the long cut, e.g. 'Which one would you pick?'")
+    ap.add_argument("--style", choices=list(CAPTION_STYLES), default="pop", help="caption look: pop | clean | boxed")
     ap.add_argument("-o", "--out", default=str(HERE / "jobs" / "cli"))
     a = ap.parse_args()
 
@@ -876,7 +997,7 @@ if __name__ == "__main__":
             print()
     res = run(a.source, Path(a.out), a.n, a.min, a.max, a.layout, not a.no_captions, a.model,
               platform=a.platform, hook=not a.no_hook, tighten=not a.keep_pauses, version=a.version,
-              cta=a.cta, enhance=not a.no_enhance, progress=pr)
+              cta=a.cta, enhance=not a.no_enhance, style=a.style, progress=pr)
     for c in res["clips"]:
         print(f"{c['score']:>4}  {c['range']:>13s}  {c['duration']}s  {c['file']}  {c['title']}")
         if c.get("short"):

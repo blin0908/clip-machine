@@ -1,0 +1,22 @@
+// Debug helper: capture the transcript WebKit's Whisper produces for a file, to replay the scorer in Node.
+import { webkit } from "playwright";
+import { createServer } from "node:http";
+import { readFile, writeFile } from "node:fs/promises";
+import { extname, join, resolve } from "node:path";
+const DOCS = resolve("../docs"), file = process.argv[2] || "media/talk_720p.mp4";
+const MIME = { ".html": "text/html", ".js": "text/javascript", ".json": "application/json", ".wasm": "application/wasm", ".ttf": "font/ttf" };
+const srv = createServer(async (q, r) => { const p = join(DOCS, decodeURIComponent(new URL(q.url, "http://x").pathname).replace(/\/$/, "/index.html"));
+  try { r.writeHead(200, { "Content-Type": MIME[extname(p)] || "application/octet-stream" }).end(await readFile(p)); } catch { r.writeHead(404).end(); } });
+await new Promise(r => srv.listen(0, "127.0.0.1", r));
+const b = await webkit.launch(); const ctx = await b.newContext(); const page = await ctx.newPage();
+await page.addInitScript(() => { const W = window.Worker; window.Worker = class extends W { constructor(...a) { super(...a);
+  this.addEventListener("message", e => { if (e.data?.type === "done") window.__words = e.data.words; }); } }; });
+page.on("console", m => m.type() === "error" && console.log("console:", m.text().slice(0, 200)));
+page.on("crash", () => console.log("CRASH"));
+await page.goto(`http://127.0.0.1:${srv.address().port}/?model=Xenova/whisper-tiny.en&n=1&version=both&platform=reels`);
+await page.setInputFiles("#file", file); await page.click("#go");
+await page.waitForFunction(() => window.__words, null, { timeout: 900000, polling: 1000 });
+const words = await page.evaluate(() => window.__words);
+await writeFile("web-out/webkit-words.json", JSON.stringify(words));
+console.log("words:", words.length, "first:", JSON.stringify(words.slice(0, 3)), "last:", JSON.stringify(words.slice(-2)));
+await b.close(); srv.close();

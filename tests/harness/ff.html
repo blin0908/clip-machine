@@ -1,0 +1,45 @@
+<!doctype html><meta charset="utf-8"><input type="file" id="f"><pre id="o"></pre>
+<script type="module">
+import { FFmpeg } from "/vendor/ffmpeg/index.js";
+import { toBlobURL } from "/vendor/util/index.js";
+const CORE = "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/esm";
+const log = s => { document.querySelector("#o").textContent += s + "\n"; };
+window.runPlan = async (plan, ass) => {
+  const file = document.querySelector("#f").files[0];
+  const ff = new FFmpeg(); let n = 0, last = "";
+  ff.on("log", ({ message }) => { n++; last = message; });
+  await ff.load({ coreURL: await toBlobURL(`${CORE}/ffmpeg-core.js`, "text/javascript"), wasmURL: await toBlobURL(`${CORE}/ffmpeg-core.wasm`, "application/wasm") });
+  await ff.createDir("/in"); await ff.mount("WORKERFS", { files: [file] }, "/in");
+  const p = "/in/" + file.name;
+  await ff.createDir("/fonts"); await ff.writeFile("/fonts/Montserrat-Black.ttf", new Uint8Array(await (await fetch("/fonts/Montserrat-Black.ttf")).arrayBuffer()));
+  if (ass) await ff.writeFile("/sub.ass", ass);
+  for (const step of plan) {
+    const t0 = performance.now(); n = 0;
+    if (step === "ASRW") {   // one fresh worker per 30 s window
+      const pcm = window.__pcm, dur = pcm.length / 16000; let total = 0;
+      for (let s0 = 0; s0 < dur; s0 += 30) {
+        const w = new Worker("/asr-worker.js", { type: "module" });
+        const sl = pcm.slice(Math.floor(s0 * 16000), Math.ceil(Math.min(dur, s0 + 30) * 16000));
+        const words = await new Promise((ok, bad) => { w.onmessage = ({ data: d }) => { if (d.type === "done") ok(d.words); if (d.type === "error") bad(new Error(d.message)); }; w.postMessage({ audio: sl, windows: [[0, sl.length / 16000]], model: "Xenova/whisper-tiny.en" }); });
+        w.terminate(); total += words.length;
+      }
+      log(`ASRW: ${total} words, ${((performance.now() - t0) / 1000).toFixed(1)}s`); continue;
+    }
+    if (step.startsWith("ASR")) {
+      const pcm = window.__pcm, dur = pcm.length / 16000, win = []; const lim = /ASR(\d+)/.test(step) ? +step.match(/ASR(\d+)/)[1] : dur; for (let s = 0; s < Math.min(dur, lim); s += 30) win.push([s, Math.min(dur, lim, s + 30)]);
+      const w = window.__asr ??= new Worker("/asr-worker.js", { type: "module" });
+      const words = await new Promise((ok, bad) => { w.onmessage = ({ data: d }) => { if (d.type === "done") ok(d.words); if (d.type === "error") bad(new Error(d.message)); }; const slice = step.includes("S") ? pcm.slice(0, Math.ceil(win.at(-1)[1] * 16000)) : pcm; w.postMessage({ audio: slice, windows: win, model: "Xenova/whisper-tiny.en" }); });
+      if (step === "ASR_TERM") { w.terminate(); window.__asr = null; }
+      log(`${step}: ${words.length} words, ${((performance.now() - t0) / 1000).toFixed(1)}s`); continue;
+    }
+    if (step.startsWith("WAIT")) { await new Promise(r => setTimeout(r, +step.slice(4) * 1000)); log(step); continue; }
+    const args = step.startsWith("[") ? JSON.parse(step) : step.replaceAll("$IN", p).split(" ");
+    const code = await ff.exec(args);
+    log(`${step.slice(0, 70)} → code ${code}, ${n} log lines, ${((performance.now() - t0) / 1000).toFixed(1)}s, last: ${last.slice(0, 80)}`);
+    if (step.includes("/audio.raw")) { const d = await ff.readFile("/audio.raw"); log("  read audio " + d.byteLength); await ff.deleteFile("/audio.raw"); window.__pcm = new Float32Array(d.buffer, d.byteOffset, d.byteLength >> 2); }
+    if (step === "ASR" || step === "ASR_TERM") { /* handled below */ }
+  }
+  return document.querySelector("#o").textContent;
+};
+window.ready = true;
+</script>

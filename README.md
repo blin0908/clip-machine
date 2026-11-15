@@ -6,7 +6,7 @@ A free AI clipper. Give it a long video and it finds the strongest moments and c
 
 ### ▶ Use it now: **https://blin0908.github.io/clip-machine/**
 
-Works in Chrome, Edge and Safari on phones and computers. On iPhone, tap Share → *Add to Home Screen* and it opens like an app.
+Works best in **Chrome or Edge** on computers and Android phones. Firefox works but is slower. **Safari, and every browser on iPhone/iPad** (they all use Safari's engine), currently handles videos up to about a minute before running out of memory; for longer videos, use a computer or the desktop app. After the first run it also works **offline**. On a phone, *Add to Home Screen* opens it like an app.
 
 ---
 
@@ -39,32 +39,36 @@ Each clip shows *why* it was picked, with evidence labels: **Official** (the pla
 
 > Quality gate ≠ virality guarantee. It guarantees a technically clean, upload-ready file. Nobody can promise views.
 
-## Mac app
+## Desktop app (Mac, Windows, Linux)
 
-The Mac app does everything the web app does, plus:
+The desktop app does everything the web app does, plus:
 - **paste a link** (YouTube, TikTok, Twitch VODs, X…), downloaded with yt-dlp
-- faster processing with native ffmpeg and faster-whisper
+- faster processing with native ffmpeg and faster-whisper, and 99 speech languages
 - use it from your phone over Wi-Fi with a QR code
 
-**Install:** download `Clip-Machine-mac.zip` from [Releases](../../releases), unzip it, double-click **Install.command** (needs Python 3.10+ from python.org), then **Start Clip Machine.command**. If macOS blocks it, right-click → Open.
+**Install:** download `Clip-Machine-desktop.zip` from [Releases](../../releases) and unzip it. It needs Python 3.10+ ([python.org](https://www.python.org/downloads/)); ffmpeg is installed for you.
 
-Command line: `.venv/bin/python clipper.py <url-or-file> -p tiktok -n 5`
-
-## Web app vs Mac app
-
-| | Web app | Mac app |
+| | Install once | Then start with |
 |---|---|---|
-| Install | none | one-time installer |
-| Input | video file | file **or link** |
-| Export | 720p (fast) or 1080p | 1080p |
-| Speed | depends on your device; first run downloads ~110 MB of models, cached after | fast |
-| Speech | English | 99 languages |
+| macOS | double-click **Install.command** (if blocked: right-click → Open) | **Start Clip Machine.command** |
+| Windows | double-click **Install (Windows).bat** (tick "Add python.exe to PATH" when installing Python) | **Start Clip Machine.bat** |
+| Linux | `./install.sh` (Debian/Ubuntu may need `sudo apt install python3-venv`) | `./start.sh` |
 
-Why no YouTube links on the web or in the App Store? Browsers can't fetch YouTube video directly, and Apple's App Review Guideline 5.2.3 rejects apps that download media from third-party sites.
+Command line: `.venv/bin/python clipper.py <url-or-file> -p tiktok -n 5 --style boxed` (Windows: `.venv\Scripts\python`).
+
+## Fix a clip without starting over
+
+Every clip has **✎ Edit this cut**:
+- **Trim** the start or end one word at a time. It always snaps between words, so nothing gets cut mid-word.
+- **Fix captions.** Retype any misheard word; the timing is kept.
+- **Change the headline** and the **caption style**: *Pop* (active word highlighted), *Clean* (plain phrases) or *Boxed* (black box, easiest to read over busy video).
+
+The cut is re-rendered and goes back through the quality gate. If the new version fails, your old one is kept.
 
 ## How it's built
 
-- `docs/`: the web app (GitHub Pages). ffmpeg.wasm for editing, transformers.js Whisper for speech, and `formula.js`, a port of the scoring in `clipper.py`. `formula.json` is generated from `clipper.py`, so both apps score clips the same way.
-- `clipper.py`: the engine and CLI. `app.py` + `index.html`: the local server and phone UI for the Mac app.
+- `docs/`: the web app (GitHub Pages; `sw.js` makes it work offline after the first run). ffmpeg.wasm for editing, transformers.js Whisper for speech, and `formula.js`, a port of the scoring in `clipper.py`. `formula.json` is generated from `clipper.py` by `scripts/export_formula.py` (the release build refuses to package if it has drifted), so both apps score clips the same way.
+- `clipper.py`: the engine and CLI. `app.py` + `index.html`: the local server and phone UI for the desktop app.
+- `tests/`: `make_media.sh` builds a stress-test media set (portrait, 60 fps, odd sizes, silent, no audio, audio only, corrupt, 25 min…). `engine_stress.py` runs the engine against it; `web-stress.mjs` runs the web app in Chrome, Safari's engine (WebKit) and Firefox via Playwright, plus phone viewports and an offline rerun (`BROWSER=webkit-desktop node web-stress.mjs talk` runs chosen cases in one browser). `harness/` reproduces the Safari memory limit with ffmpeg.wasm alone.
 
 Only clip videos you own or have permission to repost. MIT licensed; see [LICENSE](LICENSE) for third-party notices.
