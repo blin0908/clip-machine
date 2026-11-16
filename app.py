@@ -341,18 +341,26 @@ def files(jid, name):
     return send_from_directory(JOBS / jid, name, as_attachment=dl)
 
 
-# ---- results log: judge each cut by its job (24 h and 7 day check-ins)
-LOG = HERE / "results_log.json"
-LOG_FIELDS = ["id", "logged", "job", "clip", "cut", "title", "platform", "posted", "checkpoint", "views",
-              "metric1", "metric2", "metric3", "notes"]
+# ---- results log: judge each cut by its job (24 h, 72 h, and 7 day check-ins)
+LOG = Path(os.environ.get("CLIP_LOG") or HERE / "results_log.json")
+LOG_COLUMNS = ["logged", "platform", "clip", "cut", "title", "posted", "checkpoint", "views",
+               "metric1", "metric2", "metric3", "notes", "feed_shown", "feed_share", "avg_view_duration"]
+LOG_FIELDS = ["job", *LOG_COLUMNS[1:]]
 log_lock = threading.Lock()
 
 
 def read_log():
     try:
-        return json.loads(LOG.read_text())
-    except Exception:
+        rows = json.loads(LOG.read_text())
+    except FileNotFoundError:
         return []
+    if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+        raise ValueError("Invalid results log")
+    return rows
+
+
+def log_fields(data):
+    return {k: str(data.get(k, ""))[:300] for k in LOG_FIELDS}
 
 
 @app.get("/api/log")
@@ -362,8 +370,10 @@ def get_log():
 
 @app.post("/api/log")
 def add_log():
-    d = request.get_json(silent=True) or {}
-    row = {k: str(d.get(k, ""))[:300] for k in LOG_FIELDS}
+    d = request.get_json(silent=True)
+    if not isinstance(d, dict):
+        return jsonify(error="Enter a result and try saving again."), 400
+    row = log_fields(d)
     row["id"] = uuid.uuid4().hex[:8]
     row["logged"] = time.strftime("%Y-%m-%d %H:%M")
     with log_lock:
@@ -371,6 +381,29 @@ def add_log():
         rows.append(row)
         write_atomic(LOG, json.dumps(rows, indent=1))
     return jsonify(row)
+
+
+@app.post("/api/log/import")
+def import_log():
+    """Move results saved by an older desktop workspace from its browser into the shared log."""
+    incoming = request.get_json(silent=True)
+    if not isinstance(incoming, list) or any(
+        not isinstance(row, dict) or not isinstance(row.get("id"), str)
+        or not 1 <= len(row["id"]) <= 8 or not row["id"].isascii() or not row["id"].isalnum()
+        for row in incoming
+    ):
+        return jsonify(error="The saved browser results could not be imported."), 400
+    with log_lock:
+        rows = read_log()
+        ids = {row.get("id") for row in rows}
+        for data in incoming:
+            rid = "browser-" + data["id"]
+            if rid in ids:
+                continue
+            rows.append({**log_fields(data), "id": rid, "logged": str(data.get("logged", ""))[:16]})
+            ids.add(rid)
+        write_atomic(LOG, json.dumps(rows, indent=1))
+    return jsonify(ok=True)
 
 
 @app.delete("/api/log/<rid>")
@@ -385,11 +418,9 @@ def log_csv():
     import csv, io
     buf = io.StringIO()
     w = csv.writer(buf)
-    w.writerow(["logged", "platform", "clip", "cut", "title", "posted", "checkpoint", "views",
-                "metric1", "metric2", "metric3", "notes"])
+    w.writerow(LOG_COLUMNS)
     for r in read_log():
-        w.writerow([r.get(k, "") for k in ("logged", "platform", "clip", "cut", "title", "posted", "checkpoint",
-                                           "views", "metric1", "metric2", "metric3", "notes")])
+        w.writerow([r.get(k, "") for k in LOG_COLUMNS])
     resp = make_response(buf.getvalue())
     resp.headers["Content-Type"] = "text/csv"
     resp.headers["Content-Disposition"] = "attachment; filename=clip_results.csv"

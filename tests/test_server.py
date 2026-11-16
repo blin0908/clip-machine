@@ -3,6 +3,7 @@ No rendering happens here (the job worker isn't started), so this runs in a coup
 
     .venv/bin/python -m unittest tests/test_server.py -v
 """
+import csv
 import io
 import json
 import shutil
@@ -217,11 +218,15 @@ class ServerTest(unittest.TestCase):
     # ---- results log
     def test_results_log_round_trip(self):
         r = self.c.post("/api/log", json={"title": "A & <B>", "views": "100", "platform": "shorts", "extra": "ignored",
-                                          "feed_shown": "50"}, headers=self.k)
+                                          "checkpoint": "72h", "feed_shown": "50", "feed_share": "92.7",
+                                          "avg_view_duration": "00:17"}, headers=self.k)
         row = r.get_json()
         self.assertNotIn("extra", row)
-        csv = self.c.get("/api/log.csv", headers=self.k).data.decode()
-        self.assertIn("A & <B>", csv)
+        exported = self.c.get("/api/log.csv", headers=self.k).data.decode()
+        record = next(csv.DictReader(io.StringIO(exported)))
+        for name in ("title", "checkpoint", "feed_shown", "feed_share", "avg_view_duration"):
+            self.assertEqual(record[name], row[name])
+        self.assertEqual(record["feed_shown"], "50")
         self.assertEqual(len(self.c.get("/api/log", headers=self.k).get_json()), 1)
         self.c.delete(f"/api/log/{row['id']}", headers=self.k)
         self.assertEqual(self.c.get("/api/log", headers=self.k).get_json(), [])
@@ -229,6 +234,21 @@ class ServerTest(unittest.TestCase):
     def test_log_fields_are_capped(self):
         row = self.c.post("/api/log", json={"notes": "n" * 5000}, headers=self.k).get_json()
         self.assertEqual(len(row["notes"]), 300)
+
+    def test_browser_log_import_preserves_existing_rows_and_can_retry(self):
+        existing = {"id": "older", "title": "Classic result"}
+        server.LOG.write_text(json.dumps([existing]))
+        legacy = {"id": "a8b1c9fe", "logged": "2026-11-15 10:30", "title": "Browser result", "feed_shown": "0"}
+        self.assertEqual(self.c.post("/api/log/import", json=[legacy]).status_code, 403)
+        for _ in range(2):
+            response = self.c.post("/api/log/import", json=[legacy], headers=self.k)
+            self.assertEqual(response.status_code, 200)
+        saved = self.c.get("/api/log", headers=self.k).get_json()
+        self.assertEqual(len(saved), 2)
+        self.assertEqual(saved[0], existing)
+        self.assertEqual(saved[1]["id"], "browser-a8b1c9fe")
+        for field in ("logged", "title", "feed_shown"):
+            self.assertEqual(saved[1][field], legacy[field])
 
 
 if __name__ == "__main__":

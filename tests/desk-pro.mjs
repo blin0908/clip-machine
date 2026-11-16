@@ -27,7 +27,8 @@ const media = createServer(async (req, res) => {
 await new Promise(r => media.listen(0, "127.0.0.1", r));
 const MEDIA_URL = `http://127.0.0.1:${media.address().port}/`;
 
-const srv = spawn(PY, ["app.py"], { cwd: ROOT, env: { ...process.env, CLIP_PORT: String(PORT), CLIP_JOBS: JOBS, CLIP_KEY: KEY }, stdio: ["ignore", "pipe", "pipe"] });
+const LOG = join(JOBS, "results_log.json");
+const srv = spawn(PY, ["app.py"], { cwd: ROOT, env: { ...process.env, CLIP_PORT: String(PORT), CLIP_JOBS: JOBS, CLIP_KEY: KEY, CLIP_LOG: LOG }, stdio: ["ignore", "pipe", "pipe"] });
 let srvLog = ""; srv.stdout.on("data", d => { srvLog += d; }); srv.stderr.on("data", d => { srvLog += d; });
 const BASE = `http://127.0.0.1:${PORT}/`;
 for (let i = 0; i < 60; i++) { try { if ((await fetch(BASE + "api/info?key=" + KEY)).ok) break; } catch {} await new Promise(r => setTimeout(r, 500)); }
@@ -42,6 +43,13 @@ const idle = (ms = 600000) => page.waitForFunction(() => document.querySelector(
 const mod = process.platform === "darwin" ? "Meta" : "Control";
 const RED_PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAACAAAAAQCAYAAAB3AH1ZAAAAI0lEQVR4nO3OIQEAAAwEoetfeovxBoGnq1tKQEBAQEBAYB142QD8LgetqmMAAAAASUVORK5CYII=", "base64");
 try {
+  await page.addInitScript(() => {
+    if (localStorage.getItem("clipmachine.log") === null) {
+      localStorage.setItem("clipmachine.log", JSON.stringify([
+        { id: "a8b1c9fe", title: "Previously saved in browser", platform: "shorts", checkpoint: "24h", views: "123" },
+      ]));
+    }
+  });
   await page.goto(BASE + "?key=" + KEY, { waitUntil: "load" });
   await page.waitForFunction(() => document.body.classList.contains("desk"), null, { timeout: 10000 });
   check(true, "desktop mode detected");
@@ -70,6 +78,44 @@ try {
   await page.click(".qi >> nth=0");
   await page.waitForFunction(() => document.querySelectorAll("#out .clip").length > 0);
   check(/talk/.test(await page.locator(".qi >> nth=0").textContent()), "link job shows the video's title", await page.locator(".qi .n >> nth=0").textContent());
+
+  // ---- desktop results are shared across browsers and exported by the server
+  const firstClip = page.locator("#out .clip").first();
+  await firstClip.locator("details.more > summary").click();
+  const log = firstClip.locator(".logf");
+  await log.getByLabel("Platform", { exact: true }).selectOption("shorts");
+  await log.getByLabel("Checkpoint").selectOption("72h");
+  await log.getByLabel("Shown in Shorts feed").fill("2048");
+  await log.getByLabel("Shorts-feed share (%)").fill("92.7");
+  await log.getByLabel("Average view duration (mm:ss)").fill("00:17");
+  const [post] = await Promise.all([
+    page.waitForResponse(r => r.url() === BASE + "api/log" && r.request().method() === "POST"),
+    log.getByRole("button", { name: "Save result" }).click(),
+  ]);
+  const row = await post.json();
+  check(post.ok() && row.feed_shown === "2048" && row.job && row.clip, "the desktop saves Shorts metrics with their source clip");
+  const disk = JSON.parse(await readFile(LOG, "utf8"));
+  check(disk.length === 2 && disk.some(r => r.id === row.id) && disk.some(r => r.title === "Previously saved in browser"),
+    "the results file contains the new result and the imported browser entry");
+  const other = await browser.newPage({ acceptDownloads: true });
+  try {
+    await other.goto(BASE + "?key=" + KEY);
+    await other.locator("body.desk #tLog").click();
+    const savedRow = other.locator("#logtbl tr").filter({ hasText: "Shown in Shorts feed: 2048" });
+    check((await savedRow.textContent()).includes("Average view duration: 00:17"), "another browser sees the saved metrics");
+    const [csvDownload] = await Promise.all([other.waitForEvent("download"), other.click("#csv")]);
+    const csv = await readFile(await csvDownload.path(), "utf8");
+    check(csv.includes("feed_shown,feed_share,avg_view_duration") && csv.includes(",2048,92.7,00:17"),
+      "desktop CSV exports the saved server values");
+    other.once("dialog", dialog => dialog.accept());
+    await savedRow.getByRole("button", { name: "Delete" }).click();
+    await savedRow.waitFor({ state: "detached" });
+    check(!JSON.parse(await readFile(LOG, "utf8")).some(r => r.id === row.id), "deleting the result updates the saved file");
+  } finally {
+    await other.close();
+  }
+  await firstClip.locator("details.more > summary").click();
+
   const px = await page.evaluate(async () => {     // 1080x1920: the logo box is 130 px, 54 px from the right, 86 px down
     const v = document.querySelector("#out .clip video"); v.muted = true;
     if (v.readyState < 2) { v.load(); await new Promise(r => { v.addEventListener("loadeddata", r, { once: true }); setTimeout(r, 8000); }); }

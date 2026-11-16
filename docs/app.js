@@ -826,8 +826,8 @@ function revokeClip(c) { for (const v of [c, c.short]) if (v) { URL.revokeObject
 
 // ---------------------------------------------------------------- desktop app engine
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-async function api(url, body) {
-  const r = await fetch(url, body ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : { cache: "no-store" });
+async function api(url, body, method = body ? "POST" : "GET") {
+  const r = await fetch(url, body ? { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) } : { method, cache: "no-store" });
   const j = await r.json().catch(() => ({}));
   if (!r.ok) throw Object.assign(new Error(j.error || (r.status === 403 ? "The desktop app needs its access link again: open the link it printed when it started." : `The desktop app answered ${r.status}.`)), { status: r.status });
   return j;
@@ -960,6 +960,7 @@ async function enterDesktop(info) {
   $(".lhint").textContent = "Paste a YouTube, TikTok, Twitch, X or any video link. The desktop app downloads it on this computer.";
   $("#link").placeholder = "Paste a YouTube, TikTok or video link";
   $(".tag").textContent = "Desktop app · runs on this computer";
+  $("#logStorage").textContent = "Saved on the computer running Clip Machine.";
   const tl = $(".toplink"); tl.href = "classic"; tl.removeAttribute("target"); tl.setAttribute("aria-label", "Classic view"); tl.querySelector("span").textContent = "Classic view";
   try {                                            // the app's logo is the one that renders
     const r = await fetch("api/brand/logo", { cache: "no-store" });
@@ -1308,15 +1309,27 @@ $(".wtabs").addEventListener("keydown", e => {
   const n = ids[(i + (e.key === "ArrowRight" ? 1 : -1) + ids.length) % ids.length]; showTab(n); $("#" + n).focus();
 });
 
-// ---------------------------------------------------------------- results log (stored on this device)
+// ---------------------------------------------------------------- results log
 const LOGKEY = "clipmachine.log";
 const SHORTS_METRICS = [
   { name: "feed_shown", label: "Shown in Shorts feed", inputmode: "numeric" },
   { name: "feed_share", label: "Shorts-feed share", inputmode: "decimal", unit: "%" },
   { name: "avg_view_duration", label: "Average view duration", inputmode: "text", unit: "mm:ss" },
 ];
-const readLog = () => store.get(LOGKEY, []);
-const writeLog = rows => store.set(LOGKEY, rows);
+const readBrowserLog = () => store.get(LOGKEY, []);
+const writeBrowserLog = rows => store.set(LOGKEY, rows);
+let importingLog = null;
+let logRequest = 0;
+function importBrowserLog() {
+  if (importingLog) return importingLog;
+  const rows = readBrowserLog();
+  if (!rows.length) return;
+  const ids = new Set(rows.map(row => row.id));
+  importingLog = api("api/log/import", rows).then(() => {
+    writeBrowserLog(readBrowserLog().filter(row => !ids.has(row.id)));
+  }).finally(() => { importingLog = null; });
+  return importingLog;
+}
 function logForm(c) {
   const def = active?.o?.platform !== "all" ? active.o.platform : "tiktok";
   const shortsFields = SHORTS_METRICS.map(({ name, label, inputmode, unit }) => {
@@ -1347,13 +1360,29 @@ function setMetricLabels(f) {
   }
 }
 $("#out").addEventListener("change", e => { const f = e.target.closest(".logf"); if (f && e.target.name === "platform") setMetricLabels(f); });
-$("#out").addEventListener("submit", e => {
+$("#out").addEventListener("submit", async e => {
   const f = e.target.closest(".logf"); if (!f) return; e.preventDefault();
-  const [, c] = findClip(+f.dataset.uid); if (!c) return;
+  const [sess, c] = findClip(+f.dataset.uid); if (!c) return;
+  const submit = f.querySelector('[type="submit"]');
+  if (submit.disabled) return;
   const p = X.F.platforms[f.platform.value], row = Object.fromEntries(new FormData(f));
   ["metric1", "metric2", "metric3"].forEach((n, i) => { if (row[n]) row[n] = `${p.judge[i] || n}: ${row[n]}`; });
-  Object.assign(row, { id: Math.random().toString(36).slice(2, 10), logged: new Date().toISOString().slice(0, 16).replace("T", " "), title: c.title });
-  writeLog([...readLog(), row]); f.reset(); setMetricLabels(f); loadLog(); toast("Result saved on this device");
+  row.title = c.title;
+  submit.disabled = true;
+  try {
+    if (DESK) {
+      await api("api/log", { ...row, job: sess.jid, clip: c.file });
+    } else {
+      const id = Math.random().toString(36).slice(2, 10);
+      const logged = new Date().toISOString().slice(0, 16).replace("T", " ");
+      writeBrowserLog([...readBrowserLog(), { ...row, id, logged }]);
+    }
+    f.reset(); setMetricLabels(f); loadLog(); toast("Result saved");
+  } catch {
+    toast("Couldn't save the result. Check the desktop app and try again.");
+  } finally {
+    submit.disabled = false;
+  }
 });
 function logMetrics(row) {
   const metrics = [row.metric1, row.metric2, row.metric3].filter(Boolean);
@@ -1363,17 +1392,51 @@ function logMetrics(row) {
   }
   return metrics.map(esc).join("<br>");
 }
-function loadLog() {
-  const rows = readLog();
-  $("#logtbl").innerHTML = rows.length ? `<div class="lwrap"><table class="ltable"><tr><th>Platform</th><th>Clip</th><th>At</th><th>Views</th><th>Metrics</th><th><span class="sr">Delete</span></th></tr>` +
-    rows.slice().reverse().map(r => `<tr><td>${esc(PN[r.platform] || r.platform)}<br><span class="st">${esc(r.posted)}</span></td><td>${esc(String(r.title ?? "").slice(0, 40))}<br><span class="st">${esc(r.cut)}</span></td><td>${esc(r.checkpoint)}</td><td>${esc(r.views)}</td><td>${logMetrics(r)}${r.notes ? `<br><span class="st">${esc(r.notes)}</span>` : ""}</td><td><button class="x" data-dellog="${r.id}" aria-label="Delete">${icon("x")}</button></td></tr>`).join("") + `</table></div>` : "No results logged yet.";
+async function loadLog() {
+  const request = ++logRequest;
+  try {
+    if (DESK) await importBrowserLog();
+    const rows = DESK ? await api("api/log") : readBrowserLog();
+    if (request === logRequest) renderLog(rows);
+  } catch {
+    if (request === logRequest) $("#logtbl").textContent = "Couldn't load the results. Check the desktop app and reopen the log.";
+  }
 }
-$("#logtbl").addEventListener("click", e => { const d = e.target.closest("[data-dellog]"); if (d && confirm("Delete this entry?")) { writeLog(readLog().filter(r => r.id !== d.dataset.dellog)); loadLog(); } });
-$("#csv").onclick = () => {
+function renderLog(rows) {
+  $("#logtbl").innerHTML = rows.length ? `<div class="lwrap"><table class="ltable"><tr><th>Platform</th><th>Clip</th><th>At</th><th>Views</th><th>Metrics</th><th><span class="sr">Delete</span></th></tr>` +
+    rows.slice().reverse().map(r => `<tr><td>${esc(PN[r.platform] || r.platform)}<br><span class="st">${esc(r.posted)}</span></td><td>${esc(String(r.title ?? "").slice(0, 40))}<br><span class="st">${esc(r.cut)}</span></td><td>${esc(r.checkpoint)}</td><td>${esc(r.views)}</td><td>${logMetrics(r)}${r.notes ? `<br><span class="st">${esc(r.notes)}</span>` : ""}</td><td><button class="x" data-dellog="${esc(r.id)}" aria-label="Delete">${icon("x")}</button></td></tr>`).join("") + `</table></div>` : "No results logged yet.";
+}
+$("#logtbl").addEventListener("click", async e => {
+  const button = e.target.closest("[data-dellog]");
+  if (!button || button.disabled || !confirm("Delete this entry?")) return;
+  const id = button.dataset.dellog;
+  button.disabled = true;
+  try {
+    if (DESK) await api(`api/log/${encodeURIComponent(id)}`, undefined, "DELETE");
+    else writeBrowserLog(readBrowserLog().filter(row => row.id !== id));
+    await loadLog();
+  } catch {
+    toast("Couldn't delete the result. Check the desktop app and try again.");
+  } finally {
+    button.disabled = false;
+  }
+});
+$("#csv").onclick = async () => {
+  if (DESK) {
+    try {
+      await importBrowserLog();
+      const response = await fetch("api/log.csv", { cache: "no-store" });
+      if (!response.ok) throw new Error("CSV download failed");
+      download(await response.blob(), "clip_results.csv");
+    } catch {
+      toast("Couldn't export the results. Check the desktop app and try again.");
+    }
+    return;
+  }
   const cols = ["logged", "platform", "cut", "title", "posted", "checkpoint", "views", "metric1", "metric2", "metric3", "notes",
     ...SHORTS_METRICS.map(({ name }) => name)];
   const q = v => `"${String(v ?? "").replace(/"/g, '""')}"`;
-  download(new Blob([[cols.join(","), ...readLog().map(r => cols.map(k => q(r[k])).join(","))].join("\n")], { type: "text/csv" }), "clip_results.csv");
+  download(new Blob([[cols.join(","), ...readBrowserLog().map(r => cols.map(k => q(r[k])).join(","))].join("\n")], { type: "text/csv" }), "clip_results.csv");
 };
 
 // ---------------------------------------------------------------- keyboard

@@ -44,6 +44,7 @@ Each clip shows *why* it was picked, with evidence labels: **Official** (the pla
 The desktop app opens the same workspace in your browser, but does the work on your computer's native engine, plus:
 - **paste a link** (YouTube, TikTok, Twitch VODs, X…), downloaded with yt-dlp
 - past videos stay on your computer and reopen with their clips (the previous page is still at `/classic`)
+- the results log is shared by browsers connected to the same desktop app
 - faster processing with native ffmpeg and faster-whisper, and 99 speech languages
 - use it from your phone over Wi-Fi with a QR code
 
