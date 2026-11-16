@@ -18,6 +18,7 @@ from queue import Queue
 from flask import Flask, abort, jsonify, request, send_file, send_from_directory, make_response
 
 import clipper
+import search
 
 HERE = Path(__file__).resolve().parent
 JOBS = Path(os.environ.get("CLIP_JOBS") or HERE / "jobs")      # CLIP_JOBS / CLIP_KEY: tests run an isolated server
@@ -112,7 +113,8 @@ def run_edit(jid, p):
         job.update(pct=pct, msg=msg)
     try:
         res = clipper.edit_cut(JOBS / jid, p["clip"], p["cut"], p["start"], p["end"], p["title"], p["words"],
-                               p.get("style"), progress, look=p.get("look"), cta=p.get("cta"), logo=logo_file())
+                               p.get("style"), progress, look=p.get("look"), cta=p.get("cta"), logo=logo_file(),
+                               reason=p.get("reason"))
         job.update(status="done", pct=100, msg="Edit saved", result=res, edit_error=None, edit_rev=job.get("edit_rev", 0) + 1)
     except Exception as e:
         traceback.print_exc()
@@ -222,12 +224,43 @@ def edit(jid):
         payload = {"clip": clip, "cut": cut, "start": float(d["start"]), "end": float(d["end"]),
                    "title": str(d.get("title", ""))[:90], "words": list(d.get("words") or [])[:5000],
                    "style": d.get("style"), "look": clipper.clean_look(d.get("look")) if isinstance(d.get("look"), dict) else None,
-                   "cta": str(d["cta"])[:80] if isinstance(d.get("cta"), str) else None}
+                   "cta": str(d["cta"])[:80] if isinstance(d.get("cta"), str) else None,
+                   "reason": str(d["reason"])[:120] if isinstance(d.get("reason"), str) else None}
     except Exception:
         return jsonify(error="Bad edit request."), 400
     job.update(status="queued", msg="Edit waiting in line", edit_error=None)
     queue.put(("edit", jid, payload))
     return jsonify(ok=True)
+
+
+@app.get("/api/search")
+def search_ready():
+    return jsonify(ready=search.is_cached(), model=search.MODEL, mb=135)
+
+
+@app.post("/api/search")
+def find_by_description():
+    """Find clips by description: rank the transcript's sentence windows against a typed query (search.py).
+    The page sends the words it shows, so retyped words count. all=true returns every window with its score."""
+    d = request.get_json(silent=True) or {}
+    try:
+        query = search.clean_query(d.get("query"))
+        words = [{"w": str(w["w"]), "s": float(w["s"]), "e": float(w["e"])} for w in list(d.get("words") or [])[:200000]]
+        assert all(math.isfinite(w["s"]) and math.isfinite(w["e"]) for w in words)
+        duration = float(d.get("duration") or 0)
+        duration = duration if math.isfinite(duration) and duration > 0 else (words[-1]["e"] if words else 0)
+        n = max(1, min(10, int(d.get("n", 3))))
+    except Exception:
+        return jsonify(error="Bad search request."), 400
+    if not query or not words:
+        return jsonify(error="Type what you're looking for."), 400
+    try:
+        if d.get("all"):
+            return jsonify(windows=search.scored_windows(words, duration, query))
+        return jsonify(matches=search.search(words, duration, query, n))
+    except Exception as e:
+        traceback.print_exc()
+        return jsonify(error=f"The search model couldn't run: {str(e)[:200]}"), 500
 
 
 @app.post("/api/jobs/<jid>/cancel")
@@ -484,7 +517,7 @@ def platforms():
     return jsonify(clipper.PLATFORMS)
 
 
-UI_FILES = {"formula.js", "formula.json", "app.js", "studio.js", "zip.js", "asr-worker.js", "sw.js", "icon-180.png", "icon-512.png"}
+UI_FILES = {"formula.js", "formula.json", "app.js", "studio.js", "zip.js", "asr-worker.js", "search.js", "search-worker.js", "sw.js", "icon-180.png", "icon-512.png"}
 
 
 @app.get("/formula.js")
@@ -493,6 +526,8 @@ UI_FILES = {"formula.js", "formula.json", "app.js", "studio.js", "zip.js", "asr-
 @app.get("/studio.js")
 @app.get("/zip.js")
 @app.get("/asr-worker.js")
+@app.get("/search.js")
+@app.get("/search-worker.js")
 @app.get("/sw.js")
 @app.get("/icon-180.png")
 @app.get("/icon-512.png")

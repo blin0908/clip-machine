@@ -3,6 +3,7 @@ import { toBlobURL } from "./vendor/util/index.js";
 import * as X from "./formula.js";
 import { zip, slug, fileBase, youtubeUploadCsv } from "./zip.js";
 import { createStudio } from "./studio.js";
+import { mountFind } from "./search.js";
 
 const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
@@ -1010,7 +1011,7 @@ async function remoteEdit(job) {
   const d = job.d, sess = job.sess, id = encodeURIComponent(sess.jid);
   const rev0 = (await api(`api/jobs/${id}`)).edit_rev || 0;
   await api(`api/jobs/${id}/edit`, { clip: job.c ? job.c.jidx : -1, cut: job.cut, start: d.start, end: d.end, title: d.title, style: d.look.style,
-    look: d.look, cta: d.cta ?? "", words: sess.words.filter(w => w.s >= d.start - 0.5 && w.s <= d.end + 0.5) });
+    look: d.look, cta: d.cta ?? "", reason: job.reason, words: sess.words.filter(w => w.s >= d.start - 0.5 && w.s <= d.end + 0.5) });
   for (;;) {
     await sleep(700);
     const j = await api(`api/jobs/${id}`);
@@ -1121,7 +1122,7 @@ async function pump() {
       const fields = { start: d.start, end: d.end, title: d.title, cta: d.cta, range: `${X.fmtT(d.start)}–${X.fmtT(d.end)}`, edited: true };
       let c = job.c;
       if (!c) {                                   // a new clip made from the transcript
-        c = { ...m, ...r, ...fields, score: null, custom: true, reasons: ["Picked from the transcript"], checklist: [], hashtags: [], short: null, view: "long" };
+        c = { ...m, ...r, ...fields, score: null, custom: true, reasons: [job.reason || "Picked from the transcript"], checklist: [], hashtags: [], short: null, view: "long" };
         c.captions = X.postCopy({ ...c, hashtags: [] }, job.sess.title);
         addClip(job.sess, c);
       } else {
@@ -1641,6 +1642,13 @@ const studio = createStudio({
   list: () => boardList(), srcURL, lookFrom, queueRender, jobFor, jobLabel, brand: () => brand.url,
   onClose(c) { renderBoard(); if (c) { select(c.uid); document.querySelector(`.clip[data-uid="${c.uid}"] [data-edit]`)?.focus(); } },
   onWords(sess) { txState.dirty = true; if (sess === active && !$("#pTx").hidden) renderTranscript(); },
+});
+// find clips by description (search.js): matches render as new clips through the same queue as the studio
+mountFind({
+  active: () => active, desk: () => !!DESK, lowMemory: () => IS_WEBKIT, select,
+  busyKeys: e => studio.isOpen() || typing(e) || $("#keys").open || $("#pClips").hidden,
+  render: (sess, m, segs, reason) => queueRender({ sess, c: null, cut: "new", reason,
+    d: { start: m.start, end: m.end, title: X.title(m, segs).slice(0, 80), look: lookFrom(sess.o), cta: "" } }),
 });
 
 // ---------------------------------------------------------------- empty-state reel (a decorative scrolling waveform with in/out marks)

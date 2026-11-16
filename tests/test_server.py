@@ -122,6 +122,57 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(len(item["cta"]), 80)
         self.assertEqual((item["look"]["format"], item["look"]["hl"], item["look"]["size"], item["look"]["cx"]), ("1:1", "#FF00AA", "m", 1.0))
 
+    def test_edit_carries_a_search_reason(self):
+        jid = self._done_job()
+        d = {"clip": -1, "cut": "new", "start": 1, "end": 9, "title": "Found", "words": [], "reason": "Matches “" + "x" * 300}
+        self.assertEqual(self.c.post(f"/api/jobs/{jid}/edit", json=d, headers=self.k).status_code, 200)
+        self.assertEqual(len(server.queue.get_nowait()[2]["reason"]), 120)
+        self.c.post(f"/api/jobs/{jid}/cancel", headers=self.k)
+        server.jobs[jid]["status"] = "done"
+        d["reason"] = {"html": "<b>"}
+        self.assertEqual(self.c.post(f"/api/jobs/{jid}/edit", json=d, headers=self.k).status_code, 200)
+        self.assertIsNone(server.queue.get_nowait()[2]["reason"])
+
+    # ---- find clips by description (the model is stubbed here; tests/search_parity.py runs the real one)
+    WORDS = [{"w": w, "s": i * 0.5, "e": i * 0.5 + 0.4} for i, w in enumerate(
+        ("Our pricing is simple. " * 8 + "We hired two people. " * 8 + "I cook on weekends. " * 8).split())]
+
+    def _stub_model(self):
+        import numpy as np
+        import search
+
+        class Stub:   # one axis per topic: a text's vector points at the topics it mentions
+            def embed(self, texts):
+                v = np.array([[t.count("pricing") + 0.01, t.count("hired") + 0.01, t.count("cook") + 0.01] for t in texts], dtype=np.float32)
+                return v / np.linalg.norm(v, axis=1, keepdims=True)
+        old = search._model
+        search._model = Stub()
+        self.addCleanup(setattr, search, "_model", old)
+
+    def test_search_rejects_bad_requests(self):
+        self.assertEqual(self.c.post("/api/search", json={"query": "x", "words": self.WORDS}).status_code, 403)
+        for d in ({}, {"query": "  ", "words": self.WORDS}, {"query": "pricing", "words": []}, {"query": "pricing", "words": "abc"},
+                  {"query": "pricing", "words": [{"w": "a", "s": "nan", "e": 1}]}, {"query": "pricing", "words": [{"w": "a"}]},
+                  {"query": "pricing", "words": self.WORDS, "n": "many"}):
+            self.assertEqual(self.c.post("/api/search", json=d, headers=self.k).status_code, 400, d)
+
+    def test_search_finds_the_matching_window(self):
+        self._stub_model()
+        r = self.c.post("/api/search", json={"query": "the part about pricing", "words": self.WORDS, "duration": 40}, headers=self.k)
+        self.assertEqual(r.status_code, 200)
+        m = r.get_json()["matches"]
+        self.assertTrue(m and "pricing" in m[0]["text"] and m[0]["start"] == 0.0, m)
+        r = self.c.post("/api/search", json={"query": "cook", "words": self.WORDS, "duration": 40, "all": True}, headers=self.k)
+        wins = r.get_json()["windows"]
+        self.assertTrue(len(wins) > 3 and all({"start", "end", "text", "score"} <= set(w) for w in wins))
+        self.assertTrue("cook" in max(wins, key=lambda w: w["score"])["text"])
+
+    def test_search_says_when_the_model_is_ready(self):
+        self._stub_model()
+        j = self.c.get("/api/search", headers=self.k).get_json()
+        self.assertTrue(j["ready"])
+        self.assertEqual(j["model"], "Xenova/multilingual-e5-small")
+
     def test_new_job_keeps_the_look(self):
         r = self.c.post("/api/jobs", json={"url": "https://example.com/v", "format": "16:9", "hl": "#00ff00", "pos": "top", "size": "zz"}, headers=self.k)
         o = server.jobs[r.get_json()["id"]]["opts"]
@@ -165,7 +216,11 @@ class ServerTest(unittest.TestCase):
     def test_pages(self):
         self.assertEqual(self.c.get("/api/info", headers=self.k).get_json()["desktop"], True)
         self.assertRegex(self.c.get("/api/info", headers=self.k).get_json()["version"], r"^\d+\.\d+\.\d+$")
-        for path in ("/", "/classic", "/studio.js", "/app.js", "/zip.js", "/fonts/ui/archivo-400-800.woff2", "/vendor/ffmpeg/index.js"):
+        # every page module and worker the UI loads (import "./x.js", new URL("./x.js")) must be served, or the page breaks
+        import re
+        local = {m for f in (HERE.parent / "docs").glob("*.js") for m in re.findall(r'(?:from |import\(|new URL\()"\./([\w-]+\.js)"', f.read_text())}
+        self.assertTrue({"search.js", "search-worker.js", "studio.js"} <= local, local)
+        for path in ("/", "/classic", "/fonts/ui/archivo-400-800.woff2", "/vendor/ffmpeg/index.js", *sorted("/" + m for m in local)):
             r = self.c.get(path, headers=self.k)
             self.assertEqual(r.status_code, 200, path)
             r.close()

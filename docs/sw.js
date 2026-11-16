@@ -3,7 +3,7 @@
 // Whisper model files are cached by transformers.js itself, so they're left alone here.
 const SHELL = "cm-shell-v8", CDN = "cm-cdn-v1";
 const FILES = ["./", "index.html", "app.js", "formula.js", "formula.json", "asr-worker.js", "manifest.json", "icon.svg",
-  "icon-180.png", "icon-512.png", "fonts/Montserrat-Black.ttf", "studio.js", "zip.js",
+  "icon-180.png", "icon-512.png", "fonts/Montserrat-Black.ttf", "studio.js", "zip.js", "search.js", "search-worker.js",
   "fonts/ui/archivo-400-800.woff2", "fonts/ui/instrumentsans-400-700.woff2", "fonts/ui/ibmplexmono-400.woff2", "fonts/ui/ibmplexmono-500.woff2",
   "vendor/ffmpeg/index.js", "vendor/ffmpeg/classes.js", "vendor/ffmpeg/const.js", "vendor/ffmpeg/errors.js",
   "vendor/ffmpeg/types.js", "vendor/ffmpeg/utils.js", "vendor/ffmpeg/worker.js",

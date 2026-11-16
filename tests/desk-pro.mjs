@@ -176,8 +176,26 @@ try {
   check(await page.locator("#out .clip .score.mine").count() === 1, "transcript clip made natively", await page.locator("#stStatus").textContent());
   await page.click("#stClose");
 
-  // ---- .zip pulls the files from the app
+  // ---- find clips by description: the app ranks the transcript natively (search.py), the match renders as a new clip
   await page.click("#tClips");
+  const nf = await page.locator("#out .clip").count();
+  await page.fill("#findq", "a recipe for chocolate cake");
+  await page.press("#findq", "Enter");
+  await page.waitForFunction(() => /^(warn|ok)$/.test(document.querySelector("#findMsg").dataset.kind || ""), null, { timeout: 300000, polling: 500 });
+  check(/Nothing in this video matches/.test(await page.locator("#findMsg").textContent()), "native search: an unrelated query matches nothing",
+    await page.locator("#findMsg").textContent());
+  await page.fill("#findq", "film it and cut the boring parts");
+  await page.click("#findGo");
+  await page.waitForFunction(() => { const m = document.querySelector("#findMsg"); return m.dataset.kind && !/Nothing/.test(m.textContent) || /Added|already|failed/.test(m.textContent); }, null, { timeout: 300000, polling: 500 });
+  const found = await page.locator("#findMsg").textContent();
+  check(/^Added 1 clip/.test(found) || /already on the board/.test(found), "native search finds the moment", found);
+  if (/^Added/.test(found)) {
+    check(await page.locator("#out .clip").count() === nf + 1 && await page.locator("#out .clip").filter({ hasText: "Matches “film it and cut the boring parts”" }).count() === 1,
+      "the native match became a new clip that says what it matched");
+  }
+  await page.fill("#findq", "");
+
+  // ---- .zip pulls the files from the app
   await page.locator(`#out .clip[data-uid="${uid}"] [data-keep]`).click();
   const [dl] = await Promise.all([page.waitForEvent("download", { timeout: 60000 }), page.click("#zip")]);
   const [entries, uploadRows] = JSON.parse(execFileSync(PY, ["-c", `

@@ -22,6 +22,7 @@ step "web suite ($B)";           BROWSER=$B node web-stress.mjs | grep --line-bu
 step "web workflow ($B)";        BROWSER=$B node web-pro.mjs | tee web-pro-last.log; grep -q "all checks passed" web-pro-last.log
 step "edge cases (Chrome)";       node web-edge.mjs | tee web-edge-last.log; grep -q "all checks passed" web-edge-last.log
 step "desktop workspace";        node desk-pro.mjs | tee desk-pro-last.log; grep -q "all checks passed" desk-pro-last.log
+step "find clips by description"; node web-find.mjs | tee web-find-last.log; grep -q "all checks passed" web-find-last.log
 step "captions in 11 scripts";   node web-scripts.mjs | tee web-scripts-last.log; grep -q "all checks passed" web-scripts-last.log
 [[ "$1" == "all" ]] && { step "Safari reload → fresh tab"; node web-safari-reload.mjs | tee web-safari-last.log; grep -q "all checks passed" web-safari-last.log; }
 print -P "\n%F{green}All tests passed.%f"
