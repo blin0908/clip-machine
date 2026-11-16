@@ -347,3 +347,27 @@ test("YouTube upload CSV includes one row per kept clip", async () => {
   ]);
   assert.deepEqual(parse(youtubeUploadCsv([clips[1]])), [header]);
 });
+
+test("hype words, laughter and hooks are scored the same way in every language, in both engines", () => {
+  const texts = ["No puede ser, ¡qué locura! jajaja", "Meu Deus, não acredito kkkkk", "C’est fou, j'y crois pas mdr",
+    "Oh mein Gott, das ist krass!", "Mamma mia, non ci credo", "Боже мой, не может быть хахаха", "İnanılmaz! Çılgın",
+    "हे भगवान, क्या बात है! हाहा", "يا إلهي لا أصدق ههههه", "Ya ampun, gila banget", "Trời ơi, không thể tin được",
+    "これは本当にやばい、信じられない（笑）", "대박 세상에 ㅋㅋㅋ", "我的天，真的假的？哈哈哈", "hello there, my eyes studied it",
+    "what the hell, no way!", "whatever happened"];
+  const plat = X.F.platforms.tiktok;
+  const js = texts.map(t => { const f = X.features(0, 6, t, [{ w: t, s: 0.2, e: 5 }], new Float32Array(20), t, plat);
+    return [f.hype, f.laugh, f._hookLang, f._firstHook, f._kw]; });
+  const py = JSON.parse(execFileSync(PY, ["-c", `
+import sys, json; sys.path.insert(0, ${JSON.stringify(ROOT)})
+import numpy as np, clipper
+out = []
+for t in json.loads(sys.stdin.read()):
+    f = clipper._features(0, 6, t, [{"w": t, "s": 0.2, "e": 5}], np.zeros(20, dtype=np.float32), t, clipper.PLATFORMS["tiktok"])
+    out.append([f["hype"], f["laugh"], f["_hook_lang"], f["_first_hook"], f["_kw"]])
+print(json.dumps(out))`], { input: JSON.stringify(texts), encoding: "utf8" }).trim().split("\n").at(-1));
+  assert.deepEqual(js, py);
+  texts.slice(0, 14).forEach((t, i) => assert.ok(js[i][0] >= 2.5, `hype found in: ${t}`));
+  [0, 1, 2, 5, 7, 8, 11, 12, 13].forEach(i => assert.ok(js[i][1] >= 1, `laughter found in: ${texts[i]}`));
+  assert.equal(js[14][0], 0, "hello/eyes/studied are not hell/yes/died");
+  assert.equal(js[14][2], 0); assert.equal(js[16][0], 0, "whatever is not what");
+});

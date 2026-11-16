@@ -167,6 +167,7 @@ const getFont = () => font ||= fetch("./fonts/Montserrat-Black.ttf").then(r => r
 async function loadEngine(E, quiet = false) {
   if (E.ff) return E.ff;
   if (!quiet) stage("load", 10, "Loading video engine…", "First run downloads ~30 MB. It's cached after that.");
+  markUsed();
   const ff = new FFmpeg();
   ff.on("log", ({ message }) => { E.logs.push(message); if (E.logs.length > 4000) E.logs.splice(0, 2000); });
   const [coreURL, wasmURL] = await getCore();
@@ -206,9 +207,15 @@ async function spareEngine(sess) {
 // stalls without an error (tested: WebKit fails above ~1 min of speech on an 8 GB Mac; Chrome and Firefox don't).
 const OOM = "This browser ran out of memory for video editing. " + (IS_IOS
   ? "On iPhone and iPad every browser uses Safari's engine, which tops out around a minute of video. Use a shorter video, or a computer with Chrome or the free desktop app."
-  : "Safari is the usual cause with videos over about a minute. Try Chrome, Edge or Firefox, a shorter video, or the free desktop app.");
+  : "Safari is the usual cause with videos over about a minute. Try Chrome, Edge or Firefox, a shorter video, or the free desktop app.")
+  + (IS_WEBKIT ? " If this tab has already clipped a video, open Clip Machine in a new tab first: Safari keeps that memory even after a reload." : "");
 const DESKTOP_URL = "https://github.com/blin0908/clip-machine/releases/latest";
 const linkDesktop = html => html.replace(/(the (?:free )?desktop app)/, `<a href="${DESKTOP_URL}" target="_blank" rel="noopener">$1</a>`);
+// A tab opened with noopener gets a fresh WebKit process; a reload keeps the old one, with the memory it holds.
+const linkTab = html => html.replace(/(open Clip Machine in a new tab)/, `<a href="${esc(location.href)}" target="_blank" rel="noopener">$1</a>`);
+// Safari: remember (for this tab only) that it has loaded the engines, so a reload can offer a fresh tab first.
+const USED = "clipmachine.tabUsed";
+const markUsed = () => { if (IS_WEBKIT && !DESK) try { sessionStorage.setItem(USED, "1"); } catch {} };
 const withTimeout = (p, ms) => Promise.race([p, new Promise((_, bad) => setTimeout(() => bad(new Error(OOM)), ms))]);
 async function writeFS(path, data, E = E0) { E.cache.set(path, data); await E.ff.writeFile(path, data); }
 async function resetFFmpeg(E = E0) {      // a fresh engine with the source re-mounted, to recover a stalled worker
@@ -443,7 +450,7 @@ addEventListener("drop", e => { if (!hasFiles(e)) return; e.preventDefault(); dr
 // Safari/iOS: there the model and the video engine never hold memory at the same time (see processSession), so the
 // worker is dropped as soon as the words are back.
 let asrW = null, asrReject = null;
-const asrWorker = () => asrW ||= new Worker(new URL("./asr-worker.js", import.meta.url), { type: "module" });
+const asrWorker = () => asrW ||= (markUsed(), new Worker(new URL("./asr-worker.js", import.meta.url), { type: "module" }));
 const dropASR = () => { try { asrW?.terminate(); } catch {} asrW = null; };
 const asrModel = () => opts.lang === "en" ? opts.model : opts.model.replace(/\.en$/, "");   // multilingual twin of the chosen size
 function preloadASR() { if (!IS_WEBKIT && !DESK) asrWorker().postMessage({ type: "preload", model: asrModel() }); }
@@ -453,7 +460,7 @@ function transcribe(pcm, windows, model, keep = false, language = "en") {
     const w = asrWorker();
     let dev = "", dog = 0;
     const stall = () => { clearTimeout(dog); dog = setTimeout(() => { asrReject = null; dropASR();
-      reject(new Error("The speech model stopped responding. " + (IS_WEBKIT ? "Safari can run out of memory after a few videos: reload the page to free it, or use Chrome or the free desktop app." : "Reload the page and try again."))); }, ASR_SILENCE); };
+      reject(new Error("The speech model stopped responding. " + (IS_WEBKIT ? "Safari keeps memory from earlier videos in a tab, even after a reload. To carry on, open Clip Machine in a new tab, or use Chrome or the free desktop app." : "Reload the page and try again."))); }, ASR_SILENCE); };
     stall();
     asrReject = e => { clearTimeout(dog); reject(e); };
     w.onmessage = ({ data: d }) => {
@@ -1181,7 +1188,7 @@ function renderBoard() {
   if (!s.clips.length) {
     if (s.remote && !s.loaded && s.status === "done") { out.innerHTML = `<div class="card note" style="color:var(--mute);padding:24px;text-align:center">Loading "${esc(s.name)}"…</div>`; return; }
     const note = t => `<div class="card note msg-note" style="color:var(--mute);font-size:14px;padding:24px;border:1px dashed var(--line2);border-radius:12px;text-align:center">${t}</div>`;
-    out.innerHTML = s.status === "error" ? `<div class="card err">${linkDesktop(esc(s.err))}</div>`
+    out.innerHTML = s.status === "error" ? `<div class="card err">${linkTab(linkDesktop(esc(s.err)))}</div>`
       : s.status === "done" ? `<div class="card msg">No moment in "${esc(s.title)}" passed the quality gate. Try a different video, or turn off "Cut dead air" under Edits.</div>`
       : s.status === "running" ? note(s.remote ? `Working on it on this computer (${esc(s.msg || "starting")}). The clips appear here when it finishes.` : "Working on it. Clips appear here as each one passes the quality gate.")
       : s.status === "queued" ? note(`"${esc(s.title)}" is in the queue.`)
@@ -1640,6 +1647,14 @@ if (!/github\.io$/.test(location.hostname) && location.protocol.startsWith("http
 }
 if (!DESK && "serviceWorker" in navigator && location.protocol.startsWith("http")) navigator.serviceWorker.register("sw.js").catch(() => {});
 $("#ver").textContent = `Version ${X.F.version}.`;
+// Safari after a reload: this tab still holds the engines' memory from before, and the speech model won't start again
+// (WebKit frees it only with the tab's process). Offer a fresh tab before a file is picked.
+if (IS_WEBKIT && !DESK) {
+  let used = false; try { used = sessionStorage.getItem(USED) === "1"; } catch {}
+  if (used) $("#tabFile").closest("[role=tablist]").insertAdjacentHTML("beforebegin",
+    `<p class="capnote fresh" id="freshTab">Safari keeps the memory from videos this tab has already clipped, even after a reload, so the next one would stall. ` +
+    `<a class="btn sm" href="${esc(location.href)}" target="_blank" rel="noopener">Open a fresh tab</a></p>`);
+}
 if (DESK) checkUpdate();
 fillPresets("");
 if (innerWidth < 1000) $$(".grp[open]").forEach(d => { d.open = false; });   // phones: settings folded so the button and progress stay in reach

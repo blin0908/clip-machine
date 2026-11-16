@@ -11,9 +11,21 @@ export async function loadFormula() {
 }
 
 export const HOP = 0.5, SR = 16000;
-const HOOK_RX = () => /\?|\b(you|your|why|how|what if|imagine|never|stop|nobody|secret|here's|this is|the \w+est)\b|\d/gi;
-const LAUGH_RX = () => /\b(ha(ha)+|lol|lmao)\b|\[(laugh|laughter|laughing)[^\]]*\]|\((laugh|laughs|laughter|laughing)\)/gi;
-const esc = s => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const HOOK_RX = () => /[?？؟]|\b(you|your|why|how|what if|imagine|never|stop|nobody|secret|here's|this is|the \w+est)\b|\d/gi;
+const LAUGH_RX = () => /\b(ha(ha)+|lol|lmao)\b|\[(laugh|laughter|laughing)[^\]]*\]|\((laugh|laughs|laughter|laughing)\)|(?:ja){3,}|k{4,}|(?:rs){2,}|\bmdr\b|(?:ха){2,}|哈{2,}|呵{2,}|[ㅋㅎ]{2,}|(?:하){2,}|ه{3,}|(?:हा){2,}|(?:ฮ่า){2,}|ฮ่าๆ|[（(]笑[)）]/gi;
+// Is phrase k in lowercased text as a whole word? Unicode-aware (\b is ASCII-only here); scripts without word
+// spaces (Chinese, Japanese, Korean, Thai…) match anywhere. Mirrors has_key in clipper.py.
+const NOSPACE_KEY = /[\u0E00-\u0EFF\u1000-\u109F\u1780-\u17FF\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\uAC00-\uD7AF\u1100-\u11FF\u3130-\u318F]/;
+const WORD_CH = /[\p{L}\p{M}\p{N}_]/u;
+export function hasKey(low, k) {
+  if (NOSPACE_KEY.test(k)) return low.includes(k);
+  for (let i = low.indexOf(k); i >= 0; i = low.indexOf(k, i + 1)) {
+    const j = i + k.length;
+    if ((i === 0 || !WORD_CH.test(low[i - 1])) && (j >= low.length || !WORD_CH.test(low[j]))) return true;
+  }
+  return false;
+}
+const hypeIn = t => { const low = t.toLowerCase().replace(/\u2019/g, "'").replace(/i\u0307/g, "i"); return F.hypeEntries.filter(([k]) => hasKey(low, k)); };
 const count = (rx, t) => (t.match(rx) || []).length;
 const mean = a => a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0;
 
@@ -89,7 +101,7 @@ function units(segs, duration) {
   return u;
 }
 
-function features(s, e, text, words, loud, firstText, plat) {
+export function features(s, e, text, words, loud, firstText, plat) {
   const lo = Math.floor(s / HOP), hi = Math.max(Math.floor(e / HOP), lo + 1);
   let seg = Array.from(loud.slice(lo, hi)); if (!seg.length) seg = [0];
   const top = seg.slice().sort((a, b) => a - b).slice(-Math.max(1, Math.floor(seg.length / 3)));
@@ -98,10 +110,10 @@ function features(s, e, text, words, loud, firstText, plat) {
   const first1 = Array.from(loud.slice(lo, lo + 1 / HOP));
   const firstWords = words.filter(w => w.s < s + 1.5).map(w => w.w).join(" ");
   const low = text.toLowerCase();
-  const kw = F.hypeEntries.filter(([k]) => new RegExp("\\b" + esc(k) + "\\b").test(low));
+  const kw = hypeIn(text);
   const dur = Math.max(e - s, 1);
   const headWords = words.filter(w => w.s < s + 3).map(w => w.w).join(" ") || firstText.slice(0, 60);
-  const hookLang = count(HOOK_RX(), headWords) + F.hypeEntries.filter(([k]) => headWords.toLowerCase().includes(k)).reduce((a, [, w]) => a + w, 0);
+  const hookLang = count(HOOK_RX(), headWords) + hypeIn(headWords).reduce((a, [, w]) => a + w, 0);
   let gaps = 0; for (let i = 1; i < words.length; i++) { const g = words[i].s - words[i - 1].e; if (g > 0.7) gaps += g; }
   const lead = words.length ? words[0].s - s : 0;
   const [ls, hs] = plat.sweet;
@@ -116,7 +128,7 @@ function features(s, e, text, words, loud, firstText, plat) {
     midstart: F.midSet.has(firstWord) ? 1 : 0, deadair: (gaps + Math.max(lead, 0)) / dur, fit,
     sponsor: F.sponsor.filter(k => low.includes(k)).length,
     _kw: kw.sort((a, b) => b[1] - a[1]).slice(0, 4).map(([k]) => k), _hookLang: hookLang,
-    _firstHook: HOOK_RX().test(firstWords) || F.hypeEntries.some(([k]) => firstWords.toLowerCase().includes(k)),
+    _firstHook: HOOK_RX().test(firstWords) || hypeIn(firstWords).length > 0,
   };
 }
 
@@ -201,7 +213,7 @@ function checklist(z, f, dur, plat) {
 function title(m, segs) {
   const sents = segs.filter(s => s.s >= m.start - 0.3 && s.e <= m.end + 0.5 && s.text).map(s => s.text);
   if (!sents.length) return "Wait for it…";
-  const strength = t => F.hypeEntries.filter(([k]) => t.toLowerCase().includes(k)).reduce((a, [, w]) => a + w, 0)
+  const strength = t => hypeIn(t).reduce((a, [, w]) => a + w, 0)
     + count(HOOK_RX(), t) * 0.7 + (t.match(/!/g) || []).length - Math.abs(t.length - 45) / 25;
   let best = sents.reduce((a, b) => strength(b) > strength(a) ? b : a).replace(/^[\s.,-]+|[\s.,-]+$/g, "");
   best = best.replace(/\b(um+|uh+m?|erm|er|hmm+|ah+|mhm)\b,?\s*/gi, "").trim().replace(/^(and|but|so|because|like)[,\s]+/i, "");
@@ -364,19 +376,20 @@ export function buildASS(m, plat, keep, { captions = true, hook = true, cta = ""
   const font = captionFont(m).name;
   const L0 = captionLayout(plat, { format, size, pos }), k = L0.scale, R = L0.marginLR, n = x => Math.round(x * k);
   const hk = Math.min(1, L0.scale / (SIZES[size] || 1)), nh = x => Math.round(x * hk);   // headline ignores the size choice
+  // Boxes use BorderStyle 4 (one box per line, padded by a transparent outline): BorderStyle 3 notches around tall glyphs.
   // Encoding -1: full Unicode bidi across override tags (1 scrambles highlighted Arabic/Hebrew lines).
   const tail = `${L0.align},${R},${R},${L0.marginV},-1`;
   const CAPS = {
     pop:   `Style: Cap,${font},${n(84)},&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,0,0,0,0,100,100,0,0,1,${n(7)},${n(3)},${tail}`,
     clean: `Style: Cap,${font},${n(70)},&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,${n(4)},${n(2)},${tail}`,
-    boxed: `Style: Cap,${font},${n(72)},&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,3,${n(16)},0,${tail}`,
+    boxed: `Style: Cap,${font},${n(72)},&H00FFFFFF,&H00FFFFFF,&HFF000000,&H00000000,0,0,0,0,100,100,0,0,4,${n(16)},0,${tail}`,
   };
   const cap = CAPS[style] || CAPS.pop, HL = assColour(hl);
   let out = `[Script Info]\nScriptType: v4.00+\nPlayResX: ${L0.PX}\nPlayResY: ${L0.PY}\nWrapStyle: 0\n\n[V4+ Styles]\n` +
     `Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n` +
     `${cap}\n` +
-    `Style: Hook,${font},${nh(58)},&H00111111,&H00111111,&H00FFFFFF,&H00000000,0,0,0,0,100,100,0,0,3,${nh(20)},0,8,${R + 20},${R + 20},${L0.hookTop},-1\n` +
-    `Style: Cta,${font},${nh(58)},&H00111111,&H00111111,&H0000E6FF,&H00000000,0,0,0,0,100,100,0,0,3,${nh(20)},0,8,${R + 20},${R + 20},${L0.hookTop},-1\n\n` +
+    `Style: Hook,${font},${nh(58)},&H00111111,&H00111111,&HFFFFFFFF,&H00FFFFFF,0,0,0,0,100,100,0,0,4,${nh(20)},0,8,${R + 20},${R + 20},${L0.hookTop},-1\n` +
+    `Style: Cta,${font},${nh(58)},&H00111111,&H00111111,&HFF00E6FF,&H0000E6FF,0,0,0,0,100,100,0,0,4,${nh(20)},0,8,${R + 20},${R + 20},${L0.hookTop},-1\n\n` +
     `[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n`;
   const L = [];
   // headline / end card: braces would start an override tag, a backslash an escape (\N = line break), a newline a new event

@@ -201,6 +201,8 @@ label.t{display:block;font-size:12px;color:var(--mute);margin:12px 0 6px;font-we
 .tips ul{margin:0;padding-left:16px;font-size:13px;color:var(--mute)}
 .capnote{border-left:3px solid var(--slate);padding:2px 0 2px 10px;color:var(--text);font-size:13px;margin:0 0 14px}
 .capnote a{color:var(--slate)}
+.capnote.fresh{display:flex;flex-direction:column;align-items:flex-start;gap:8px}
+.capnote.fresh .btn{color:var(--text);min-height:44px}
 .err{color:#ff8a80;white-space:pre-wrap;font-size:14px;background:rgba(255,90,78,.08);border:1px solid rgba(255,90,78,.35);border-radius:var(--r);padding:14px}
 .err a{color:inherit;text-decoration:underline;font-weight:600}
 .card.msg{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:14px}
@@ -422,7 +424,7 @@ dialog::backdrop{background:rgba(0,0,0,.6)}
   <aside class="rail" id="setup" aria-label="Source and settings">
     <section>
       <div class="seg" role="tablist" aria-label="Video source"><button type="button" role="tab" id="tabFile" aria-selected="true" aria-controls="paneFile"><svg class="i"><use href="#i-up"/></svg>Upload</button><button type="button" role="tab" id="tabLink" aria-selected="false" aria-controls="paneLink"><svg class="i"><use href="#i-link"/></svg>Paste a link</button></div>
-      <div id="paneFile" role="tabpanel" aria-labelledby="tabFile"><label class="file"><input type="file" id="file" accept="video/*,audio/*" multiple><svg class="i"><use href="#i-up"/></svg><span id="fname">Add videos</span><small>Drop files anywhere, or choose. MP4, MOV or audio. English speech.</small></label></div>
+      <div id="paneFile" role="tabpanel" aria-labelledby="tabFile"><label class="file"><input type="file" id="file" accept="video/*,audio/*" multiple><svg class="i"><use href="#i-up"/></svg><span id="fname">Add videos</span><small>Drop files anywhere, or choose. MP4, MOV or audio.</small></label></div>
       <div id="paneLink" role="tabpanel" aria-labelledby="tabLink" class="hide">
         <form class="linkrow" id="linkForm" novalidate><input id="link" type="url" inputmode="url" enterkeyhint="go" placeholder="https://…/video.mp4" autocomplete="off" aria-label="Video link"><button type="submit" class="btn pri" id="linkGo">Get video</button></form>
         <p class="lhint">Links that end in .mp4 or .mov load right here. YouTube, TikTok and most video sites need the free desktop app.</p>
@@ -505,7 +507,7 @@ dialog::backdrop{background:rgba(0,0,0,.6)}
       <summary><span class="eyebrow">Speech</span><span class="sumv" id="langSum"></span></summary>
       <label class="t" for="lang">Spoken language</label>
       <select id="lang" class="lang"></select>
-      <p class="hint lang-hint">Clips in other languages are picked on energy, pacing and structure; the hype-word signals are English.</p>
+      <p class="hint lang-hint">Hype words and laughter are recognised in 15 languages, including Spanish, Hindi, Arabic, Japanese and Chinese. Other languages are scored on energy, pacing, the opening and structure.</p>
       <label class="t">Speech model</label>
       <div class="chips" data-k="model"><button class="chip" data-v="Xenova/whisper-tiny.en">Fastest · 40 MB</button><button class="chip" data-v="Xenova/whisper-base.en" aria-pressed="true">Balanced · 80 MB</button></div>
     </details>

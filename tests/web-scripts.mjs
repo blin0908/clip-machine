@@ -4,6 +4,7 @@
 //
 //   node web-scripts.mjs                  # Chrome
 //   BROWSER=firefox-desktop node web-scripts.mjs
+//   FULL=1 node web-scripts.mjs           # also saves each full-size frame as web-out/script-<name>.png
 import { chromium, webkit, firefox } from "playwright";
 import { createServer } from "node:http";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
@@ -36,7 +37,7 @@ const browser = await type.launch({ headless: true, ...launch });
 const page = await (await browser.newContext()).newPage();
 page.setDefaultTimeout(180000);
 await page.goto(BASE + "index.html");
-const results = await page.evaluate(async samples => {
+const results = await page.evaluate(async ([samples, FULL]) => {
   const { FFmpeg } = await import("./vendor/ffmpeg/index.js");
   const { toBlobURL } = await import("./vendor/util/index.js");
   const X = await import("./formula.js");
@@ -47,16 +48,18 @@ const results = await page.evaluate(async samples => {
   await ff.createDir("/fonts");
   await ff.writeFile("/fonts/Montserrat-Black.ttf", new Uint8Array(await (await fetch("./fonts/Montserrat-Black.ttf")).arrayBuffer()));
   const out = [];
-  for (const [k, ws] of Object.entries(samples)) {
+  const runs = [...Object.entries(samples).map(([k, ws]) => [k, ws, "pop"]),
+    ...["polish", "arabic", "hindi"].map(k => [k + " boxed", samples[k], "boxed"])];   // the box styles: no notches, RTL kept
+  for (const [k, ws, style] of runs) {
     // the last word highlighted: for right-to-left text it must sit at the left end of the line
     const m = { start: 0, end: 3, title: ws.join(" "), words: ws.map((w, i) => ({ w, s: 0.1 + i * 0.3, e: 0.35 + i * 0.3 })) };
     const f = X.captionFont(m);
     if (f.url && !(await ff.listDir("/fonts")).some(e => e.name === f.file))
       await ff.writeFile(`/fonts/${f.file}`, new Uint8Array(await (await fetch(f.url)).arrayBuffer()));
-    await ff.writeFile("/sub.ass", X.buildASS(m, X.F.platforms.tiktok, [[0, 3]], { style: "pop" }));
+    await ff.writeFile("/sub.ass", X.buildASS(m, X.F.platforms.tiktok, [[0, 3]], { style }));
     logs = [];
     const t = (0.1 + (ws.length - 1) * 0.3 + 0.1).toFixed(2);
-    const code = await ff.exec(["-loglevel", "verbose", "-f", "lavfi", "-i", "color=c=0x334455:s=1080x1920:d=3", "-vf", "ass=/sub.ass:fontsdir=/fonts,scale=360:640",
+    const code = await ff.exec(["-loglevel", "verbose", "-f", "lavfi", "-i", "color=c=0x334455:s=1080x1920:d=3", "-vf", "ass=/sub.ass:fontsdir=/fonts" + (FULL ? "" : ",scale=360:640"),
       "-ss", t, "-frames:v", "1", "/f.png"]);
     const png = code === 0 ? await ff.readFile("/f.png") : null;
     const missing = logs.filter(l => /Glyph 0x[0-9A-F]+ not found|fontselect: failed/i.test(l));
@@ -72,7 +75,9 @@ const results = await page.evaluate(async samples => {
   }
   ff.terminate();
   return out;
-}, SAMPLES);
+}, [SAMPLES, !!process.env.FULL]);
+await mkdir(OUT, { recursive: true });
+if (process.env.FULL) for (const r of results) if (r.url) await writeFile(join(OUT, `script-${r.k.replace(' ', '-')}.png`), Buffer.from(r.url.split(",")[1], "base64"));
 
 let fails = 0;
 for (const r of results) {
@@ -87,8 +92,9 @@ const sheet = await page.evaluate(async rs => {
   for (const [i, r] of rs.entries()) {
     if (!r.url) continue;
     const img = await createImageBitmap(await (await fetch(r.url)).blob());
-    g.drawImage(img, 0, 0, W, 130, (i % cols) * W, Math.floor(i / cols) * H, W, 130);            // headline
-    g.drawImage(img, 0, 300, W, 130, (i % cols) * W, Math.floor(i / cols) * H + 130, W, 130);   // caption
+    const k = img.width / W;                                                                         // 1, or 3 with FULL=1
+    g.drawImage(img, 0, 0, W * k, 130 * k, (i % cols) * W, Math.floor(i / cols) * H, W, 130);            // headline
+    g.drawImage(img, 0, 300 * k, W * k, 130 * k, (i % cols) * W, Math.floor(i / cols) * H + 130, W, 130);   // caption
   }
   const b = await c.convertToBlob({ type: "image/png" });
   return [...new Uint8Array(await b.arrayBuffer())];

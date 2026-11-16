@@ -53,7 +53,7 @@ YTDLP = _tool("yt-dlp")
 # Captions use the bundled Montserrat Black (OFL) so output looks the same on macOS, Windows, Linux and the web app.
 FONT_DIR = str(next((d for d in (HERE / "docs" / "fonts", HERE / "fonts") if (d / "Montserrat-Black.ttf").exists()),
                     HERE / "fonts"))
-VERSION = "1.5.0"            # shown in the app; the desktop app compares it with the latest GitHub release
+VERSION = "1.5.1"            # shown in the app; the desktop app compares it with the latest GitHub release
 CAP_FONT = "Montserrat Black"   # the family name stored inside Montserrat-Black.ttf (libass matches on it)
 # Other scripts use the matching Noto Sans Black (OFL), fetched the first time a clip needs it. The web app reads this
 # table from formula.json, so both engines pick the same font. Montserrat covers Latin (every European accent),
@@ -412,12 +412,80 @@ HYPE = {
     "you need to": 1.5, "stop": 1, "the reason": 1.5, "plot twist": 3, "honestly": 0.8,
     "i was wrong": 2.5, "changed my life": 2.5, "the craziest": 3, "scared": 1.5, "died": 1.5,
     "turns out": 2, "the problem": 1.5, "nobody talks about": 3, "why": 0.6, "how to": 1.2,
+    # the same reactions and story hooks in other languages (lowercase; matched as whole words,
+    # or anywhere in the text for Chinese, Japanese, Korean and Thai, which don't separate words)
+    # es
+    "dios mío": 3, "no puede ser": 3, "qué locura": 3, "increíble": 2.5, "madre mía": 3, "qué fuerte": 2.5,
+    "no me lo puedo creer": 3, "en serio": 2, "el secreto": 2, "nadie": 1.2, "la verdad es": 2,
+    # pt
+    "meu deus": 3, "não acredito": 3, "que loucura": 3, "inacreditável": 2.5, "caramba": 2, "o segredo": 2,
+    "ninguém": 1.2,
+    # fr
+    "mon dieu": 3, "c'est pas possible": 3, "c'est fou": 3, "j'y crois pas": 3, "incroyable": 2.5, "de ouf": 2.5,
+    "sérieux": 1.5, "le secret": 2, "personne ne": 1.2,
+    # de
+    "oh mein gott": 3, "das gibt's doch nicht": 3, "krass": 2.5, "wahnsinn": 2.5, "unglaublich": 2.5,
+    "verrückt": 2, "ernsthaft": 1.5, "geheimnis": 2, "niemand": 1.2,
+    # it
+    "mamma mia": 3, "non ci credo": 3, "pazzesco": 2.5, "incredibile": 2.5, "assurdo": 2, "il segreto": 2,
+    "nessuno": 1.2,
+    # ru
+    "боже мой": 3, "не может быть": 3, "офигеть": 2.5, "невероятно": 2.5, "капец": 2, "серьёзно": 1.5,
+    "серьезно": 1.5, "секрет": 2, "никто": 1.2, "вау": 1.5,
+    # tr
+    "aman allahım": 3, "inanamıyorum": 3, "inanılmaz": 2.5, "çılgın": 2, "kimse": 1.2,
+    # hi
+    "हे भगवान": 3, "क्या बात है": 3, "कमाल": 2.5, "गज़ब": 2.5, "गजब": 2.5, "अविश्वसनीय": 2.5, "पागल": 2,
+    "सच में": 1.5, "वाह": 1.5, "कोई नहीं": 1.2,
+    # ar
+    "يا إلهي": 3, "لا أصدق": 3, "مستحيل": 2.5, "مجنون": 2, "رهيب": 2, "واو": 1.5, "والله": 1.5, "السر": 2,
+    "لا أحد": 1.2,
+    # id
+    "ya ampun": 3, "nggak mungkin": 3, "gak mungkin": 3, "gila": 2, "luar biasa": 2, "rahasia": 2, "anjir": 1.5,
+    # vi
+    "trời ơi": 3, "không thể tin": 3, "quá đỉnh": 2.5, "bí mật": 2, "không ai": 1.2,
+    # ja
+    "信じられない": 3, "嘘でしょ": 3, "やばい": 2.5, "ヤバい": 2.5, "マジで": 2.5, "まじか": 2.5, "すごい": 2,
+    "最高": 1.5, "秘密": 2, "誰も": 1.2,
+    # ko
+    "말도 안 돼": 3, "세상에": 2.5, "대박": 2.5, "미쳤다": 2.5, "최고": 1.5, "비밀": 2, "아무도": 1.2,
+    # zh
+    "我的天": 3, "真的假的": 3, "太离谱": 3, "太離譜": 3, "天哪": 2.5, "不可能": 2.5, "绝了": 2.5, "厉害": 1.5,
+    "厲害": 1.5, "没有人": 1.2, "沒有人": 1.2,
 }
-HOOK_RX = re.compile(r"\?|\b(you|your|why|how|what if|imagine|never|stop|nobody|secret|here's|this is|the \w+est)\b|\d", re.I)
+# no word spaces in these scripts, so their phrases match anywhere. Mirrors NOSPACE_KEY in formula.js.
+_NOSPACE_KEY = re.compile("[\u0E00-\u0EFF\u1000-\u109F\u1780-\u17FF\u3040-\u30FF\u3400-\u4DBF"
+                          "\u4E00-\u9FFF\uF900-\uFAFF\uAC00-\uD7AF\u1100-\u11FF\u3130-\u318F]")
+
+
+def _word_ch(c):
+    return c == "_" or unicodedata.category(c)[0] in "LMN"
+
+
+def has_key(low, k):
+    """Is phrase k in lowercased text low as a whole word? (Unicode-aware; plain \\b is ASCII-only in JavaScript.)"""
+    if _NOSPACE_KEY.search(k):
+        return k in low
+    i = low.find(k)
+    while i >= 0:
+        j = i + len(k)
+        if (i == 0 or not _word_ch(low[i - 1])) and (j >= len(low) or not _word_ch(low[j])):
+            return True
+        i = low.find(k, i + 1)
+    return False
+
+
+def _hype(text):
+    low = text.lower().replace("\u2019", "'").replace("i\u0307", "i")   # either apostrophe; Turkish İ lowercases to i + dot
+    return [(k, w) for k, w in HYPE.items() if has_key(low, k)]
+HOOK_RX = re.compile(r"[?？؟]|\b(you|your|why|how|what if|imagine|never|stop|nobody|secret|here's|this is|the \w+est)\b|\d", re.I)
 MIDSTART = {"and", "but", "so", "because", "cause", "or", "then", "which", "that", "also", "um", "uh", "like"}
 SPONSOR = ["sponsored by", "use code", "link in the description", "smash that like", "subscribe",
            "today's sponsor", "promo code", "patreon", "this video is brought"]
-LAUGH = re.compile(r"\b(ha(ha)+|lol|lmao)\b|\[(laugh|laughter|laughing)[^\]]*\]|\((laugh|laughs|laughter|laughing)\)", re.I)
+LAUGH = re.compile(r"\b(ha(ha)+|lol|lmao)\b|\[(laugh|laughter|laughing)[^\]]*\]|\((laugh|laughs|laughter|laughing)\)"
+                   # laughter as other languages write it: jajaja, kkkk, rsrs, mdr, хаха, 哈哈, 呵呵, ㅋㅋ, 하하, ههه, हाहा, ฮ่าๆ, (笑)
+                   r"|(?:ja){3,}|k{4,}|(?:rs){2,}|\bmdr\b|(?:ха){2,}|哈{2,}|呵{2,}|[ㅋㅎ]{2,}|(?:하){2,}|ه{3,}|(?:हा){2,}"
+                   r"|(?:ฮ่า){2,}|ฮ่าๆ|[（(]笑[)）]", re.I)
 STOP = set("""the a an and or but if so to of in on at for with is are was were be been it this that
 these those i you he she we they me my your our their his her its not no yes do does did have has had
 just like really very can could would should will gonna wanna yeah okay right know think going
@@ -472,11 +540,11 @@ def _features(s, e, text, words, loud, first_text, plat):
     first1 = loud[lo: lo + int(1 / HOP)] if lo < len(loud) else np.zeros(1)
     first_words = " ".join(w["w"] for w in words if w["s"] < s + 1.5)
     low = text.lower()
-    kw_hits = [(k, w) for k, w in HYPE.items() if re.search(r"\b" + re.escape(k) + r"\b", low)]
+    kw_hits = _hype(text)
     dur = max(e - s, 1)
     # first ~3 s of speech: the hook window
     head_words = " ".join(w["w"] for w in words if w["s"] < s + 3.0) or first_text[:60]
-    hook_lang = len(HOOK_RX.findall(head_words)) + sum(w for k, w in HYPE.items() if k in head_words.lower())
+    hook_lang = len(HOOK_RX.findall(head_words)) + sum(w for _, w in _hype(head_words))
     # dead air: silence between words longer than 0.7 s
     gaps = [b["s"] - a["e"] for a, b in zip(words, words[1:]) if b["s"] - a["e"] > 0.7]
     lead = (words[0]["s"] - s) if words else 0
@@ -500,7 +568,7 @@ def _features(s, e, text, words, loud, first_text, plat):
         "sponsor": sum(1 for k in SPONSOR if k in low),
         "_kw": [k for k, _ in sorted(kw_hits, key=lambda x: -x[1])[:4]],
         "_hook_lang": hook_lang,
-        "_first_hook": bool(HOOK_RX.search(first_words)) or any(k in first_words.lower() for k in HYPE),
+        "_first_hook": bool(HOOK_RX.search(first_words)) or bool(_hype(first_words)),
     }
 
 
@@ -624,8 +692,7 @@ def _title(m, segs):
     if not sents:
         return "Wait for it…"
     def strength(t):
-        low = t.lower()
-        return (sum(w for k, w in HYPE.items() if k in low) + len(HOOK_RX.findall(t)) * 0.7
+        return (sum(w for _, w in _hype(t)) + len(HOOK_RX.findall(t)) * 0.7
                 + t.count("!") - abs(len(t) - 45) / 25)
     best = max(sents, key=strength).strip(" .,-")
     best = re.sub(r"\b(um+|uh+m?|erm|er|hmm+|ah+|mhm)\b,?\s*", "", best, flags=re.I).strip()
@@ -865,6 +932,8 @@ def write_ass(m: Moment, path: Path, plat: dict, keep, captions=True, hook=True,
     k = L["scale"]; R = L["marginLR"]
     n = lambda x: _rnd(x * k)
     hk = min(1, k / SIZES.get(look.get("size", "m"), 1)); nh = lambda x: _rnd(x * hk)
+    # Boxes (headline, end card, Boxed captions) use BorderStyle 4: one box per line in BackColour, with a transparent
+    # glyph outline setting the padding. BorderStyle 3 boxes each glyph, so tall Arabic and Devanagari glyphs notch the edge.
     # Encoding -1 makes libass run full Unicode bidi across override tags; with 1 it
     # splits Arabic/Hebrew lines at each highlight and lays the pieces out left to right.
     tail = f"{L['align']},{R},{R},{L['marginV']},-1"
@@ -872,7 +941,7 @@ def write_ass(m: Moment, path: Path, plat: dict, keep, captions=True, hook=True,
     cap_style = {
         "pop":   f"Style: Cap,{font},{n(84)},&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,0,0,0,0,100,100,0,0,1,{n(7)},{n(3)},{tail}",
         "clean": f"Style: Cap,{font},{n(70)},&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,{n(4)},{n(2)},{tail}",
-        "boxed": f"Style: Cap,{font},{n(72)},&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,3,{n(16)},0,{tail}",
+        "boxed": f"Style: Cap,{font},{n(72)},&H00FFFFFF,&H00FFFFFF,&HFF000000,&H00000000,0,0,0,0,100,100,0,0,4,{n(16)},0,{tail}",
     }[style]
     HL = ass_colour(look.get("hl"))
     hdr = f"""[Script Info]
@@ -884,8 +953,8 @@ WrapStyle: 0
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 {cap_style}
-Style: Hook,{font},{nh(58)},&H00111111,&H00111111,&H00FFFFFF,&H00000000,0,0,0,0,100,100,0,0,3,{nh(20)},0,8,{R + 20},{R + 20},{L['hookTop']},-1
-Style: Cta,{font},{nh(58)},&H00111111,&H00111111,&H0000E6FF,&H00000000,0,0,0,0,100,100,0,0,3,{nh(20)},0,8,{R + 20},{R + 20},{L['hookTop']},-1
+Style: Hook,{font},{nh(58)},&H00111111,&H00111111,&HFFFFFFFF,&H00FFFFFF,0,0,0,0,100,100,0,0,4,{nh(20)},0,8,{R + 20},{R + 20},{L['hookTop']},-1
+Style: Cta,{font},{nh(58)},&H00111111,&H00111111,&HFF00E6FF,&H0000E6FF,0,0,0,0,100,100,0,0,4,{nh(20)},0,8,{R + 20},{R + 20},{L['hookTop']},-1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
