@@ -304,7 +304,9 @@ def del_logo():
 
 @app.get("/api/info")
 def info():
-    return jsonify(desktop=True, version=clipper.VERSION, models=["tiny", "base", "small"], formats=list(clipper.FORMATS))
+    # jobs_dir: where clips are written, so mcp_server.py can hand agents real file paths
+    return jsonify(desktop=True, version=clipper.VERSION, models=["tiny", "base", "small"], formats=list(clipper.FORMATS),
+                   jobs_dir=str(JOBS.resolve()))
 
 
 @app.get("/api/jobs")
