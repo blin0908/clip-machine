@@ -67,6 +67,43 @@ The desktop app opens the same workspace in your browser, but does the work on y
 
 Command line: `.venv/bin/python clipper.py <url-or-file> -p tiktok -n 5 --style boxed --logo logo.png --logo-pos tr` (Windows: `.venv\Scripts\python`).
 
+### Let Claude or Codex clip for you (MCP)
+
+`mcp_server.py` lets an AI agent drive the desktop app: start a job from a file or link, wait for it, read the clips with their scores and reasons, re-render one with a new look, and pack the .zip. It connects to the running app (or starts it in the background if none is running) using the access key in `.access_key`, and needs nothing beyond the normal install.
+
+Tools: `new_job` (file or link; platform, number of clips, version, format, caption style, language, end card…), `job_status` (can wait until done), `list_clips` (scores, reasons, titles, post text, file paths), `rerender_clip` (style, highlight colour, size, position, frame, layout, trim, headline), `export_zip` (returns the .zip path) and `list_jobs`.
+
+Replace `/path/to/Clip Machine` with your folder (on Windows the Python is `.venv\Scripts\python.exe`).
+
+**Claude Code**
+
+```bash
+claude mcp add clip-machine -- "/path/to/Clip Machine/.venv/bin/python" "/path/to/Clip Machine/mcp_server.py"
+```
+
+**Claude Desktop**: Settings → Developer → Edit Config, then add to `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "clip-machine": {
+      "command": "/path/to/Clip Machine/.venv/bin/python",
+      "args": ["/path/to/Clip Machine/mcp_server.py"]
+    }
+  }
+}
+```
+
+**Codex**: add to `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.clip-machine]
+command = "/path/to/Clip Machine/.venv/bin/python"
+args = ["/path/to/Clip Machine/mcp_server.py"]
+```
+
+Then ask, for example: *"Clip ~/Videos/podcast.mp4 into 5 TikToks, re-render the best one with clean captions, and give me the zip."* To use an app on another computer, set `CLIP_MCP_URL` (e.g. `http://192.168.1.20:8765`) and `CLIP_KEY` in the server's environment.
+
 ## The workspace
 
 Built for clipping every day, not once:
@@ -88,7 +125,7 @@ Built for clipping every day, not once:
 - `docs/`: the web app (GitHub Pages; `sw.js` makes it work offline after the first run). ffmpeg.wasm for editing, transformers.js Whisper for speech, and `formula.js`, a port of the scoring in `clipper.py`. `formula.json` is generated from `clipper.py` by `scripts/export_formula.py` (the release build refuses to package if it has drifted), so both apps score clips the same way.
 - `docs/app.js` (pipeline, queue, board, transcript, presets), `docs/studio.js` (the studio) and `docs/zip.js` (the .zip export) are the interface for both apps. Served by the desktop app, the same page sends videos and edits to its native engine instead of ffmpeg.wasm.
 - `docs/search.js` + `docs/search-worker.js` (web) and `search.py` (desktop): find clips by description, with the same pinned model ([multilingual-e5-small](https://huggingface.co/Xenova/multilingual-e5-small), 8-bit) and the same windows and thresholds in both apps.
-- `clipper.py`: the engine and CLI. `app.py`: the local server for the desktop app (it serves `docs/`; `index.html` is the previous page, kept at `/classic`).
-- `tests/`: run everything with `zsh tests/run_all.sh` (`quick` for the 30-second unit tier, `all` to add Firefox and Safari's engine). Fast tiers: `test_server.py` (access key, input validation, uploads, interrupted edits, file paths, results log), `test_engine_units.py` (pause cutting, quality-gate rules, helpers), `formula.test.mjs` (the web scoring, trimming and caption logic in every script, including checks that it cuts pauses and writes subtitle files exactly like the desktop engine, and that the .zip export is valid) and `ci_smoke.py` (a real engine run on generated media, no Mac voices needed). Slow tiers: `make_media.sh` builds a stress-test media set (portrait, 60 fps, odd sizes, silent, no audio, audio only, corrupt, 25 min…), `engine_stress.py` runs the engine against it, and `web-stress.mjs` runs the web app in Chrome, Safari's engine (WebKit) and Firefox via Playwright, plus phone viewports and an offline rerun; `web-pro.mjs` runs the workspace workflow (queue, board keys, kept filter, .zip, transcript clips, formats, undo, presets, cancel, phone layout). `web-find.mjs` checks find-by-description: the browser and desktop engines score the same windows (within a documented tolerance) and offer the same clips for a fixed transcript in English, Spanish and Japanese (`search_parity.py` holds the desktop side's ranking checks), then searches a real run of `talk_40s.mp4` from the clips board. `web-safari-reload.mjs` checks that Safari's engine can clip again after a reload (through the fresh tab it offers), `web-scripts.mjs` renders captions in 11 writing systems through ffmpeg.wasm and fails on any missing glyph; `web-bench.mjs` times each stage of the web app; `harness/` holds the speech-model speed test and the Safari memory-limit reproduction. GitHub Actions runs the fast tiers and the smoke test on Windows, macOS and Linux on every push.
+- `clipper.py`: the engine and CLI. `app.py`: the local server for the desktop app (it serves `docs/`; `index.html` is the previous page, kept at `/classic`). `mcp_server.py`: the MCP server for AI agents, a client of `app.py`'s API.
+- `tests/`: run everything with `zsh tests/run_all.sh` (`quick` for the 30-second unit tier, `all` to add Firefox and Safari's engine). Fast tiers: `test_server.py` (access key, input validation, uploads, interrupted edits, file paths, results log), `test_engine_units.py` (pause cutting, quality-gate rules, helpers), `formula.test.mjs` (the web scoring, trimming and caption logic in every script, including checks that it cuts pauses and writes subtitle files exactly like the desktop engine, and that the .zip export is valid) and `ci_smoke.py` (a real engine run on generated media, no Mac voices needed). Slow tiers: `test_mcp.py` drives every MCP tool against an isolated app; `make_media.sh` builds a stress-test media set (portrait, 60 fps, odd sizes, silent, no audio, audio only, corrupt, 25 min…), `engine_stress.py` runs the engine against it, and `web-stress.mjs` runs the web app in Chrome, Safari's engine (WebKit) and Firefox via Playwright, plus phone viewports and an offline rerun; `web-pro.mjs` runs the workspace workflow (queue, board keys, kept filter, .zip, transcript clips, formats, undo, presets, cancel, phone layout). `web-find.mjs` checks find-by-description: the browser and desktop engines score the same windows (within a documented tolerance) and offer the same clips for a fixed transcript in English, Spanish and Japanese (`search_parity.py` holds the desktop side's ranking checks), then searches a real run of `talk_40s.mp4` from the clips board. `web-safari-reload.mjs` checks that Safari's engine can clip again after a reload (through the fresh tab it offers), `web-scripts.mjs` renders captions in 11 writing systems through ffmpeg.wasm and fails on any missing glyph; `web-bench.mjs` times each stage of the web app; `harness/` holds the speech-model speed test and the Safari memory-limit reproduction. GitHub Actions runs the fast tiers and the smoke test on Windows, macOS and Linux on every push.
 
 Only clip videos you own or have permission to repost. MIT licensed; see [LICENSE](LICENSE) for third-party notices.

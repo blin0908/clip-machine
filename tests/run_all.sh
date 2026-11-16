@@ -14,6 +14,7 @@ step "web formula tests";        node --test tests/formula.test.mjs
 step "cross-platform smoke";     $PY tests/ci_smoke.py
 [[ "$1" == "quick" ]] && { print -P "\n%F{green}Quick tests passed.%f"; exit 0; }
 [[ -d tests/media ]] || { step "building test media"; zsh tests/make_media.sh; }
+step "MCP server";               $PY -m unittest tests/test_mcp.py
 step "engine stress (17 cases)"; $PY tests/engine_stress.py | tee tests/engine_last.log; grep -q "17/17 passed" tests/engine_last.log
 cd tests
 B=chrome-desktop,chrome-android
