@@ -99,7 +99,9 @@ try {
   await page.click("#stReset");
   check((await page.locator("#stLen").textContent()) === len0, "Reset restores the original cut", await page.locator("#stLen").textContent());
 
-  // ---- timeline drag moves the out point
+  // ---- timeline drag moves the out point (after two frames, so the scan sees the timeline redrawn by Reset)
+  await page.evaluate(() => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))));
+  await page.waitForTimeout(250);
   const box = await page.locator("#stTl").boundingBox();
   const outX = await page.evaluate(() => {
     const cv = document.querySelector("#stTl"); const r = cv.getBoundingClientRect();

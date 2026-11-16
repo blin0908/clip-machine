@@ -53,7 +53,7 @@ YTDLP = _tool("yt-dlp")
 # Captions use the bundled Montserrat Black (OFL) so output looks the same on macOS, Windows, Linux and the web app.
 FONT_DIR = str(next((d for d in (HERE / "docs" / "fonts", HERE / "fonts") if (d / "Montserrat-Black.ttf").exists()),
                     HERE / "fonts"))
-VERSION = "1.5.1"            # shown in the app; the desktop app compares it with the latest GitHub release
+VERSION = "1.5.2"            # shown in the app; the desktop app compares it with the latest GitHub release
 CAP_FONT = "Montserrat Black"   # the family name stored inside Montserrat-Black.ttf (libass matches on it)
 # Other scripts use the matching Noto Sans Black (OFL), fetched the first time a clip needs it. The web app reads this
 # table from formula.json, so both engines pick the same font. Montserrat covers Latin (every European accent),
@@ -292,7 +292,8 @@ def join_words(raw, parts=None):
     for i, p in enumerate(parts):
         if i:
             a, b = str(raw[i - 1]), str(raw[i])
-            out += "" if (a and _NOSPACE.match(a[-1])) or (b and _NOSPACE.match(b[0])) else " "
+            tight = (a and _NOSPACE.match(a[-1])) or (b and _NOSPACE.match(b[0])) or (a and b and (b[0] in "'\u2019" or a[-1] in "'\u2019"))
+            out += "" if tight else " "   # no space by an apostrophe split off by the speech model (s'est, l'équipe)
         out += p
     return out
 
@@ -515,12 +516,43 @@ class Moment:
     signals: dict = field(default_factory=dict)   # each scoring signal relative to this video (z-score), for learning from results
 
 
+CLAUSE_END = re.compile("[,;:\uFF0C\u3001\uFF1B\uFF1A][\"'\u2019\u201D)\\]\u300D\u300F\u00BB]*$")
+
+
+def _split_long(seg):
+    """Whisper can return one long segment for a stretch of speech with only commas in it (common in Chinese and
+    Japanese). Clip boundaries snap to segments, so split anything over 12 s at sentence ends, clauses and pauses.
+    Mirrors splitLong in formula.js."""
+    ws = seg.get("words") or []
+    if seg["e"] - seg["s"] <= 12 or not ws:
+        return [seg]
+    out, cur = [], []
+
+    def flush():
+        if cur:
+            out.append({"s": cur[0]["s"], "e": cur[-1]["e"], "text": join_words([w["w"] for w in cur]), "words": list(cur)})
+            cur.clear()
+    for w in ws:
+        if cur and (w["s"] - cur[-1]["e"] > 1.0 or w["s"] - cur[0]["s"] > 12):
+            flush()
+        cur.append(w)
+        if SENT_END.search(w["w"]) or (CLAUSE_END.search(w["w"]) and w["e"] - cur[0]["s"] >= 5):
+            flush()
+    flush()
+    return out
+
+
 def _units(segs, duration):
-    """Sentence-ish units to snap clip boundaries to. Falls back to 5 s blocks for no-speech video."""
-    units = [s for s in segs if s["e"] > s["s"]]
+    """Sentence-ish units to snap clip boundaries to. Falls back to 5 s blocks (with their words) when there are
+    too few, e.g. for a video without speech."""
+    units = [u for s in segs if s["e"] > s["s"] for u in _split_long(s)]
     if len(units) < 4:
-        units = [{"s": t, "e": min(duration, t + 5), "text": "", "words": []}
-                 for t in np.arange(0, max(duration - 1, 1), 5.0)]
+        words = [w for s in segs for w in (s.get("words") or [])]
+        units = []
+        for t in np.arange(0, max(duration - 1, 1), 5.0):
+            t = float(t)
+            ws = [w for w in words if t <= w["s"] < t + 5]
+            units.append({"s": t, "e": min(duration, t + 5), "text": join_words([w["w"] for w in ws]), "words": ws})
     return units
 
 
@@ -614,13 +646,17 @@ def find_moments(segs, loud, duration, n=5, min_len=None, max_len=None, platform
     keys = list(WEIGHTS)
     mat = np.array([[c[4][k] for k in keys] for c in cands], dtype=float)
     mu, sd = mat.mean(0), mat.std(0)
-    sd[sd == 0] = 1
+    # a signal that doesn't vary across candidates is neutral; float32 rounding leaves a ~1e-9 spread that would
+    # otherwise be blown up into a ranking (and disagree with formula.js, which works in float64)
+    flat = sd <= 1e-6 * np.maximum(1, np.abs(mu))
+    sd[flat] = 1
     z = (mat - mu) / sd
+    z[:, flat] = 0
     for k in RAW:
         z[:, keys.index(k)] = mat[:, keys.index(k)]
     scores = z @ np.array([WEIGHTS[k] for k in keys])
 
-    order = np.argsort(-scores)
+    order = np.argsort(-scores, kind="stable")   # ties keep candidate order, like the stable sort in formula.js
     picked: list[Moment] = []
     for idx in order:
         s, e, text, words, f = cands[idx]
@@ -698,7 +734,13 @@ def _title(m, segs):
     best = re.sub(r"\b(um+|uh+m?|erm|er|hmm+|ah+|mhm)\b,?\s*", "", best, flags=re.I).strip()
     best = re.sub(r"^(and|but|so|because|like)[,\s]+", "", best, flags=re.I)
     best = best[0].upper() + best[1:] if best else best
-    if len(best) > 60:
+    if _NOSPACE.search(best) and len(best) > 30:   # Chinese/Japanese/Thai: ~2x wider per character, no spaces to cut at
+        cut = best[:30]
+        i = max(cut.rfind(c) for c in (",", "，", "、", "；", ";"))
+        if i >= 10:
+            cut = cut[:i]
+        best = cut.rstrip(",，、；;:： -\t\n") + "…"
+    elif len(best) > 60:
         best = best[:60].rsplit(" ", 1)[0].rstrip(",;:-") + "…"
     return best
 

@@ -83,7 +83,10 @@ export function segmentsFromWords(words) {
 const NOSPACE = /[\u0E00-\u0EFF\u1000-\u109F\u1780-\u17FF\u2E80-\u2FFF\u3000-\u303F\u3040-\u30FF\u3100-\u312F\u3190-\u31FF\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\uFF00-\uFF60]/;
 // A sentence ends on . ! ? (or 。！？ ؟ ।), optionally followed by closing quotes or brackets. Mirrors clipper.SENT_END.
 export const SENT_END = /[.!?\u3002\uFF01\uFF1F\u061F\u0964]["'\u2019\u201D)\]\u300D\u300F\u00BB]*$/;
-export const wordGap = (a, b) => NOSPACE.test(String(a).slice(-1)) || NOSPACE.test(String(b).charAt(0)) ? "" : " ";
+// No space either side of an apostrophe split off by the speech model (French s'est, l'équipe, English don't).
+const APOS = /['\u2019]/;
+export const wordGap = (a, b) => { a = String(a); b = String(b);
+  return NOSPACE.test(a.slice(-1)) || NOSPACE.test(b.charAt(0)) || (a && b && (APOS.test(b.charAt(0)) || APOS.test(a.slice(-1)))) ? "" : " "; };
 /** Join words (raw) or display parts built from them (parts, e.g. with highlight tags), spacing by the raw words. */
 export function joinWords(raw, parts = raw) {
   let out = "";
@@ -95,9 +98,32 @@ export function joinWords(raw, parts = raw) {
 const isFiller = w => F.fillerSet.has(w.w.toLowerCase().replace(/[^a-z]/g, ""));
 export const spoken = ws => ws.filter(w => !isFiller(w));
 
-function units(segs, duration) {
-  let u = segs.filter(s => s.e > s.s);
-  if (u.length < 4) { u = []; for (let t = 0; t < Math.max(duration - 1, 1); t += 5) u.push({ s: t, e: Math.min(duration, t + 5), text: "", words: [] }); }
+const CLAUSE_END = /[,;:\uFF0C\u3001\uFF1B\uFF1A]["'\u2019\u201D)\]\u300D\u300F\u00BB]*$/;
+// Long segments (Whisper can return one for a comma-only stretch of Chinese or Japanese) are split at sentence ends,
+// clauses and pauses, since clip boundaries snap to segments. Mirrors clipper._split_long.
+function splitLong(sg) {
+  const ws = sg.words || [];
+  if (sg.e - sg.s <= 12 || !ws.length) return [sg];
+  const out = []; let cur = [];
+  const flush = () => { if (cur.length) out.push({ s: cur[0].s, e: cur.at(-1).e, text: joinWords(cur.map(w => w.w)), words: cur }); cur = []; };
+  for (const w of ws) {
+    if (cur.length && (w.s - cur.at(-1).e > 1.0 || w.s - cur[0].s > 12)) flush();
+    cur.push(w);
+    if (SENT_END.test(w.w) || (CLAUSE_END.test(w.w) && w.e - cur[0].s >= 5)) flush();
+  }
+  flush();
+  return out;
+}
+export function units(segs, duration) {
+  let u = segs.filter(s => s.e > s.s).flatMap(splitLong);
+  if (u.length < 4) {          // too few (e.g. no speech): 5 s blocks, with their words
+    const words = segs.flatMap(s => s.words || []);
+    u = [];
+    for (let t = 0; t < Math.max(duration - 1, 1); t += 5) {
+      const ws = words.filter(w => w.s >= t && w.s < t + 5);
+      u.push({ s: t, e: Math.min(duration, t + 5), text: joinWords(ws.map(w => w.w)), words: ws });
+    }
+  }
   return u;
 }
 
@@ -158,8 +184,9 @@ export function findMoments(segs, loud, duration, n, platformKey, version) {
   const cols = keys.map(k => cands.map(c => c.f[k]));
   const z = cands.map(() => ({}));
   keys.forEach((k, ki) => {
-    const col = cols[ki], m = mean(col), sd = Math.sqrt(mean(col.map(x => (x - m) ** 2))) || 1;
-    cands.forEach((c, ci) => { z[ci][k] = raw.has(k) ? col[ci] : (col[ci] - m) / sd; });
+    const col = cols[ki], m = mean(col), sd = Math.sqrt(mean(col.map(x => (x - m) ** 2)));
+    const flat = sd <= 1e-6 * Math.max(1, Math.abs(m));     // doesn't vary: neutral (mirrors clipper.find_moments)
+    cands.forEach((c, ci) => { z[ci][k] = raw.has(k) ? col[ci] : flat ? 0 : (col[ci] - m) / sd; });
   });
   cands.forEach((c, ci) => { c.z = z[ci]; c.score = keys.reduce((a, k) => a + F.weights[k] * z[ci][k], 0); });
   cands.sort((a, b) => b.score - a.score);
@@ -210,7 +237,7 @@ function checklist(z, f, dur, plat) {
   ];
 }
 
-function title(m, segs) {
+export function title(m, segs) {
   const sents = segs.filter(s => s.s >= m.start - 0.3 && s.e <= m.end + 0.5 && s.text).map(s => s.text);
   if (!sents.length) return "Wait for it…";
   const strength = t => hypeIn(t).reduce((a, [, w]) => a + w, 0)
@@ -218,7 +245,11 @@ function title(m, segs) {
   let best = sents.reduce((a, b) => strength(b) > strength(a) ? b : a).replace(/^[\s.,-]+|[\s.,-]+$/g, "");
   best = best.replace(/\b(um+|uh+m?|erm|er|hmm+|ah+|mhm)\b,?\s*/gi, "").trim().replace(/^(and|but|so|because|like)[,\s]+/i, "");
   best = best.charAt(0).toUpperCase() + best.slice(1);
-  if (best.length > 60) best = best.slice(0, 60).replace(/\s+\S*$/, "").replace(/[,;:-]+$/, "") + "…";
+  if (NOSPACE.test(best) && best.length > 30) {            // Chinese/Japanese/Thai: ~2x wider per character, no spaces to cut at
+    let cut = best.slice(0, 30); const i = Math.max(...[",", "，", "、", "；", ";"].map(c => cut.lastIndexOf(c)));
+    if (i >= 10) cut = cut.slice(0, i);
+    best = cut.replace(/[,，、；;:：\s-]+$/, "") + "…";
+  } else if (best.length > 60) best = best.slice(0, 60).replace(/\s+\S*$/, "").replace(/[,;:-]+$/, "") + "…";
   return best;
 }
 

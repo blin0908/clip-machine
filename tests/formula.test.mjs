@@ -371,3 +371,61 @@ print(json.dumps(out))`], { input: JSON.stringify(texts), encoding: "utf8" }).tr
   assert.equal(js[14][0], 0, "hello/eyes/studied are not hell/yes/died");
   assert.equal(js[14][2], 0); assert.equal(js[16][0], 0, "whatever is not what");
 });
+
+test("long comma-only segments (common in Chinese) are split the same way in both engines and keep their words", () => {
+  const sent = ["今天我想", "聊聊工作,", "星期一我", "先看日历,", "然后写清单,", "接着看邮件,"], hype = ["我的天,", "真的假的,", "太离谱了,", "不可能,"];
+  const words = []; let t = 0;
+  const say = list => list.forEach(w => { words.push({ w, s: +t.toFixed(2), e: +(t + 0.7).toFixed(2) }); t += 0.8; });
+  for (let i = 0; i < 4; i++) say(sent); say(hype); for (let i = 0; i < 3; i++) say(sent);
+  const cut = [0, 20, 30, words.length];                  // three long Whisper-style segments, no sentence ends
+  const segs = cut.slice(0, -1).map((a, i) => { const ws = words.slice(a, cut[i + 1]);
+    return { s: ws[0].s, e: ws.at(-1).e, text: X.joinWords(ws.map(w => w.w)), words: ws }; });
+  const dur = Math.ceil(t) + 1, loud = Array.from({ length: dur * 2 }, (_, i) => +(0.5 + 0.3 * Math.sin(i / 3)).toFixed(3));
+  const js = X.findMoments(segs, Float32Array.from(loud), dur, 2, "tiktok", "short");
+  const py = JSON.parse(execFileSync(PY, ["-c", `
+import sys, json; sys.path.insert(0, ${JSON.stringify(ROOT)})
+import numpy as np, clipper
+a = json.loads(sys.stdin.read())
+ms = clipper.find_moments(a["segs"], np.array(a["loud"], dtype=np.float32), a["dur"], 2, platform="tiktok", version="short")
+print(json.dumps([dict(start=m.start, end=m.end, text=m.text, hype=m.signals.get("hype")) for m in ms]))`], { input: JSON.stringify({ segs, loud, dur }), encoding: "utf8" }).trim().split("\n").at(-1));
+  assert.equal(js.length, py.length);
+  js.forEach((m, i) => { assert.ok(Math.abs(m.start - py[i].start) < 0.02 && Math.abs(m.end - py[i].end) < 0.02, `${m.start}-${m.end} vs ${py[i].start}-${py[i].end}`);
+    assert.equal(m.text, py[i].text); assert.ok(m.text.length > 0, "moments keep their words"); });
+  assert.ok(js.some(m => /我的天/.test(m.text)), "the reaction stretch is picked");
+});
+
+test("flat loudness and tied scores pick the same clips in both engines", () => {
+  // float32 rounding leaves a ~1e-9 spread in Python that used to be blown up into a ranking; ties need a stable sort
+  const segs = []; let t = 0;
+  for (let i = 0; i < 12; i++) {
+    const ws = ["this", "is", "sentence", "number", String(i), i === 6 ? "no way!" : "okay."].map(w => { const o = W(w, +t.toFixed(2), +(t + 0.5).toFixed(2)); t += 0.6; return o; });
+    segs.push({ s: ws[0].s, e: ws.at(-1).e, text: ws.map(w => w.w).join(" "), words: ws }); t += 0.3;
+  }
+  const dur = Math.ceil(t) + 1, loud = Array.from({ length: dur * 2 }, () => 0.1);
+  const js = X.findMoments(segs, Float32Array.from(loud), dur, 3, "tiktok", "short").map(m => [m.start, m.end]);
+  const py = JSON.parse(execFileSync(PY, ["-c", `
+import sys, json; sys.path.insert(0, ${JSON.stringify(ROOT)})
+import numpy as np, clipper
+a = json.loads(sys.stdin.read())
+print(json.dumps([[m.start, m.end] for m in clipper.find_moments(a["segs"], np.array(a["loud"], dtype=np.float32), a["dur"], 3, platform="tiktok", version="short")]))`],
+    { input: JSON.stringify({ segs, loud, dur }), encoding: "utf8" }).trim().split("\n").at(-1));
+  assert.deepEqual(js, py);
+});
+
+test("apostrophes the speech model splits off and long Chinese titles come out the same in both engines", () => {
+  const joins = [["il", "s", "'est", "passé"], ["l'", "équipe"], ["I", "don", "'t", "know"], ["c’", "est", "fou"], ["rock", "and", "roll"]];
+  const segs = [{ s: 0, e: 9, text: "今天我想聊聊我是怎麼安排一周工作的,星期一我通常先看一下日曆,然後我寫一個重要任務的清單,接著我看郵件" },
+                { s: 10, e: 14, text: "我的天,真的假的,太離譜了,這不可能,太厲害了,真的太厲害了,我完全不敢相信這是真的" },
+                { s: 15, e: 19, text: "Et là, il s'est passé quelque chose, mon dieu, c'est pas possible, vraiment incroyable" }];
+  const js = { joins: joins.map(w => X.joinWords(w)), titles: segs.map(sg => X.title({ start: sg.s, end: sg.e }, [sg])) };
+  const py = JSON.parse(execFileSync(PY, ["-c", `
+import sys, json; sys.path.insert(0, ${JSON.stringify(ROOT)})
+import clipper
+a = json.loads(sys.stdin.read())
+print(json.dumps({"joins": [clipper.join_words(w) for w in a["joins"]],
+                  "titles": [clipper._title(clipper.Moment(start=s["s"], end=s["e"]), [s]) for s in a["segs"]]}, ensure_ascii=False))`],
+    { input: JSON.stringify({ joins, segs }), encoding: "utf8" }).trim().split("\n").at(-1));
+  assert.deepEqual(js, py);
+  assert.deepEqual(js.joins.slice(0, 4), ["il s'est passé", "l'équipe", "I don't know", "c’est fou"]);
+  js.titles.slice(0, 2).forEach(t => assert.ok(t.length <= 31 && t.endsWith("…"), t));
+});
