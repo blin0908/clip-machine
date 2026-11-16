@@ -238,7 +238,8 @@ function checklist(z, f, dur, plat) {
 }
 
 export function title(m, segs) {
-  const sents = segs.filter(s => s.s >= m.start - 0.3 && s.e <= m.end + 0.5 && s.text).map(s => s.text);
+  // long segments split into sentences/clauses first, or a clip inside one long segment would have no title
+  const sents = segs.flatMap(splitLong).filter(s => s.s >= m.start - 0.3 && s.e <= m.end + 0.5 && s.text).map(s => s.text);
   if (!sents.length) return "Wait for it…";
   const strength = t => hypeIn(t).reduce((a, [, w]) => a + w, 0)
     + count(HOOK_RX(), t) * 0.7 + (t.match(/!/g) || []).length - Math.abs(t.length - 45) / 25;
@@ -396,7 +397,15 @@ export function logoChain(format, look, inLabel, idx, hd = true) {
 const SCRIPTS = [["ko", /[\uAC00-\uD7AF\u1100-\u11FF\u3130-\u318F]/], ["ja", /[\u3040-\u30FF]/], ["zh", /[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]/],
   ["arabic", /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]/], ["hebrew", /[\u0590-\u05FF]/],
   ["devanagari", /[\u0900-\u097F]/], ["thai", /[\u0E00-\u0E7F]/], ["greek", /[\u0370-\u03FF\u1F00-\u1FFF]/]];
-export const scriptOf = text => (SCRIPTS.find(([, rx]) => rx.test(text || "")) || ["latin"])[0];
+// common characters written differently in Traditional and Simplified Chinese: mostly Traditional → the TC font.
+const ZH_TRAD = "這們說時國會對來為無麼後過還現開關點體發應實學問經長頭見讓話車東門書裡個樣嗎習邊錢員氣電動區專業務場總結據歡謝愛覺聽寫買賣讀認識號錯難歲鐘頁視腦網線戲聲魚鳥馬飛雲風廣漢語萬億兩幾誰";
+const ZH_SIMP = "这们说时国会对来为无么后过还现开关点体发应实学问经长头见让话车东门书里个样吗习边钱员气电动区专业务场总结据欢谢爱觉听写买卖读认识号错难岁钟页视脑网线戏声鱼鸟马飞云风广汉语万亿两几谁";
+const countIn = (text, set) => { let n = 0; for (const c of text) if (set.includes(c)) n++; return n; };
+export const scriptOf = text => {
+  text = text || "";
+  const k = (SCRIPTS.find(([, rx]) => rx.test(text)) || ["latin"])[0];
+  return k === "zh" && countIn(text, ZH_TRAD) > countIn(text, ZH_SIMP) ? "zhtc" : k;
+};
 /** The caption font entry ({ name, file, url?, label?, mb? }) for a cut, from the script of its headline and spoken words. */
 export function captionFont(m) {
   const words = (m.words || []).filter(w => w.s >= m.start - 0.05 && w.s <= m.end).map(w => w.w).join(" ");

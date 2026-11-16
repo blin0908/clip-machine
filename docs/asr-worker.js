@@ -33,7 +33,7 @@ async function ensure(model, cfg) {
 }
 self.onmessage = async ({ data }) => {
   if (data.type === "preload") {             // warm the model while the user is still choosing settings
-    try { await ensure(data.model); } catch {}
+    try { await ensure(data.model, data.cfg); } catch {}
     return;
   }
   const { audio, windows, model, cfg, language } = data;

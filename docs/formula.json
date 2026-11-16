@@ -677,7 +677,14 @@
    "label": "Chinese",
    "mb": 10.3,
    "url": "https://cdn.jsdelivr.net/npm/@expo-google-fonts/noto-sans-sc@0.4.4/900Black/NotoSansSC_900Black.ttf"
+  },
+  "zhtc": {
+   "name": "Noto Sans TC Black",
+   "file": "NotoSansTC_900Black.ttf",
+   "label": "Chinese (Traditional)",
+   "mb": 7.1,
+   "url": "https://cdn.jsdelivr.net/npm/@expo-google-fonts/noto-sans-tc@0.4.4/900Black/NotoSansTC_900Black.ttf"
   }
  },
- "version": "1.5.2"
+ "version": "1.5.3"
 }

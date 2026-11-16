@@ -27,4 +27,5 @@ Third-party components (not covered by the MIT license above):
 - Loaded at runtime, not redistributed: @ffmpeg/core (GPL, includes x264 and libass),
   @huggingface/transformers (Apache-2.0), Whisper model weights (MIT),
   Noto Sans caption fonts for non-Latin scripts (SIL Open Font License 1.1, via @expo-google-fonts),
+  opencc-js (MIT and Apache-2.0) on the website and opencc-python-reimplemented (Apache-2.0) on desktop, for Chinese,
   and, in the desktop app, faster-whisper (MIT), yt-dlp (Unlicense), FFmpeg (LGPL/GPL)

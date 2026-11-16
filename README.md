@@ -42,8 +42,10 @@ Each clip shows *why* it was picked, with evidence labels: **Official** (the pla
 ## Languages
 
 Pick the spoken language under **Speech** (the desktop app can also detect it). The website transcribes 30 languages with the multilingual Whisper models; the desktop app handles 99.
+- **Chinese comes in Simplified or Traditional,** whichever you pick (Whisper writes either, so the transcript is converted with OpenCC; auto-detected Chinese becomes Simplified). Traditional captions use Noto Sans TC.
+- **Hindi always uses the larger speech model** (the website downloads about 250 MB once): the smaller models write Hindi in Urdu script.
 - **Captions are set the way each language is written.** Chinese, Japanese and Thai words are joined without spaces, sentences end on 。！？ and ؟ as well as `.!?`, and Arabic and Hebrew lines read right to left with the highlight on the right word.
-- **Every script gets a heavy caption font.** Montserrat Black covers Latin, Cyrillic and Vietnamese; Greek, Arabic, Hebrew, Devanagari, Thai, Japanese, Korean and Chinese captions use the matching Noto Sans Black, downloaded the first time a clip needs it (from 50 KB for Hebrew to 10 MB for Chinese) and kept after that. Greek capitals drop their accents, as Greek typesetting does.
+- **Every script gets a heavy caption font.** Montserrat Black covers Latin, Cyrillic and Vietnamese; Greek, Arabic, Hebrew, Devanagari, Thai, Japanese, Korean and Chinese (Simplified and Traditional) captions use the matching Noto Sans Black, downloaded the first time a clip needs it (from 50 KB for Hebrew to 10 MB for Chinese) and kept after that. Greek capitals drop their accents, as Greek typesetting does.
 - **Hype words and laughter are recognised in 15 languages:** English, Spanish, Portuguese, French, German, Italian, Russian, Turkish, Hindi, Arabic, Indonesian, Vietnamese, Japanese, Korean and Chinese (jajaja, kkkk, mdr, 哈哈, ㅋㅋ and (笑) count as laughter). Other languages are scored on energy, pacing, the opening and structure.
 
 ## Desktop app (Mac, Windows, Linux)

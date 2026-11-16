@@ -17,7 +17,7 @@ const DEF = { platform: "all", n: "3", version: "both", quality: "fast", model: 
 const opts = { ...DEF };
 // Spoken languages offered in the picker (Whisper codes). English uses the English-only models on the web, which are
 // faster and more accurate for English; any other language switches to the multilingual model of the same size.
-const LANGS = [["en", "English"], ["ar", "Arabic"], ["zh", "Chinese"], ["cs", "Czech"], ["da", "Danish"], ["nl", "Dutch"], ["fi", "Finnish"],
+const LANGS = [["en", "English"], ["ar", "Arabic"], ["zh", "Chinese (Simplified)"], ["zh-Hant", "Chinese (Traditional)"], ["cs", "Czech"], ["da", "Danish"], ["nl", "Dutch"], ["fi", "Finnish"],
   ["fr", "French"], ["de", "German"], ["el", "Greek"], ["he", "Hebrew"], ["hi", "Hindi"], ["hu", "Hungarian"], ["id", "Indonesian"],
   ["it", "Italian"], ["ja", "Japanese"], ["ko", "Korean"], ["ms", "Malay"], ["no", "Norwegian"], ["pl", "Polish"], ["pt", "Portuguese"],
   ["ro", "Romanian"], ["ru", "Russian"], ["es", "Spanish"], ["sv", "Swedish"], ["tl", "Tagalog"], ["th", "Thai"], ["tr", "Turkish"],
@@ -45,6 +45,9 @@ function setChip(k, v, save = true) {
     if (![...sel.options].some(o => o.value === v)) return;
     sel.value = v; opts.lang = v;
     $("#langSum").textContent = sel.selectedOptions[0].textContent.replace("Detect automatically", "auto-detect");
+    $("#langNote").hidden = !BIG_MODEL[v];
+    $("#langNote").textContent = DESK ? `${sel.selectedOptions[0].textContent} always uses the most accurate speech model: the smaller ones can't write it correctly.`
+      : `${sel.selectedOptions[0].textContent} uses the larger speech model, about 250 MB, downloaded once: the smaller ones can't write it correctly.`;
     if (save) { saveLast(); markCustom(); }
     return;
   }
@@ -452,8 +455,33 @@ addEventListener("drop", e => { if (!hasFiles(e)) return; e.preventDefault(); dr
 let asrW = null, asrReject = null;
 const asrWorker = () => asrW ||= (markUsed(), new Worker(new URL("./asr-worker.js", import.meta.url), { type: "module" }));
 const dropASR = () => { try { asrW?.terminate(); } catch {} asrW = null; };
-const asrModel = () => opts.lang === "en" ? opts.model : opts.model.replace(/\.en$/, "");   // multilingual twin of the chosen size
-function preloadASR() { if (!IS_WEBKIT && !DESK) asrWorker().postMessage({ type: "preload", model: asrModel() }); }
+// Languages the smaller models can't write properly (base writes Hindi in Urdu script): always the larger model, as 8-bit
+// WebAssembly (~250 MB once; the GPU build is twice that). Mirrors BIG_MODEL in clipper.py.
+const BIG_MODEL = { hi: "Xenova/whisper-small" };
+const asrModel = () => BIG_MODEL[opts.lang] || (opts.lang === "en" ? opts.model : opts.model.replace(/\.en$/, ""));   // multilingual twin of the chosen size
+// Whisper writes Chinese in either script; convert to the one picked (OpenCC, loaded only for Chinese). Mirrors ZH_CONVERT
+// in clipper.py. If the converter can't load, the transcript stays as Whisper wrote it.
+const OPENCC = "https://cdn.jsdelivr.net/npm/opencc-js@1.4.2/dist/esm";
+const zhConv = {};
+async function zhScript(words, lang) {
+  if (lang !== "zh" && lang !== "zh-Hant") return words;
+  try {
+    zhConv[lang] ||= lang === "zh-Hant" ? import(`${OPENCC}/cn2t.js`).then(m => m.Converter({ from: "cn", to: "tw" }))
+                                        : import(`${OPENCC}/t2cn.js`).then(m => m.Converter({ from: "t", to: "cn" }));
+    const cv = await zhConv[lang];
+    // convert in runs of up to 40 words (a word alone loses context: 周 → 週 only in 一周), then cut back into the same
+    // words; the conversion keeps the character count. Mirrors clipper._zh_words.
+    const out = [];
+    for (let i = 0; i < words.length; i += 40) {
+      const run = words.slice(i, i + 40), raw = run.map(w => w.w).join(""), conv = cv(raw), chars = [...conv];
+      if (chars.length !== [...raw].length) { run.forEach(w => out.push({ ...w, w: cv(w.w) })); continue; }
+      let k = 0; for (const w of run) { const n = [...w.w].length; out.push({ ...w, w: chars.slice(k, k + n).join("") }); k += n; }
+    }
+    return out;
+  } catch (e) { zhConv[lang] = null; console.warn("Chinese script conversion unavailable:", e); return words; }
+}
+const asrCfg = () => BIG_MODEL[opts.lang] ? { device: "wasm", dtype: "q8" } : undefined;
+function preloadASR() { if (!IS_WEBKIT && !DESK) asrWorker().postMessage({ type: "preload", model: asrModel(), cfg: asrCfg() }); }
 const ASR_SILENCE = 150000;      // no word from the speech model for this long = stalled (out of memory), not slow
 function transcribe(pcm, windows, model, keep = false, language = "en") {
   return new Promise((resolve, reject) => {
@@ -472,7 +500,7 @@ function transcribe(pcm, windows, model, keep = false, language = "en") {
       if (d.type === "done") { clearTimeout(dog); asrReject = null; if (IS_WEBKIT && !keep) dropASR(); resolve(d.words); }
       if (d.type === "error") { clearTimeout(dog); asrReject = null; dropASR(); reject(new Error("Speech model: " + d.message)); }
     };
-    w.postMessage({ audio: pcm, windows, model, language });
+    w.postMessage({ audio: pcm, windows, model, language: language === "zh-Hant" ? "zh" : language, cfg: asrCfg() });
   });
 }
 
@@ -734,7 +762,10 @@ async function processSession(sess, phase = "all") {
     if (info.duration < 3) throw new Error("That video is under 3 seconds, too short to clip.");
     if (info.duration > 3 * 3600) throw new Error("That video is over 3 hours. Trim it first, or use the desktop app.");
     // Safari / iOS: past ~85 s the WebAssembly engines run out of memory (or freeze the tab), so clip the first
-    // 80 s, which works reliably there, and say so on the results instead of failing
+    // 80 s, which works reliably there, and say so on the results instead of failing.
+    // Measured 16 Nov 2026 (WebKit 2215, Mac): base model 80 s ok / 135 s freezes in transcription; tiny 135 s ok /
+    // 5 min freezes. Memory grows inside one ONNX session and WebKit never returns it: restarting the speech worker
+    // mid-video doesn't help (a second session in the same tab never finishes loading, as after a reload).
     let capped = 0;
     if (IS_WEBKIT && info.duration > 85) { capped = info.duration; info.duration = 80; }
     else if (info.duration > 45 * 60) toast(`Long video (${X.fmtT(info.duration)}): this can take a while. Keep the tab open and the screen on.`);
@@ -754,7 +785,7 @@ async function processSession(sess, phase = "all") {
     }
     if (phase === "all" || phase === "listen") {
     if (IS_WEBKIT) dropEngine(E0);               // Safari: give the speech model the whole WebAssembly budget...
-    words = await transcribe(pcm, X.asrWindows(loud, info.duration), asrModel(), phase === "listen", opts.lang);
+    words = await zhScript(await transcribe(pcm, X.asrWindows(loud, info.duration), asrModel(), phase === "listen", opts.lang), opts.lang);
     if (cancelled) throw new Error("Cancelled.");
     perf.lap("transcribe");
     if (phase === "listen") { Object.assign(sess.prep, { words, pcm: null }); sess.status = "queued"; sess.msg = ""; return; }

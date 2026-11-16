@@ -28,7 +28,7 @@ const [type, launch] = TYPES[name];
 
 const SAMPLES = {
   polish: ["Zażółć", "gęślą", "jaźń"], russian: ["Привет", "как", "дела"], vietnamese: ["Xin", "chào", "thế", "giới"],
-  greek: ["Γειά", "σου", "κόσμε"], japanese: ["これは", "本当に", "すごい"], chinese: ["这是", "真的", "很棒"],
+  greek: ["Γειά", "σου", "κόσμε"], japanese: ["これは", "本当に", "すごい"], chinese: ["这是", "真的", "很棒"], "chinese-trad": ["這是", "我們", "說的"],
   korean: ["이것은", "정말", "대단해"], arabic: ["هذا", "رائع", "حقا"], hebrew: ["זה", "באמת", "מדהים"],
   hindi: ["यह", "सच", "में", "अद्भुत"], thai: ["นี่", "มัน", "สุดยอด"],
 };

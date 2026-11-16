@@ -4,3 +4,4 @@ numpy
 yt-dlp[default]
 qrcode
 static-ffmpeg
+opencc-python-reimplemented==0.1.7

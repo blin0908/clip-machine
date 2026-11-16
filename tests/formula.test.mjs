@@ -93,7 +93,7 @@ test("each script gets its own caption font, and the bundled font really has tha
   const ttf = readFileSync(resolve(ROOT, "docs/fonts/Montserrat-Black.ttf"));
   assert.ok(ttf.includes(Buffer.from("Montserrat Black", "utf16le").swap16()), "family name inside the bundled font");
   const cases = { "Hello there": "latin", "Zażółć gęślą": "latin", "Привет": "latin", "Xin chào thế giới": "latin", "Γειά σου": "greek",
-    "これは本当": "ja", "这是真的": "zh", "이것은 정말": "ko", "مرحبا": "arabic", "שלום": "hebrew", "नमस्ते": "devanagari", "สวัสดี": "thai" };
+    "これは本当": "ja", "这是真的": "zh", "這是真的嗎，我們說": "zhtc", "我们說这个": "zh", "이것은 정말": "ko", "مرحبا": "arabic", "שלום": "hebrew", "नमस्ते": "devanagari", "สวัสดี": "thai" };
   for (const [t, k] of Object.entries(cases)) assert.equal(X.scriptOf(t), k, t);
   const files = new Set();
   for (const [k, f] of Object.entries(X.F.captionFonts)) {

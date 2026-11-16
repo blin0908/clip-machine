@@ -53,7 +53,7 @@ YTDLP = _tool("yt-dlp")
 # Captions use the bundled Montserrat Black (OFL) so output looks the same on macOS, Windows, Linux and the web app.
 FONT_DIR = str(next((d for d in (HERE / "docs" / "fonts", HERE / "fonts") if (d / "Montserrat-Black.ttf").exists()),
                     HERE / "fonts"))
-VERSION = "1.5.2"            # shown in the app; the desktop app compares it with the latest GitHub release
+VERSION = "1.5.3"            # shown in the app; the desktop app compares it with the latest GitHub release
 CAP_FONT = "Montserrat Black"   # the family name stored inside Montserrat-Black.ttf (libass matches on it)
 # Other scripts use the matching Noto Sans Black (OFL), fetched the first time a clip needs it. The web app reads this
 # table from formula.json, so both engines pick the same font. Montserrat covers Latin (every European accent),
@@ -77,6 +77,8 @@ CAPTION_FONTS = {
                    "url": f"{_NOTO}/noto-sans-kr@0.4.4/900Black/NotoSansKR_900Black.ttf"},
     "zh":         {"name": "Noto Sans SC Black", "file": "NotoSansSC_900Black.ttf", "label": "Chinese", "mb": 10.3,
                    "url": f"{_NOTO}/noto-sans-sc@0.4.4/900Black/NotoSansSC_900Black.ttf"},
+    "zhtc":       {"name": "Noto Sans TC Black", "file": "NotoSansTC_900Black.ttf", "label": "Chinese (Traditional)", "mb": 7.1,
+                   "url": f"{_NOTO}/noto-sans-tc@0.4.4/900Black/NotoSansTC_900Black.ttf"},
 }
 FONT_CACHE = Path(os.environ.get("CLIP_FONT_CACHE") or HERE / "fonts-cache")   # Montserrat + any script fonts fetched
 _font_lock = threading.Lock()
@@ -139,8 +141,18 @@ _SCRIPTS = [("ko", "[\uAC00-\uD7AF\u1100-\u11FF\u3130-\u318F]"), ("ja", "[\u3040
 _SCRIPTS = [(k, re.compile(rx)) for k, rx in _SCRIPTS]
 
 
+# common characters written differently in Traditional and Simplified Chinese: mostly Traditional → the TC font.
+# Mirrors ZH_TRAD / ZH_SIMP in formula.js.
+_ZH_TRAD = "這們說時國會對來為無麼後過還現開關點體發應實學問經長頭見讓話車東門書裡個樣嗎習邊錢員氣電動區專業務場總結據歡謝愛覺聽寫買賣讀認識號錯難歲鐘頁視腦網線戲聲魚鳥馬飛雲風廣漢語萬億兩幾誰"
+_ZH_SIMP = "这们说时国会对来为无么后过还现开关点体发应实学问经长头见让话车东门书里个样吗习边钱员气电动区专业务场总结据欢谢爱觉听写买卖读认识号错难岁钟页视脑网线戏声鱼鸟马飞云风广汉语万亿两几谁"
+
+
 def script_of(text):
-    return next((k for k, rx in _SCRIPTS if rx.search(text or "")), "latin")
+    text = text or ""
+    k = next((k for k, rx in _SCRIPTS if rx.search(text)), "latin")
+    if k == "zh" and sum(text.count(c) for c in _ZH_TRAD) > sum(text.count(c) for c in _ZH_SIMP):
+        return "zhtc"
+    return k
 
 
 def caption_font(m):
@@ -271,7 +283,7 @@ _MODEL_CACHE = {}
 # Whisper language codes accepted from the page ("auto" = detect from the audio first).
 LANGUAGES = ("auto", "af", "ar", "bg", "bn", "ca", "cs", "cy", "da", "de", "el", "en", "es", "et", "fa", "fi", "fr", "he", "hi", "hr", "hu",
              "id", "it", "ja", "ko", "lt", "lv", "ms", "nl", "no", "pl", "pt", "ro", "ru", "sk", "sl", "sr", "sv", "sw", "ta", "th", "tl",
-             "tr", "uk", "ur", "vi", "zh")
+             "tr", "uk", "ur", "vi", "zh", "zh-Hant")   # zh = Simplified Chinese, zh-Hant = Traditional (same speech model)
 EN_PROMPT = "Umm, let me think, uh, like, hmm... Okay, so, um, here's what I'm thinking."
 
 
@@ -298,6 +310,42 @@ def join_words(raw, parts=None):
     return out
 
 
+# Languages the smaller models can't write properly (base writes Hindi in Urdu script): always use this size.
+# Mirrors BIG_MODEL in docs/app.js.
+BIG_MODEL = {"hi": "small"}
+_SIZES = ("tiny", "base", "small", "medium", "large-v3")
+
+
+# Whisper writes Chinese in either script, often Traditional even for Mainland speech. Convert to the one asked for
+# (auto-detected Chinese → Simplified). Pure-Python OpenCC, installed on first use if an older install lacks it.
+ZH_CONVERT = {"zh": "t2s", "zh-Hant": "s2tw"}
+
+
+def _zh_words(words, conv):
+    """Convert a segment's words together (one word alone loses context: 周 → 週 only in 一周), then cut the result
+    back into the same words; the conversion keeps the character count. Mirrors zhWords in docs/app.js."""
+    raw = "".join(w["w"] for w in words)
+    out = conv(raw)
+    if len(out) != len(raw):
+        for w in words:
+            w["w"] = conv(w["w"])
+        return
+    i = 0
+    for w in words:
+        n = len(w["w"])
+        w["w"], i = out[i:i + n], i + n
+
+
+def _zh_converter(cfg):
+    try:
+        import opencc
+    except ImportError:
+        subprocess.run([sys.executable, "-m", "pip", "install", "-q", "opencc-python-reimplemented==0.1.7"],
+                       capture_output=True, timeout=300)
+        import opencc
+    return opencc.OpenCC(cfg)
+
+
 def transcribe(wav: Path, model_size="base", progress=_noop, duration=None, language="auto") -> list[dict]:
     from faster_whisper import WhisperModel
     progress("transcribe", 0, f"Loading speech model ({model_size})")
@@ -308,7 +356,13 @@ def transcribe(wav: Path, model_size="base", progress=_noop, duration=None, lang
     if language not in LANGUAGES or language == "auto":
         # detect first, so the English filler prompt below can't pull other languages towards English
         language, _, _ = model.detect_language(audio, vad_filter=True, language_detection_segments=3)
-    segs_iter, info = model.transcribe(audio, language=language, word_timestamps=True, vad_filter=True,
+    big = BIG_MODEL.get(language)
+    if big and model_size in _SIZES and _SIZES.index(model_size) < _SIZES.index(big):
+        progress("transcribe", 0, f"Loading the {big} speech model: smaller ones can't write this language correctly")
+        if big not in _MODEL_CACHE:
+            _MODEL_CACHE[big] = WhisperModel(big, device="cpu", compute_type="int8")
+        model = _MODEL_CACHE[big]
+    segs_iter, info = model.transcribe(audio, language="zh" if language in ZH_CONVERT else language, word_timestamps=True, vad_filter=True,
                                        beam_size=1, condition_on_previous_text=False,
                                        # nudges Whisper to write out "um/uh" instead of silently dropping them (English only)
                                        initial_prompt=EN_PROMPT if language == "en" else None)
@@ -318,6 +372,14 @@ def transcribe(wav: Path, model_size="base", progress=_noop, duration=None, lang
         words = [{"w": w.word.strip(), "s": w.start, "e": w.end} for w in (s.words or []) if w.word.strip()]
         segs.append({"s": s.start, "e": s.end, "text": s.text.strip(), "words": words})
         progress("transcribe", min(99, 100 * s.end / total), f"Transcribing {fmt_t(s.end)} / {fmt_t(total)}")
+    if language in ZH_CONVERT:
+        try:
+            cc = _zh_converter(ZH_CONVERT[language])
+            for s in segs:
+                s["text"] = cc.convert(s["text"])
+                _zh_words(s["words"], cc.convert)
+        except Exception as e:  # noqa: BLE001 - the transcript is still usable as Whisper wrote it
+            print(f"[chinese] couldn't convert the script ({e}); keeping Whisper's characters", file=sys.stderr)
     progress("transcribe", 100, f"Transcribed ({info.language})")
     return segs
 
@@ -724,7 +786,9 @@ def _checklist(z, f, dur, plat):
 
 
 def _title(m, segs):
-    sents = [s["text"] for s in segs if s["s"] >= m.start - 0.3 and s["e"] <= m.end + 0.5 and s["text"]]
+    # long segments split into sentences/clauses first, or a clip inside one long segment would have no title
+    sents = [s["text"] for s in (u for sg in segs for u in _split_long(sg))
+             if s["s"] >= m.start - 0.3 and s["e"] <= m.end + 0.5 and s["text"]]
     if not sents:
         return "Wait for it…"
     def strength(t):
