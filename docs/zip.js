@@ -41,3 +41,22 @@ export async function zip(files) {
 /** "The Biggest Mistake I Made!" → "the-biggest-mistake-i-made" */
 export const slug = (s, n = 48) => String(s || "clip").normalize("NFKD").replace(/[̀-ͯ]/g, "").toLowerCase()
   .replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, n).replace(/-+$/, "") || "clip";
+
+export function fileBase(clip, which) {
+  const suffix = which === "short" ? "-short" : clip.short ? "-long" : "";
+  const cut = which === "short" ? clip.short : clip;
+  return `${clip.idx}${suffix}-${slug(cut.title, 40)}`;
+}
+
+export function youtubeUploadCsv(clips) {
+  const rows = [["filename", "title", "description", "hashtag"]];
+  for (const clip of clips) {
+    if (!clip.kept) continue;
+    const filename = fileBase(clip, clip.short ? "short" : "long") + ".mp4";
+    const post = clip.title ?? "";
+    const title = (clip.captions?.shorts || post).slice(0, 100).replace(/[\uD800-\uDBFF]$/u, "");
+    const description = [post, (clip.hashtags || []).join(" ")].filter(Boolean).join("\n\n");
+    rows.push([filename, title, description, "#Shorts"]);
+  }
+  return rows.map(row => row.map(cell => `"${cell.replace(/"/g, '""')}"`).join(",")).join("\r\n") + "\r\n";
+}

@@ -276,3 +276,24 @@ test(".zip export is a valid archive", async () => {
     off += 46 + nlen;
   }
 });
+
+test("YouTube upload CSV includes one row per kept clip", async () => {
+  const { youtubeUploadCsv } = await import(pathToFileURL(resolve(ROOT, "docs/zip.js")).href);
+  const post = 'Un café, "one more"\nand then go';
+  const shortsTitle = "A".repeat(99) + "🗺️";
+  const clips = [
+    { idx: "01", kept: true, title: post, short: { title: "Short cut" }, captions: { shorts: shortsTitle }, hashtags: ["#maps", "#travel"] },
+    { idx: "02", kept: false, title: "Skip me" },
+    { idx: "03", kept: true, title: "One cut" },
+  ];
+  const parse = csv => JSON.parse(execFileSync(PY, ["-c",
+    "import csv, io, json, sys; print(json.dumps(list(csv.reader(io.StringIO(sys.stdin.buffer.read().decode('utf-8'), newline='')))))"],
+  { input: csv, encoding: "utf8" }));
+  const header = ["filename", "title", "description", "hashtag"];
+  assert.deepEqual(parse(youtubeUploadCsv(clips)), [
+    header,
+    ["01-short-short-cut.mp4", "A".repeat(99), post + "\n\n#maps #travel", "#Shorts"],
+    ["03-one-cut.mp4", "One cut", "One cut", "#Shorts"],
+  ]);
+  assert.deepEqual(parse(youtubeUploadCsv([clips[1]])), [header]);
+});

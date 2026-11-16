@@ -1,7 +1,7 @@
 import { FFmpeg } from "./vendor/ffmpeg/index.js";
 import { toBlobURL } from "./vendor/util/index.js";
 import * as X from "./formula.js";
-import { zip, slug } from "./zip.js";
+import { zip, slug, fileBase, youtubeUploadCsv } from "./zip.js";
 import { createStudio } from "./studio.js";
 
 const $ = s => document.querySelector(s);
@@ -1086,7 +1086,6 @@ function qualityHTML(v) {
 function vmeta(v) {
   return `${v.duration}s · ${v.W && v.H ? `${v.W}×${v.H}` : ""} · ${v.size_mb} MB${v.cuts ? ` · ${v.cuts} cut${v.cuts > 1 ? "s" : ""}` : ""}${v.fillers_cut ? ` · ${v.fillers_cut} um/uh` : ""}`;
 }
-function fileBase(c, which) { return `${c.idx}${which === "short" ? "-short" : c.short ? "-long" : ""}-${slug(which === "short" ? c.short.title : c.title, 40)}`; }
 const srtURL = v => v.srtHref || (v.srtURL ||= URL.createObjectURL(new Blob([v.srt], { type: "text/plain" })));
 const blobOf = async v => v.blob ||= await fetch(v.url).then(r => { if (!r.ok) throw new Error("Couldn't fetch the clip from the desktop app."); return r.blob(); });
 const srtOf = async v => v.srt ??= await fetch(v.srtHref).then(r => r.ok ? r.text() : "");
@@ -1193,7 +1192,7 @@ $("#zip").onclick = async () => {
   const list = boardList(); if (!list.length) return;
   const btn = $("#zip"); btn.disabled = true; $("#zipLabel").textContent = "Packing…";
   try {
-    const files = [];
+    const files = [{ name: "youtube.csv", data: youtubeUploadCsv(list) }];
     for (const c of list) {
       for (const which of c.short ? ["short", "long"] : ["long"]) {
         const v = which === "short" ? c.short : c, base = fileBase(c, which);

@@ -62,7 +62,7 @@ Command line: `.venv/bin/python clipper.py <url-or-file> -p tiktok -n 5 --style 
 
 Built for clipping every day, not once:
 - **Queue.** Drop several videos at once (or keep adding while it works). They run one after another with the same settings.
-- **Clips board.** Every clip with its score, why it was picked and its quality report. Keep the good ones (**K**), filter to *Kept*, sort best-first or in video order, and **download all as a .zip** (each cut's .mp4 and .srt, plus a captions file with the post text for every platform).
+- **Clips board.** Every clip with its score, why it was picked and its quality report. Keep the good ones (**K**), filter to *Kept*, sort best-first or in video order, and **download all as a .zip**. The ZIP has each cut's .mp4 and .srt, the post text for every platform, and a `youtube.csv` upload sheet with one row per kept clip. The sheet lists the short cut when both cuts are available.
 - **Studio.** Open any clip to edit it with a live preview: what you see is what renders, with the captions drawn over the source and the cuts skipped as it plays.
   - **Timeline** with the waveform, every word, and the cut-out pauses shaded. Drag the yellow in/out handles; they snap between words (hold **Alt** to place them freely). **I** / **O** mark in and out at the playhead.
   - **Captions**: retype misheard words (it fixes the transcript for every clip), change the headline and the end-card question.

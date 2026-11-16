@@ -4,7 +4,7 @@
 //
 //   node desk-pro.mjs
 import { chromium } from "playwright";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { existsSync } from "node:fs";
@@ -176,8 +176,18 @@ try {
 
   // ---- .zip pulls the files from the app
   await page.click("#tClips");
+  await page.locator(`#out .clip[data-uid="${uid}"] [data-keep]`).click();
   const [dl] = await Promise.all([page.waitForEvent("download", { timeout: 60000 }), page.click("#zip")]);
-  check((await dl.createReadStream()) && /\.zip$/.test(dl.suggestedFilename()), ".zip export", dl.suggestedFilename());
+  const [entries, uploadRows] = JSON.parse(execFileSync(PY, ["-c", `
+import csv, io, json, sys, zipfile
+with zipfile.ZipFile(sys.argv[1]) as archive:
+    text = io.StringIO(archive.read("youtube.csv").decode("utf-8"), newline="")
+    print(json.dumps([archive.namelist(), list(csv.DictReader(text))]))
+`, await dl.path()], { encoding: "utf8" }));
+  check(/\.zip$/.test(dl.suggestedFilename()) && entries.filter(name => name.endsWith("-captions.txt")).length > 1,
+    "ZIP includes kept and unkept clip files in the All view", dl.suggestedFilename());
+  check(uploadRows.length === 1 && entries.includes(uploadRows[0].filename) && uploadRows[0].filename.endsWith(".mp4")
+    && uploadRows[0].hashtag === "#Shorts", "YouTube upload sheet names the archived kept video");
 
   // ---- close the tab mid-run and come back: the job is still followed in the queue and its clips load
   await page.setInputFiles("#file", join(MEDIA, "talk_40s.mp4"));
