@@ -90,6 +90,8 @@ kbd{font:500 11px var(--f-mono);border:1px solid var(--line2);border-bottom-widt
 .btn.sm{min-height:34px;padding:5px 10px;font-size:13px}
 .btn.ghost{background:none;border-color:transparent;color:var(--mute)}
 .vh{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+.lang{width:100%}
+.lang-hint{font-size:12.5px;color:var(--mute);margin:6px 0 0;line-height:1.45}
 .brand-hint{font-size:12.5px;color:var(--mute);margin:10px 0 8px;line-height:1.45}
 .logo-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .logo-prev{width:44px;height:44px;border-radius:8px;border:1px solid var(--line);display:grid;place-items:center;overflow:hidden;
@@ -157,6 +159,8 @@ label.t{display:block;font-size:12px;color:var(--mute);margin:12px 0 6px;font-we
 .lprog .bar i{background:var(--slate)}
 .msg{color:var(--mute);font-size:13px}
 .foot{color:var(--faint);font-size:12px;margin-top:auto;padding-top:8px}
+.foot.private{margin-top:0;padding-top:4px}
+.foot a.upd{color:var(--text);font-weight:600}
 .foot a{color:var(--mute)}
 
 /* ---------- work tabs */
@@ -171,8 +175,9 @@ label.t{display:block;font-size:12px;color:var(--mute);margin:12px 0 6px;font-we
 
 /* ---------- empty state (hero) */
 .empty{max-width:760px;margin:6vh auto 0;text-align:center}
-.empty h1{font:800 clamp(30px,5vw,52px)/1.02 var(--f-disp);font-stretch:80%;letter-spacing:-.01em;margin:18px 0 12px;text-transform:uppercase}
-.empty h1 em{font-style:normal;color:var(--slate)}
+.brand-h{margin:0;font:inherit}
+.empty h2{font:800 clamp(30px,5vw,52px)/1.02 var(--f-disp);font-stretch:80%;letter-spacing:-.01em;margin:18px 0 12px;text-transform:uppercase}
+.empty h2 em{font-style:normal;color:var(--slate)}
 .empty p{color:var(--mute);max-width:520px;margin:0 auto 18px}
 .reel{position:relative;height:96px;margin:0 auto;max-width:640px;border:1px solid var(--line);border-radius:10px;background:var(--well);overflow:hidden}
 .reel canvas{position:absolute;inset:0;width:100%;height:100%}
@@ -313,14 +318,14 @@ label.t{display:block;font-size:12px;color:var(--mute);margin:12px 0 6px;font-we
 .st-frame.crop video{object-fit:cover}
 .st-frame .out{object-fit:contain;background:#000}
 .st-safe{position:absolute;inset:0;pointer-events:none}
-.st-cap{position:absolute;left:var(--ml);right:var(--ml);text-align:center;font:900 calc(var(--fs)*1cqw)/1.12 "Cap Black",var(--f-disp);text-transform:uppercase;color:#fff;pointer-events:none;overflow-wrap:break-word}
+.st-cap{position:absolute;left:var(--ml);right:var(--ml);text-align:center;font:900 calc(var(--fs)*1cqw)/1.12 var(--capfont,"Cap Black"),var(--f-disp);text-transform:uppercase;color:#fff;pointer-events:none;overflow-wrap:break-word}
 .st-cap.pop{-webkit-text-stroke:calc(var(--fs)*.16cqw) #000;paint-order:stroke fill;text-shadow:0 calc(var(--fs)*.05cqw) calc(var(--fs)*.06cqw) rgba(0,0,0,.6)}
 .st-cap.clean{text-transform:none;-webkit-text-stroke:calc(var(--fs)*.1cqw) #000;paint-order:stroke fill}
 .st-cap.boxed span.ln{background:#000;padding:.08em .22em;box-decoration-break:clone;-webkit-box-decoration-break:clone}
 .st-cap .hl{color:var(--hl)}
 .st-cap.pop .hl{font-size:1.12em;line-height:0}
 .st-logo{position:absolute;object-fit:contain;pointer-events:none}
-.st-hook{position:absolute;left:var(--ml);right:var(--ml);text-align:center;pointer-events:none;font:900 calc(var(--hs)*1cqw)/1.25 "Cap Black",var(--f-disp)}
+.st-hook{position:absolute;left:var(--ml);right:var(--ml);text-align:center;pointer-events:none;font:900 calc(var(--hs)*1cqw)/1.25 var(--capfont,"Cap Black"),var(--f-disp)}
 .st-hook span{background:#fff;color:#111;padding:.18em .35em;box-decoration-break:clone;-webkit-box-decoration-break:clone}
 .st-transport{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:center}
 .st-transport .tc{font-size:13px;color:var(--mute);min-width:150px;text-align:center}
@@ -406,7 +411,7 @@ dialog::backdrop{background:rgba(0,0,0,.6)}
 </svg>
 
 <header class="top">
-  <a class="brand" href="./" aria-label="Clip Machine home"><span class="mark" aria-hidden="true"></span><span class="word">Clip<b>Machine</b></span></a>
+  <h1 class="brand-h"><a class="brand" href="./" aria-label="Clip Machine home"><span class="mark" aria-hidden="true"></span><span class="word">Clip<b>Machine</b></span></a></h1>
   <span class="tag">Long video in, ready-to-post clips out. Runs on your device.</span>
   <span class="sp"></span>
   <a class="toplink" href="https://github.com/blin0908/clip-machine/releases/latest" target="_blank" rel="noopener" aria-label="Desktop app"><svg class="i"><use href="#i-dl"/></svg><span>Desktop app</span></a>
@@ -497,8 +502,12 @@ dialog::backdrop{background:rgba(0,0,0,.6)}
     </details>
 
     <details class="grp">
-      <summary><span class="eyebrow">Speech model</span></summary>
-      <div class="chips" data-k="model" style="margin-top:10px"><button class="chip" data-v="Xenova/whisper-tiny.en">Fastest · 40 MB</button><button class="chip" data-v="Xenova/whisper-base.en" aria-pressed="true">Balanced · 80 MB</button></div>
+      <summary><span class="eyebrow">Speech</span><span class="sumv" id="langSum"></span></summary>
+      <label class="t" for="lang">Spoken language</label>
+      <select id="lang" class="lang"></select>
+      <p class="hint lang-hint">Clips in other languages are picked on energy, pacing and structure; the hype-word signals are English.</p>
+      <label class="t">Speech model</label>
+      <div class="chips" data-k="model"><button class="chip" data-v="Xenova/whisper-tiny.en">Fastest · 40 MB</button><button class="chip" data-v="Xenova/whisper-base.en" aria-pressed="true">Balanced · 80 MB</button></div>
     </details>
 
     <button class="go" id="go" disabled><span id="goLabel">Find the moments</span><kbd>⌘↵</kbd></button>
@@ -510,6 +519,7 @@ dialog::backdrop{background:rgba(0,0,0,.6)}
     </section>
 
     <p class="foot">Every clip passes a quality gate (format, length, loudness, clipping, black frames, silence, frozen picture) before you see it. <a href="https://github.com/blin0908/clip-machine">Source &amp; research</a>. Only clip videos you have the rights to.</p>
+    <p class="foot private">Your videos never leave this device: transcribing, scoring and rendering all run here. <span id="ver"></span></p>
   </aside>
 
   <main class="work">
@@ -522,7 +532,7 @@ dialog::backdrop{background:rgba(0,0,0,.6)}
     <section class="pane" id="pClips" role="tabpanel" aria-labelledby="tClips">
       <div class="empty" id="empty">
         <div class="reel" aria-hidden="true"><canvas id="reel"></canvas></div>
-        <h1>Find the <em>clips</em> worth posting</h1>
+        <h2>Find the <em>clips</em> worth posting</h2>
         <p>Add a podcast, stream or talk. Clip Machine transcribes it, scores every moment, and cuts captioned clips you can trim, restyle and export in the studio.</p>
         <button class="btn pri" type="button" id="emptyAdd"><svg class="i"><use href="#i-up"/></svg>Add videos</button>
         <ul class="facts"><li>Free, no watermark</li><li>No account</li><li>Your video never leaves this device</li></ul>

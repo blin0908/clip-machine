@@ -15,7 +15,7 @@
    "hook_top": 300,
    "right": 180,
    "tags": 3,
-   "note": "One export for TikTok, Reels and Shorts: a 12\u201318s cut and a 30\u201345s cut with the same opening. Captions are kept clear of every app's buttons.",
+   "note": "One export for TikTok, Reels and Shorts: a 12–18s cut and a 30–45s cut with the same opening. Captions are kept clear of every app's buttons.",
    "judge": [
     "Stayed to watch (Shorts)",
     "Sends per reach (Reels)",
@@ -42,7 +42,7 @@
    "hook_top": 280,
    "right": 180,
    "tags": 3,
-   "note": "Official: For You weighs interactions such as watching in full, skips, time spent, shares and comments. In Search, how well the post matches the query matters most. Data: under 15s led plays per follower for small accounts, and 15\u201330s led interactions per play. Use 45\u201390s only for a real build story.",
+   "note": "Official: For You weighs interactions such as watching in full, skips, time spent, shares and comments. In Search, how well the post matches the query matters most. Data: under 15s led plays per follower for small accounts, and 15–30s led interactions per play. Use 45–90s only for a real build story.",
    "judge": [
     "Average watch time",
     "Full watches %",
@@ -50,7 +50,7 @@
    ],
    "publish": [
     "Write the caption the way someone would search for it (check Creator Search Insights).",
-    "Use 2\u20133 relevant tags. #FYP works like any other hashtag (TikTok).",
+    "Use 2–3 relevant tags. #FYP works like any other hashtag (TikTok).",
     "Promoting your own product? Turn on commercial disclosure. TikTok says it doesn't affect feed distribution.",
     "Use original or cleared audio, and record the real sound up close.",
     "Check post visibility and For You eligibility in the app."
@@ -75,7 +75,7 @@
    "hook_top": 300,
    "right": 160,
    "tags": 3,
-   "note": "Official/reported: Mosseri highlighted watch time, likes per reach and sends per reach. Sends matter most for people who don't follow you. Skip rate can affect distribution. Reels over 3 min aren't recommended to new audiences. Data: 30\u201360s and under 30s had similar reach rates, so let the creative decide.",
+   "note": "Official/reported: Mosseri highlighted watch time, likes per reach and sends per reach. Sends matter most for people who don't follow you. Skip rate can affect distribution. Reels over 3 min aren't recommended to new audiences. Data: 30–60s and under 30s had similar reach rates, so let the creative decide.",
    "judge": [
     "Average watch time",
     "Sends per reach",
@@ -108,7 +108,7 @@
    "hook_top": 260,
    "right": 150,
    "tags": 2,
-   "note": "Official: Shorts are matched by watch and search history, topics and sampled audio. YouTube reports 'chose to view', average view duration and percent viewed. Data: 11\u201330s led median views in two large samples. Use 30\u201360s for a story. Public views have counted replays since Mar 2025, so judge by engaged views.",
+   "note": "Official: Shorts are matched by watch and search history, topics and sampled audio. YouTube reports 'chose to view', average view duration and percent viewed. Data: 11–30s led median views in two large samples. Use 30–60s for a story. Public views have counted replays since Mar 2025, so judge by engaged views.",
    "judge": [
     "Stayed to watch %",
     "Engaged views",
@@ -116,7 +116,7 @@
    ],
    "publish": [
     "Write a title someone who's never heard of you would understand in Search.",
-    "Set the audience (made for kids or not) and visibility. Uploads from 13\u201317 year-olds default to private.",
+    "Set the audience (made for kids or not) and visibility. Uploads from 13–17 year-olds default to private.",
     "Over 1 minute with an active Content ID claim = blocked worldwide. Use owned audio on long cuts.",
     "Add a related video linking to the full version if you have one.",
     "No minimum posting cadence. Post when your audience is active."
@@ -169,7 +169,7 @@
    "hook_top": 300,
    "right": 160,
    "tags": 2,
-   "note": "Official: Spotlight scores expected watch time, favourites, shares and skips. Since Apr 2026 it favours footage shot on Snapchat's own camera, and since Jul 2026 fully AI-generated video isn't recommended. Test 10\u201320s. There's a 5s minimum. Treat it as a separate experiment.",
+   "note": "Official: Spotlight scores expected watch time, favourites, shares and skips. Since Apr 2026 it favours footage shot on Snapchat's own camera, and since Jul 2026 fully AI-generated video isn't recommended. Test 10–20s. There's a 5s minimum. Treat it as a separate experiment.",
    "judge": [
     "Watch time",
     "Favourites",
@@ -499,5 +499,68 @@
   "fit",
   "midstart",
   "sponsor"
- ]
+ ],
+ "captionFonts": {
+  "latin": {
+   "name": "Montserrat Black",
+   "file": "Montserrat-Black.ttf"
+  },
+  "greek": {
+   "name": "Noto Sans Black",
+   "file": "NotoSans_900Black.ttf",
+   "label": "Greek",
+   "mb": 0.6,
+   "url": "https://cdn.jsdelivr.net/npm/@expo-google-fonts/noto-sans@0.4.2/900Black/NotoSans_900Black.ttf"
+  },
+  "arabic": {
+   "name": "Noto Sans Arabic Black",
+   "file": "NotoSansArabic_900Black.ttf",
+   "label": "Arabic",
+   "mb": 0.2,
+   "url": "https://cdn.jsdelivr.net/npm/@expo-google-fonts/noto-sans-arabic@0.4.3/900Black/NotoSansArabic_900Black.ttf"
+  },
+  "hebrew": {
+   "name": "Noto Sans Hebrew Black",
+   "file": "NotoSansHebrew_900Black.ttf",
+   "label": "Hebrew",
+   "mb": 0.05,
+   "url": "https://cdn.jsdelivr.net/npm/@expo-google-fonts/noto-sans-hebrew@0.4.1/900Black/NotoSansHebrew_900Black.ttf"
+  },
+  "devanagari": {
+   "name": "Noto Sans Devanagari Black",
+   "file": "NotoSansDevanagari_900Black.ttf",
+   "label": "Hindi",
+   "mb": 0.2,
+   "url": "https://cdn.jsdelivr.net/npm/@expo-google-fonts/noto-sans-devanagari@0.4.2/900Black/NotoSansDevanagari_900Black.ttf"
+  },
+  "thai": {
+   "name": "Noto Sans Thai Black",
+   "file": "NotoSansThai_900Black.ttf",
+   "label": "Thai",
+   "mb": 0.05,
+   "url": "https://cdn.jsdelivr.net/npm/@expo-google-fonts/noto-sans-thai@0.4.2/900Black/NotoSansThai_900Black.ttf"
+  },
+  "ja": {
+   "name": "Noto Sans JP Black",
+   "file": "NotoSansJP_900Black.ttf",
+   "label": "Japanese",
+   "mb": 5.6,
+   "url": "https://cdn.jsdelivr.net/npm/@expo-google-fonts/noto-sans-jp@0.4.4/900Black/NotoSansJP_900Black.ttf"
+  },
+  "ko": {
+   "name": "Noto Sans KR Black",
+   "file": "NotoSansKR_900Black.ttf",
+   "label": "Korean",
+   "mb": 6.0,
+   "url": "https://cdn.jsdelivr.net/npm/@expo-google-fonts/noto-sans-kr@0.4.4/900Black/NotoSansKR_900Black.ttf"
+  },
+  "zh": {
+   "name": "Noto Sans SC Black",
+   "file": "NotoSansSC_900Black.ttf",
+   "label": "Chinese",
+   "mb": 10.3,
+   "url": "https://cdn.jsdelivr.net/npm/@expo-google-fonts/noto-sans-sc@0.4.4/900Black/NotoSansSC_900Black.ttf"
+  }
+ },
+ "version": "1.5.0"
 }

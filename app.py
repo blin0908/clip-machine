@@ -87,7 +87,7 @@ def worker():
         try:
             o = job["opts"]
             res = clipper.run(o["source"], JOBS / jid, n=o["n"], min_len=o["min"], max_len=o["max"],
-                              layout=o["layout"], captions=o["captions"], model=o["model"],
+                              layout=o["layout"], captions=o["captions"], model=o["model"], language=o.get("lang", "auto"),
                               crop_x=o["crop_x"], platform=o.get("platform", "all"),
                               hook=o.get("hook", True), tighten=o.get("tighten", True),
                               version=o.get("version", "both"), cta=o.get("cta", ""),
@@ -176,6 +176,7 @@ def new_job(source, form, upload_dir=None):
         "layout": form.get("layout", "fit") if form.get("layout") in ("fit", "crop", "original") else "fit",
         "captions": str(form.get("captions", "1")) in ("1", "true", "on"),
         "model": form.get("model", "base") if form.get("model") in ("tiny", "base", "small", "medium") else "base",
+        "lang": form.get("lang") if form.get("lang") in clipper.LANGUAGES else "auto",
         "crop_x": num("crop_x", 0.5, 0, 1),
         **clipper.clean_look({k: form.get(k) for k in LOOK_KEYS}),
     }
@@ -303,7 +304,7 @@ def del_logo():
 
 @app.get("/api/info")
 def info():
-    return jsonify(desktop=True, models=["tiny", "base", "small"], formats=list(clipper.FORMATS))
+    return jsonify(desktop=True, version=clipper.VERSION, models=["tiny", "base", "small"], formats=list(clipper.FORMATS))
 
 
 @app.get("/api/jobs")

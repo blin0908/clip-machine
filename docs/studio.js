@@ -260,6 +260,12 @@ export function createStudio(api) {
     frame.style.setProperty("--ar", `${a}/${b}`); frame.style.setProperty("--arw", a / b);
     bg.width = a >= b ? 64 : Math.round(64 * a / b); bg.height = a >= b ? Math.round(64 * b / a) : 64;
   }
+  const previewFonts = new Set();
+  function previewFont(f) {                         // load a script's caption font into the page once, for the live preview
+    if (previewFonts.has(f.name)) return;
+    previewFonts.add(f.name);
+    new FontFace(f.name, `url(${f.url})`, { weight: "900" }).load().then(ff => document.fonts.add(ff)).catch(() => previewFonts.delete(f.name));
+  }
   function paintFrame() {
     const L = ST.d.look, lay = X.captionLayout(plat(), L);
     frame.classList.toggle("crop", L.layout === "crop");
@@ -275,6 +281,11 @@ export function createStudio(api) {
     else if (lay.align === 8) cap.style.top = (lay.marginV / lay.PY * 100) + "%";
     else { cap.style.top = "50%"; cap.style.transform = "translateY(-50%)"; }
     hook.style.top = (lay.hookTop / lay.PY * 100) + "%";
+    const cf = X.captionFont({ start: ST.d.start, end: ST.d.end, title: ST.d.title || "", words: ST.sess.words });   // the font the render will use
+    frame.style.setProperty("--capfont", cf.url ? `"${cf.name}", "Cap Black"` : `"Cap Black"`);
+    if (cf.url) previewFont(cf);
+    cap.lang = cf === X.F.captionFonts.greek ? "el" : "";     // CSS capitals then drop Greek accents, as the render does
+    cap.dir = hook.dir = "auto";                              // Arabic/Hebrew lines take a right-to-left base, as libass does
     const lg = $("stLogo"), url = api.brand();               // the logo, placed exactly where the render puts it
     lg.hidden = !(L.logo && url);
     if (!lg.hidden) {
@@ -302,7 +313,7 @@ export function createStudio(api) {
           const txt = w => L.style === "clean" ? esc(w.w) : esc(X.captionText(w.w));
           const lastE = wi >= 0 ? (wi + 1 < g.words.length ? g.words[wi + 1].s : g.e) : 0;
           const lit = L.style !== "clean" && wi >= 0 && t - g.words[wi].s < 1.6 && t < lastE;
-          const body = g.words.map((w, i) => i === wi && lit ? `<span class="hl">${txt(w)}</span>` : txt(w)).join(" ");
+          const body = X.joinWords(g.words.map(w => w.w), g.words.map((w, i) => i === wi && lit ? `<span class="hl">${txt(w)}</span>` : txt(w)));
           html = L.style === "boxed" ? `<span class="ln">${body}</span>` : body;
         }
       }

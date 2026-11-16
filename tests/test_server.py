@@ -164,6 +164,7 @@ class ServerTest(unittest.TestCase):
 
     def test_pages(self):
         self.assertEqual(self.c.get("/api/info", headers=self.k).get_json()["desktop"], True)
+        self.assertRegex(self.c.get("/api/info", headers=self.k).get_json()["version"], r"^\d+\.\d+\.\d+$")
         for path in ("/", "/classic", "/studio.js", "/app.js", "/zip.js", "/fonts/ui/archivo-400-800.woff2", "/vendor/ffmpeg/index.js"):
             r = self.c.get(path, headers=self.k)
             self.assertEqual(r.status_code, 200, path)

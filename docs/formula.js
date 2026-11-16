@@ -54,15 +54,29 @@ export function asrWindows(loud, duration) {
 /** Group word timestamps into sentence-ish segments. */
 export function segmentsFromWords(words) {
   const segs = []; let cur = [];
-  const flush = () => { if (cur.length) segs.push({ s: cur[0].s, e: cur.at(-1).e, text: cur.map(w => w.w).join(" "), words: cur }); cur = []; };
+  const flush = () => { if (cur.length) segs.push({ s: cur[0].s, e: cur.at(-1).e, text: joinWords(cur.map(w => w.w)), words: cur }); cur = []; };
   words.forEach((w, i) => {
     const prev = cur.at(-1);
     if (prev && (w.s - prev.e > 1.0 || w.s - cur[0].s > 12)) flush();
     cur.push(w);
-    if (/[.!?]["')\]]*$/.test(w.w)) flush();
+    if (SENT_END.test(w.w)) flush();
   });
   flush();
   return segs;
+}
+
+// ---------------------------------------------------------------- joining words
+// Chinese, Japanese, Thai, Lao, Khmer and Burmese don't put spaces between words; everything else does.
+// Mirrors clipper.join_words: captions and subtitle files must come out identical in both engines.
+const NOSPACE = /[\u0E00-\u0EFF\u1000-\u109F\u1780-\u17FF\u2E80-\u2FFF\u3000-\u303F\u3040-\u30FF\u3100-\u312F\u3190-\u31FF\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\uFF00-\uFF60]/;
+// A sentence ends on . ! ? (or 。！？ ؟ ।), optionally followed by closing quotes or brackets. Mirrors clipper.SENT_END.
+export const SENT_END = /[.!?\u3002\uFF01\uFF1F\u061F\u0964]["'\u2019\u201D)\]\u300D\u300F\u00BB]*$/;
+export const wordGap = (a, b) => NOSPACE.test(String(a).slice(-1)) || NOSPACE.test(String(b).charAt(0)) ? "" : " ";
+/** Join words (raw) or display parts built from them (parts, e.g. with highlight tags), spacing by the raw words. */
+export function joinWords(raw, parts = raw) {
+  let out = "";
+  parts.forEach((p, i) => { out += (i ? wordGap(raw[i - 1], raw[i]) : "") + p; });
+  return out;
 }
 
 // ---------------------------------------------------------------- scoring
@@ -98,7 +112,7 @@ function features(s, e, text, words, loud, firstText, plat) {
     energy: mean(top), peak: Math.max(...seg), swing: sd,
     hype: kw.reduce((a, [, w]) => a + w, 0), laugh: count(LAUGH_RX(), text), exclaim: (text.match(/!/g) || []).length,
     pace: words.length / dur, hook: mean(head) + 0.8 * Math.min(hookLang, 4), first1: mean(first1),
-    payoff: mean(tail) - mean(seg), ends_clean: /[.!?]\W*$/.test(text) ? 1 : 0,
+    payoff: mean(tail) - mean(seg), ends_clean: SENT_END.test(text.trim()) ? 1 : 0,
     midstart: F.midSet.has(firstWord) ? 1 : 0, deadair: (gaps + Math.max(lead, 0)) / dur, fit,
     sponsor: F.sponsor.filter(k => low.includes(k)).length,
     _kw: kw.sort((a, b) => b[1] - a[1]).slice(0, 4).map(([k]) => k), _hookLang: hookLang,
@@ -221,7 +235,7 @@ export function shorten(m, segs, loud, lo, hi) {
   const e = ends.reduce((a, b) => punch(b) > punch(a) ? b : a);
   const words = m.words.filter(w => w.e <= e + 0.05);
   const end = Math.min(m.end, words.length ? words.at(-1).e + 0.35 : e);
-  return { ...m, end: +end.toFixed(2), words, text: words.map(w => w.w).join(" "), short: true };
+  return { ...m, end: +end.toFixed(2), words, text: joinWords(words.map(w => w.w)), short: true };
 }
 
 // ---------------------------------------------------------------- edit decisions
@@ -285,7 +299,10 @@ export function remap(t, keep) {
 }
 
 const assTime = t => { t = Math.max(t, 0); const h = Math.floor(t / 3600), m = Math.floor(t % 3600 / 60), s = (t % 60).toFixed(2).padStart(5, "0"); return `${h}:${String(m).padStart(2, "0")}:${s}`; };
-const clean = w => w.replace(/\\/g, "").replace(/{/g, "(").replace(/}/g, ")").toUpperCase();
+// Greek capitals drop their accents and breathings (ΚΌΣΜΕ is written ΚΟΣΜΕ); the diaeresis stays.
+const GREEK = /[\u0370-\u03FF\u1F00-\u1FFF]/;
+const upper = w => { w = w.toUpperCase(); return GREEK.test(w) ? w.normalize("NFD").replace(/[\u0300\u0301\u0313\u0314\u0342]/g, "").normalize("NFC") : w; };
+const clean = w => upper(w.replace(/\\/g, "").replace(/{/g, "(").replace(/}/g, ")"));
 
 // Caption styles: pop = bold white, active word yellow + scaled; clean = plain white phrases; boxed = white on black box.
 export const STYLES = { pop: "Pop (active word highlight)", clean: "Clean (plain phrases)", boxed: "Boxed (black box)" };
@@ -330,11 +347,25 @@ export function logoChain(format, look, inLabel, idx, hd = true) {
   return `[${idx}:v]scale=w=${b.box}:h=${b.box}:force_original_aspect_ratio=decrease,format=rgba,` +
          `colorchannelmixer=aa=${logoOpacity(look?.lop).toFixed(2)}[lg];${inLabel}[lg]overlay=x=${b.right ? `W-w-${b.mx}` : b.mx}:y=${b.my}`;
 }
+// ---------------------------------------------------------------- caption fonts
+// Montserrat Black ships with the app; other scripts use the matching Noto Sans Black (table in formula.json, from
+// clipper.CAPTION_FONTS). Checked in this order: Japanese mixes kana with Chinese characters, so kana decides it.
+const SCRIPTS = [["ko", /[\uAC00-\uD7AF\u1100-\u11FF\u3130-\u318F]/], ["ja", /[\u3040-\u30FF]/], ["zh", /[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]/],
+  ["arabic", /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]/], ["hebrew", /[\u0590-\u05FF]/],
+  ["devanagari", /[\u0900-\u097F]/], ["thai", /[\u0E00-\u0E7F]/], ["greek", /[\u0370-\u03FF\u1F00-\u1FFF]/]];
+export const scriptOf = text => (SCRIPTS.find(([, rx]) => rx.test(text || "")) || ["latin"])[0];
+/** The caption font entry ({ name, file, url?, label?, mb? }) for a cut, from the script of its headline and spoken words. */
+export function captionFont(m) {
+  const words = (m.words || []).filter(w => w.s >= m.start - 0.05 && w.s <= m.end).map(w => w.w).join(" ");
+  return F.captionFonts[scriptOf(`${m.title || ""} ${words}`)];
+}
+
 export function buildASS(m, plat, keep, { captions = true, hook = true, cta = "", style = "pop", hl = "#FFF000", size = "m", pos = "bottom", format = "9:16" } = {}) {
-  const font = "Montserrat Thin Black";   // the family name stored inside fonts/Montserrat-Black.ttf
+  const font = captionFont(m).name;
   const L0 = captionLayout(plat, { format, size, pos }), k = L0.scale, R = L0.marginLR, n = x => Math.round(x * k);
   const hk = Math.min(1, L0.scale / (SIZES[size] || 1)), nh = x => Math.round(x * hk);   // headline ignores the size choice
-  const tail = `${L0.align},${R},${R},${L0.marginV},1`;
+  // Encoding -1: full Unicode bidi across override tags (1 scrambles highlighted Arabic/Hebrew lines).
+  const tail = `${L0.align},${R},${R},${L0.marginV},-1`;
   const CAPS = {
     pop:   `Style: Cap,${font},${n(84)},&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,0,0,0,0,100,100,0,0,1,${n(7)},${n(3)},${tail}`,
     clean: `Style: Cap,${font},${n(70)},&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,${n(4)},${n(2)},${tail}`,
@@ -344,8 +375,8 @@ export function buildASS(m, plat, keep, { captions = true, hook = true, cta = ""
   let out = `[Script Info]\nScriptType: v4.00+\nPlayResX: ${L0.PX}\nPlayResY: ${L0.PY}\nWrapStyle: 0\n\n[V4+ Styles]\n` +
     `Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\n` +
     `${cap}\n` +
-    `Style: Hook,${font},${nh(58)},&H00111111,&H00111111,&H00FFFFFF,&H00000000,0,0,0,0,100,100,0,0,3,${nh(20)},0,8,${R + 20},${R + 20},${L0.hookTop},1\n` +
-    `Style: Cta,${font},${nh(58)},&H00111111,&H00111111,&H0000E6FF,&H00000000,0,0,0,0,100,100,0,0,3,${nh(20)},0,8,${R + 20},${R + 20},${L0.hookTop},1\n\n` +
+    `Style: Hook,${font},${nh(58)},&H00111111,&H00111111,&H00FFFFFF,&H00000000,0,0,0,0,100,100,0,0,3,${nh(20)},0,8,${R + 20},${R + 20},${L0.hookTop},-1\n` +
+    `Style: Cta,${font},${nh(58)},&H00111111,&H00111111,&H0000E6FF,&H00000000,0,0,0,0,100,100,0,0,3,${nh(20)},0,8,${R + 20},${R + 20},${L0.hookTop},-1\n\n` +
     `[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n`;
   const L = [];
   // headline / end card: braces would start an override tag, a backslash an escape (\N = line break), a newline a new event
@@ -356,7 +387,7 @@ export function buildASS(m, plat, keep, { captions = true, hook = true, cta = ""
   for (const g of captionGroups(m, { captions, style })) {
     if (style === "clean") {             // one event per phrase, no per-word highlight
       const s = T(g.s); let e = T(g.e); if (e - s > 3.5) e = s + 3.5;
-      L.push(`Dialogue: 0,${assTime(s)},${assTime(Math.max(e, s + 0.05))},Cap,,0,0,0,,${g.words.map(x => safe(x.w)).join(" ")}`);
+      L.push(`Dialogue: 0,${assTime(s)},${assTime(Math.max(e, s + 0.05))},Cap,,0,0,0,,${joinWords(g.words.map(x => x.w), g.words.map(x => safe(x.w)))}`);
       continue;
     }
     g.words.forEach((w, wi) => {
@@ -365,7 +396,7 @@ export function buildASS(m, plat, keep, { captions = true, hook = true, cta = ""
       const hi = style === "boxed" ? `{\\c${HL}}` : `{\\c${HL}\\fscx112\\fscy112}`;
       const lo = style === "boxed" ? `{\\c&HFFFFFF&}` : `{\\c&HFFFFFF&\\fscx100\\fscy100}`;
       const parts = g.words.map((x, j) => j === wi ? `${hi}${clean(x.w)}${lo}` : clean(x.w));
-      L.push(`Dialogue: 0,${assTime(s)},${assTime(Math.max(e, s + 0.05))},Cap,,0,0,0,,${parts.join(" ")}`);
+      L.push(`Dialogue: 0,${assTime(s)},${assTime(Math.max(e, s + 0.05))},Cap,,0,0,0,,${joinWords(g.words.map(x => x.w), parts)}`);
     });
   }
   return out + L.join("\n") + "\n";
@@ -386,7 +417,7 @@ export const captionText = w => clean(w);
 export function captionLines(words, start, end, per = 6) {
   const ws = spoken(words.filter(w => w.s >= start - 0.05 && w.s <= end));
   const out = [];
-  for (let i = 0; i < ws.length; i += per) { const g = ws.slice(i, i + per); out.push({ s: g[0].s, e: g.at(-1).e, text: g.map(w => w.w).join(" "), words: g }); }
+  for (let i = 0; i < ws.length; i += per) { const g = ws.slice(i, i + per); out.push({ s: g[0].s, e: g.at(-1).e, text: joinWords(g.map(w => w.w)), words: g }); }
   return out;
 }
 
@@ -436,7 +467,7 @@ export function buildSRT(m, keep) {
   const words = spoken(m.words.filter(w => w.s >= m.start - 0.05 && w.s <= m.end));
   const ts = t => { t = remap(t - m.start, keep); const h = Math.floor(t / 3600), mi = Math.floor(t % 3600 / 60), s = Math.floor(t % 60), ms = Math.floor((t % 1) * 1000);
     return `${String(h).padStart(2, "0")}:${String(mi).padStart(2, "0")}:${String(s).padStart(2, "0")},${String(ms).padStart(3, "0")}`; };
-  const out = []; for (let i = 0, n = 1; i < words.length; i += 7, n++) { const g = words.slice(i, i + 7); out.push(`${n}\n${ts(g[0].s)} --> ${ts(g.at(-1).e)}\n${g.map(x => x.w).join(" ")}\n`); }
+  const out = []; for (let i = 0, n = 1; i < words.length; i += 7, n++) { const g = words.slice(i, i + 7); out.push(`${n}\n${ts(g[0].s)} --> ${ts(g.at(-1).e)}\n${joinWords(g.map(x => x.w))}\n`); }
   return out.join("\n");
 }
 

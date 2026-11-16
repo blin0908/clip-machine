@@ -139,5 +139,35 @@ class Helpers(unittest.TestCase):
                 self.assertLessEqual(p["long"][1], p["hard_max"])
 
 
+class CaptionFonts(unittest.TestCase):
+    def test_latin_uses_the_bundled_font(self):
+        self.assertEqual(clipper.font_dir(clipper.caption_font(Moment(start=0, end=2, title="Привет", words=[]))), clipper.FONT_DIR)
+
+    def test_failed_download_falls_back_and_is_not_retried_at_once(self):
+        import tempfile
+        from unittest import mock
+        entry = {**clipper.CAPTION_FONTS["thai"], "url": "https://invalid.invalid/none.ttf", "file": "NoSuch_900Black.ttf"}
+        calls = []
+        def boom(url, dst):
+            calls.append(url)
+            raise OSError("offline")
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(clipper, "FONT_CACHE", Path(d)), \
+                mock.patch.object(clipper, "_fetch_font", boom), mock.patch.dict(clipper._font_failed, clear=True):
+            self.assertEqual(clipper.font_dir(entry), clipper.FONT_DIR)
+            self.assertEqual(clipper.font_dir(entry), clipper.FONT_DIR)
+            self.assertEqual(len(calls), 1)
+            self.assertFalse(any(p.name.endswith(".part") for p in Path(d).iterdir()))
+
+    def test_cached_font_is_used_without_a_download(self):
+        import tempfile
+        from unittest import mock
+        entry = clipper.CAPTION_FONTS["thai"]
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(clipper, "FONT_CACHE", Path(d)), \
+                mock.patch.object(clipper, "_fetch_font", side_effect=AssertionError("downloaded")):
+            (Path(d) / entry["file"]).write_bytes(b"\x00\x01\x00\x00" + b"0" * 20000)
+            self.assertEqual(clipper.font_dir(entry), d)
+            self.assertTrue((Path(d) / "Montserrat-Black.ttf").exists())
+
+
 if __name__ == "__main__":
     unittest.main()

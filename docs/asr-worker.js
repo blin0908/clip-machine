@@ -36,7 +36,9 @@ self.onmessage = async ({ data }) => {
     try { await ensure(data.model); } catch {}
     return;
   }
-  const { audio, windows, model, cfg } = data;   // audio: Float32Array @16 kHz; windows: [[s,e], ...] in seconds
+  const { audio, windows, model, cfg, language } = data;
+  // multilingual models need the language spelled out: without it transformers.js assumes English
+  const lang = language && language !== "auto" && !/\.en$/.test(model) ? { language, task: "transcribe" } : {};   // audio: Float32Array @16 kHz; windows: [[s,e], ...] in seconds
   try {
     announce = true;
     try { await ensure(model, cfg); } finally { announce = false; }
@@ -47,12 +49,12 @@ self.onmessage = async ({ data }) => {
       const slice = audio.subarray(Math.floor(s * 16000), Math.floor(e * 16000));
       let out;
       try {
-        out = await asr(slice, { return_timestamps: "word", chunk_length_s: 30 });
+        out = await asr(slice, { return_timestamps: "word", chunk_length_s: 30, ...lang });
       } catch (err) {
         if (device !== "webgpu") throw err;
         await (async () => { device = "wasm"; asr = await pipeline("automatic-speech-recognition", model, { device: "wasm", dtype: "q8" }); })();
         self.postMessage({ type: "device", device });
-        out = await asr(slice, { return_timestamps: "word", chunk_length_s: 30 });
+        out = await asr(slice, { return_timestamps: "word", chunk_length_s: 30, ...lang });
       }
       for (const c of out.chunks || []) {
         const w = (c.text || "").trim();

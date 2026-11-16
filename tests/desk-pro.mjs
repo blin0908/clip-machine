@@ -54,6 +54,8 @@ try {
   await page.waitForFunction(() => document.body.classList.contains("desk"), null, { timeout: 10000 });
   check(true, "desktop mode detected");
   check(await page.locator('.chips[data-k="model"] [data-v="small"]').count() === 1, "native speech models offered");
+  check(/^Version \d+\.\d+\.\d+\./.test(await page.locator("#ver").textContent()) && /stay on the computer/.test(await page.locator(".foot.private").textContent()),
+    "version and privacy line shown", await page.locator("#ver").textContent());
 
   // ---- brand kit: the logo is stored by the app and burned in natively
   await page.setInputFiles("#logoFile", { name: "logo.png", mimeType: "image/png", buffer: RED_PNG });

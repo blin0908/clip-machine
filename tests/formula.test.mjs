@@ -83,9 +83,31 @@ test("caption styles all produce events and use the bundled font name", () => {
   const m = { start: 0, end: 4, title: "", words: [W("a", 0.2, 0.5), W("b", 0.6, 0.9), W("c", 1.0, 1.3), W("d", 1.4, 1.8)] };
   for (const style of ["pop", "clean", "boxed"]) {
     const ass = X.buildASS(m, X.F.platforms.tiktok, [[0, 4]], { style, hook: false });
-    assert.match(ass, /Montserrat Thin Black/);
+    assert.match(ass, /Style: Cap,Montserrat Black,/);
     assert.ok(ass.split("\n").filter(l => l.startsWith("Dialogue:")).length >= 1, style);
   }
+});
+
+test("each script gets its own caption font, and the bundled font really has that name", async () => {
+  const { readFileSync } = await import("node:fs");
+  const ttf = readFileSync(resolve(ROOT, "docs/fonts/Montserrat-Black.ttf"));
+  assert.ok(ttf.includes(Buffer.from("Montserrat Black", "utf16le").swap16()), "family name inside the bundled font");
+  const cases = { "Hello there": "latin", "Zażółć gęślą": "latin", "Привет": "latin", "Xin chào thế giới": "latin", "Γειά σου": "greek",
+    "これは本当": "ja", "这是真的": "zh", "이것은 정말": "ko", "مرحبا": "arabic", "שלום": "hebrew", "नमस्ते": "devanagari", "สวัสดี": "thai" };
+  for (const [t, k] of Object.entries(cases)) assert.equal(X.scriptOf(t), k, t);
+  const files = new Set();
+  for (const [k, f] of Object.entries(X.F.captionFonts)) {
+    assert.ok(f.name && f.file && !files.has(f.file), k); files.add(f.file);
+    if (k !== "latin") assert.match(f.url, /^https:\/\/cdn\.jsdelivr\.net\/npm\/@expo-google-fonts\/[a-z-]+@\d+\.\d+\.\d+\/900Black\//, k);
+  }
+  const m = { start: 0, end: 3, title: "", words: [W("这是", 0.2, 0.6), W("真的", 0.7, 1.1)] };
+  assert.match(X.buildASS(m, X.F.platforms.tiktok, [[0, 3]], {}), /Style: Cap,Noto Sans SC Black,[\s\S]*Style: Hook,Noto Sans SC Black,/);
+  // Encoding -1 = full bidi across highlight tags, so right-to-left lines keep their word order
+  const rtl = X.buildASS({ start: 0, end: 3, title: "", words: [W("هذا", 0.2, 0.6), W("رائع", 0.7, 1.1)] }, X.F.platforms.tiktok, [[0, 3]], {});
+  assert.equal(rtl.match(/^Style: .*,-1$/gm).length, 3);
+  // Greek capitals lose accents and breathings but keep the diaeresis
+  const gr = X.buildASS({ start: 0, end: 3, title: "", words: [W("κόσμε", 0.2, 0.6), W("Ϊ́ἄ", 0.7, 1.1)] }, X.F.platforms.tiktok, [[0, 3]], {});
+  assert.match(gr, /ΚΟΣΜΕ/); assert.match(gr, /ΪΑ/); assert.doesNotMatch(gr, /ΚΌΣΜΕ/);
 });
 
 test("caption line edits keep timings when the word count matches", () => {
@@ -156,6 +178,34 @@ print(json.dumps([dict(start=m.start, signals=m.signals) for m in ms]))`], { inp
     assert.ok(Math.abs(m.start - py[i].start) < 0.02, `moment ${i}: ${m.start} vs ${py[i].start}`);
     for (const k of Object.keys(m.signals)) assert.ok(Math.abs(m.signals[k] - py[i].signals[k]) <= 0.011, `${k}: ${m.signals[k]} vs ${py[i].signals[k]}`);
   });
+});
+
+test("captions in every script come out the same in both engines, spaced the way each language is written", () => {
+  const mk = ws => ({ start: 0, end: 6, title: ws.join(""), words: ws.map((w, i) => W(w, 0.2 + i * 0.5, 0.6 + i * 0.5)) });
+  const samples = { zh: ["这是", "真的", "很棒", "。", "我们", "走吧"], ja: ["これは", "本当に", "すごい", "です。"], th: ["นี่", "มัน", "สุดยอด", "มาก"],
+    ko: ["이것은", "정말", "대단해", "요"], ar: ["هذا", "رائع", "حقا", "؟"], el: ["Γειά", "σου", "κόσμε", "Ϊ́ἄ"], he: ["זה", "באמת", "מדהים"], mixed: ["我的", "iPhone", "很", "好", "OK"], ru: ["Привет", "как", "дела"] };
+  const cases = [];
+  for (const [k, ws] of Object.entries(samples)) for (const style of ["pop", "clean", "boxed"]) cases.push({ k, style, m: mk(ws) });
+  const py = JSON.parse(execFileSync(PY, ["-c", `
+import sys, json, tempfile, pathlib; sys.path.insert(0, ${JSON.stringify(ROOT)})
+import clipper
+a = json.loads(sys.stdin.read()); d = pathlib.Path(tempfile.mkdtemp()); out = []
+for c in a:
+    m = clipper.Moment(**c["m"])
+    clipper.write_ass(m, d / "t.ass", clipper.PLATFORMS["tiktok"], [(0, 6)], True, True, "", c["style"], {})
+    clipper.write_srt(m, d / "t.srt", [(0, 6)])
+    out.append([(d / "t.ass").read_text(encoding="utf-8"), (d / "t.srt").read_text(encoding="utf-8")])
+print(json.dumps(out))`], { input: JSON.stringify(cases), encoding: "utf8" }).trim().split("\n").at(-1));
+  cases.forEach((c, i) => {
+    assert.equal(X.buildASS(c.m, X.F.platforms.tiktok, [[0, 6]], { style: c.style }), py[i][0], `${c.k} ${c.style} .ass`);
+    assert.equal(X.buildSRT(c.m, [[0, 6]]), py[i][1], `${c.k} .srt`);
+  });
+  assert.match(py[0][1], /这是真的很棒。我们走吧/);                 // Chinese: no spaces between words
+  assert.match(py.find((_, i) => cases[i].k === "ko")[1], /이것은 정말 대단해 요/);   // Korean keeps them
+  assert.equal(X.joinWords(["我的", "iPhone", "很"]), "我的iPhone很");
+  assert.equal(X.joinWords(["Hello", "world"], ["<b>Hello</b>", "world"]), "<b>Hello</b> world");
+  for (const t of ["Done.", 'He said "yes."', "真的很棒。", "هل انت بخير؟"]) assert.ok(X.SENT_END.test(t), t);
+  for (const t of ["真的很棒", "café", "not yet"]) assert.ok(!X.SENT_END.test(t), t);
 });
 
 test("a YouTube Studio export is read whatever columns it has", () => {

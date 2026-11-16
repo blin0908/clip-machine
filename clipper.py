@@ -15,6 +15,9 @@ import re
 import shutil
 import subprocess
 import sys
+import threading
+import time
+import unicodedata
 from collections import Counter
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
@@ -50,7 +53,100 @@ YTDLP = _tool("yt-dlp")
 # Captions use the bundled Montserrat Black (OFL) so output looks the same on macOS, Windows, Linux and the web app.
 FONT_DIR = str(next((d for d in (HERE / "docs" / "fonts", HERE / "fonts") if (d / "Montserrat-Black.ttf").exists()),
                     HERE / "fonts"))
-CAP_FONT = "Montserrat Thin Black"   # the family name stored inside Montserrat-Black.ttf (libass matches on it)
+VERSION = "1.5.0"            # shown in the app; the desktop app compares it with the latest GitHub release
+CAP_FONT = "Montserrat Black"   # the family name stored inside Montserrat-Black.ttf (libass matches on it)
+# Other scripts use the matching Noto Sans Black (OFL), fetched the first time a clip needs it. The web app reads this
+# table from formula.json, so both engines pick the same font. Montserrat covers Latin (every European accent),
+# Cyrillic and Vietnamese; each Noto font also covers basic Latin, so mixed text stays in one face.
+_NOTO = "https://cdn.jsdelivr.net/npm/@expo-google-fonts"
+CAPTION_FONTS = {
+    "latin":      {"name": CAP_FONT, "file": "Montserrat-Black.ttf"},
+    "greek":      {"name": "Noto Sans Black", "file": "NotoSans_900Black.ttf", "label": "Greek", "mb": 0.6,
+                   "url": f"{_NOTO}/noto-sans@0.4.2/900Black/NotoSans_900Black.ttf"},
+    "arabic":     {"name": "Noto Sans Arabic Black", "file": "NotoSansArabic_900Black.ttf", "label": "Arabic", "mb": 0.2,
+                   "url": f"{_NOTO}/noto-sans-arabic@0.4.3/900Black/NotoSansArabic_900Black.ttf"},
+    "hebrew":     {"name": "Noto Sans Hebrew Black", "file": "NotoSansHebrew_900Black.ttf", "label": "Hebrew", "mb": 0.05,
+                   "url": f"{_NOTO}/noto-sans-hebrew@0.4.1/900Black/NotoSansHebrew_900Black.ttf"},
+    "devanagari": {"name": "Noto Sans Devanagari Black", "file": "NotoSansDevanagari_900Black.ttf", "label": "Hindi", "mb": 0.2,
+                   "url": f"{_NOTO}/noto-sans-devanagari@0.4.2/900Black/NotoSansDevanagari_900Black.ttf"},
+    "thai":       {"name": "Noto Sans Thai Black", "file": "NotoSansThai_900Black.ttf", "label": "Thai", "mb": 0.05,
+                   "url": f"{_NOTO}/noto-sans-thai@0.4.2/900Black/NotoSansThai_900Black.ttf"},
+    "ja":         {"name": "Noto Sans JP Black", "file": "NotoSansJP_900Black.ttf", "label": "Japanese", "mb": 5.6,
+                   "url": f"{_NOTO}/noto-sans-jp@0.4.4/900Black/NotoSansJP_900Black.ttf"},
+    "ko":         {"name": "Noto Sans KR Black", "file": "NotoSansKR_900Black.ttf", "label": "Korean", "mb": 6.0,
+                   "url": f"{_NOTO}/noto-sans-kr@0.4.4/900Black/NotoSansKR_900Black.ttf"},
+    "zh":         {"name": "Noto Sans SC Black", "file": "NotoSansSC_900Black.ttf", "label": "Chinese", "mb": 10.3,
+                   "url": f"{_NOTO}/noto-sans-sc@0.4.4/900Black/NotoSansSC_900Black.ttf"},
+}
+FONT_CACHE = Path(os.environ.get("CLIP_FONT_CACHE") or HERE / "fonts-cache")   # Montserrat + any script fonts fetched
+_font_lock = threading.Lock()
+
+
+_font_failed = {}
+
+
+def _fetch_font(url, dst):
+    tmp = dst.with_name(dst.name + ".part")
+    try:
+        import urllib.request
+        with urllib.request.urlopen(url, timeout=60) as r, open(tmp, "wb") as f:
+            shutil.copyfileobj(r, f)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        if not shutil.which("curl"):        # some Python installs lack the CA certificates urllib needs; curl has its own
+            raise
+        try:
+            subprocess.run(["curl", "-fsSL", "--max-time", "180", "-o", str(tmp), url], check=True, capture_output=True)
+        except Exception:
+            tmp.unlink(missing_ok=True)
+            raise
+    head = tmp.read_bytes()[:4]
+    if tmp.stat().st_size < 10_000 or head not in (b"\x00\x01\x00\x00", b"OTTO", b"true"):
+        tmp.unlink(missing_ok=True)
+        raise ValueError(f"not a font: {url}")
+    os.replace(tmp, dst)
+
+
+def font_dir(entry):
+    """The folder libass loads caption fonts from: the bundled one, or (for other scripts) a cache holding Montserrat and
+    the script's Noto font, downloaded the first time. Offline, it falls back to the bundled folder and system fonts."""
+    if not entry.get("url"):
+        return FONT_DIR
+    if time.time() - _font_failed.get(entry["file"], 0) < 600:   # failed recently: don't stall every render retrying
+        return FONT_DIR
+    try:
+        with _font_lock:
+            FONT_CACHE.mkdir(parents=True, exist_ok=True)
+            mont = FONT_CACHE / "Montserrat-Black.ttf"
+            if not mont.exists():
+                shutil.copyfile(Path(FONT_DIR) / "Montserrat-Black.ttf", mont)
+            dst = FONT_CACHE / entry["file"]
+            if not dst.exists():
+                _fetch_font(entry["url"], dst)
+        return str(FONT_CACHE)
+    except Exception as e:  # noqa: BLE001 - captions still render with system fonts
+        _font_failed[entry["file"]] = time.time()
+        print(f"[fonts] couldn't get the {entry.get('label', '')} caption font ({e}); using system fonts", file=sys.stderr)
+        return FONT_DIR
+
+
+# checked in this order: Japanese text mixes kana with Chinese characters, so kana decides it. Mirrors scriptOf in formula.js.
+_SCRIPTS = [("ko", "[\uAC00-\uD7AF\u1100-\u11FF\u3130-\u318F]"), ("ja", "[\u3040-\u30FF]"),
+            ("zh", "[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]"),
+            ("arabic", "[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]"),
+            ("hebrew", "[\u0590-\u05FF]"), ("devanagari", "[\u0900-\u097F]"), ("thai", "[\u0E00-\u0E7F]"),
+            ("greek", "[\u0370-\u03FF\u1F00-\u1FFF]")]
+_SCRIPTS = [(k, re.compile(rx)) for k, rx in _SCRIPTS]
+
+
+def script_of(text):
+    return next((k for k, rx in _SCRIPTS if rx.search(text or "")), "latin")
+
+
+def caption_font(m):
+    """The caption font entry for a cut, from the script of its headline and spoken words."""
+    words = " ".join(w["w"] for w in (m.words or []) if m.start - 0.05 <= w["s"] <= m.end)
+    return CAPTION_FONTS[script_of(f"{m.title or ''} {words}")]
 
 SR = 16000          # analysis sample rate
 HOP = 0.5           # loudness resolution (seconds)
@@ -172,17 +268,49 @@ def audio_peak_db(wav: Path) -> float:
 _MODEL_CACHE = {}
 
 
-def transcribe(wav: Path, model_size="base", progress=_noop, duration=None) -> list[dict]:
+# Whisper language codes accepted from the page ("auto" = detect from the audio first).
+LANGUAGES = ("auto", "af", "ar", "bg", "bn", "ca", "cs", "cy", "da", "de", "el", "en", "es", "et", "fa", "fi", "fr", "he", "hi", "hr", "hu",
+             "id", "it", "ja", "ko", "lt", "lv", "ms", "nl", "no", "pl", "pt", "ro", "ru", "sk", "sl", "sr", "sv", "sw", "ta", "th", "tl",
+             "tr", "uk", "ur", "vi", "zh")
+EN_PROMPT = "Umm, let me think, uh, like, hmm... Okay, so, um, here's what I'm thinking."
+
+
+# Chinese, Japanese, Thai, Lao, Khmer and Burmese don't put spaces between words; everything else does.
+# Mirrors joinWords in docs/formula.js: captions and subtitle files must come out identical in both engines.
+_NOSPACE = re.compile("[\u0E00-\u0EFF\u1000-\u109F\u1780-\u17FF\u2E80-\u2FFF\u3000-\u303F\u3040-\u30FF\u3100-\u312F"
+                      "\u3190-\u31FF\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\uFF00-\uFF60]")
+
+
+# A sentence ends on . ! ? (or 。！？ ؟ ।), optionally followed by closing quotes or brackets. Mirrors SENT_END in formula.js.
+SENT_END = re.compile("[.!?\u3002\uFF01\uFF1F\u061F\u0964][\"'\u2019\u201D)\\]\u300D\u300F\u00BB]*$")
+
+
+def join_words(raw, parts=None):
+    """Join words (raw), or display parts built from them (e.g. with highlight tags), spacing by the raw words."""
+    parts = list(raw) if parts is None else list(parts)
+    out = ""
+    for i, p in enumerate(parts):
+        if i:
+            a, b = str(raw[i - 1]), str(raw[i])
+            out += "" if (a and _NOSPACE.match(a[-1])) or (b and _NOSPACE.match(b[0])) else " "
+        out += p
+    return out
+
+
+def transcribe(wav: Path, model_size="base", progress=_noop, duration=None, language="auto") -> list[dict]:
     from faster_whisper import WhisperModel
     progress("transcribe", 0, f"Loading speech model ({model_size})")
     if model_size not in _MODEL_CACHE:
         _MODEL_CACHE[model_size] = WhisperModel(model_size, device="cpu", compute_type="int8")
     model = _MODEL_CACHE[model_size]
     audio = np.fromfile(wav, dtype=np.int16).astype(np.float32) / 32768.0
-    segs_iter, info = model.transcribe(audio, word_timestamps=True, vad_filter=True,
+    if language not in LANGUAGES or language == "auto":
+        # detect first, so the English filler prompt below can't pull other languages towards English
+        language, _, _ = model.detect_language(audio, vad_filter=True, language_detection_segments=3)
+    segs_iter, info = model.transcribe(audio, language=language, word_timestamps=True, vad_filter=True,
                                        beam_size=1, condition_on_previous_text=False,
-                                       # nudges Whisper to write out "um/uh" instead of silently dropping them
-                                       initial_prompt="Umm, let me think, uh, like, hmm... Okay, so, um, here's what I'm thinking.")
+                                       # nudges Whisper to write out "um/uh" instead of silently dropping them (English only)
+                                       initial_prompt=EN_PROMPT if language == "en" else None)
     total = duration or info.duration or 1
     segs = []
     for s in segs_iter:
@@ -365,7 +493,7 @@ def _features(s, e, text, words, loud, first_text, plat):
         "hook": float(head.mean() if len(head) else 0) + 0.8 * min(hook_lang, 4),
         "first1": float(first1.mean() if len(first1) else 0),
         "payoff": float(tail.mean() - seg.mean()),
-        "ends_clean": 1.0 if re.search(r"[.!?]\W*$", text) else 0.0,
+        "ends_clean": 1.0 if SENT_END.search(text.strip()) else 0.0,
         "midstart": 1.0 if _first_word(first_text) in MIDSTART else 0.0,
         "deadair": (sum(gaps) + max(lead, 0)) / dur,
         "fit": fit,
@@ -548,7 +676,7 @@ def shorten(m: Moment, segs, loud, lo, hi):
     e = max(ends, key=punch)
     words = [w for w in m.words if w["e"] <= e + 0.05]
     end = min(m.end, (words[-1]["e"] + 0.35) if words else e)
-    return Moment(start=m.start, end=round(end, 2), score=m.score, text=" ".join(w["w"] for w in words),
+    return Moment(start=m.start, end=round(end, 2), score=m.score, text=join_words([w["w"] for w in words]),
                   title=m.title, words=words)
 
 
@@ -617,8 +745,18 @@ def _ass_time(t):
     return f"{int(h)}:{int(m):02d}:{s:05.2f}"
 
 
+_GREEK = re.compile("[\u0370-\u03FF\u1F00-\u1FFF]")
+_GREEK_CAP_MARKS = re.compile("[\u0300\u0301\u0313\u0314\u0342]")
+
+
+def _upper(w):
+    # Greek capitals drop their accents and breathings (ΚΌΣΜΕ is written ΚΟΣΜΕ); the diaeresis stays.
+    w = w.upper()
+    return unicodedata.normalize("NFC", _GREEK_CAP_MARKS.sub("", unicodedata.normalize("NFD", w))) if _GREEK.search(w) else w
+
+
 def _clean(w):
-    return w.replace("\\", "").replace("{", "(").replace("}", ")").upper()
+    return _upper(w.replace("\\", "").replace("{", "(").replace("}", ")"))
 
 
 def _ass_safe(text):
@@ -722,16 +860,19 @@ def write_ass(m: Moment, path: Path, plat: dict, keep, captions=True, hook=True,
     """Word-by-word captions (3-word groups, active word highlighted) + a top headline for the first 3 s.
     look: {format, hl, size, pos} from the studio (same layout rules as the web app's buildASS)."""
     look = look or {}
+    font = caption_font(m)["name"]
     L = caption_layout(plat, look.get("format", "9:16"), look.get("size", "m"), look.get("pos", "bottom"))
     k = L["scale"]; R = L["marginLR"]
     n = lambda x: _rnd(x * k)
     hk = min(1, k / SIZES.get(look.get("size", "m"), 1)); nh = lambda x: _rnd(x * hk)
-    tail = f"{L['align']},{R},{R},{L['marginV']},1"
+    # Encoding -1 makes libass run full Unicode bidi across override tags; with 1 it
+    # splits Arabic/Hebrew lines at each highlight and lays the pieces out left to right.
+    tail = f"{L['align']},{R},{R},{L['marginV']},-1"
     style = style if style in CAPTION_STYLES else "pop"
     cap_style = {
-        "pop":   f"Style: Cap,{CAP_FONT},{n(84)},&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,0,0,0,0,100,100,0,0,1,{n(7)},{n(3)},{tail}",
-        "clean": f"Style: Cap,{CAP_FONT},{n(70)},&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,{n(4)},{n(2)},{tail}",
-        "boxed": f"Style: Cap,{CAP_FONT},{n(72)},&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,3,{n(16)},0,{tail}",
+        "pop":   f"Style: Cap,{font},{n(84)},&H00FFFFFF,&H00FFFFFF,&H00000000,&H64000000,0,0,0,0,100,100,0,0,1,{n(7)},{n(3)},{tail}",
+        "clean": f"Style: Cap,{font},{n(70)},&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,0,0,0,0,100,100,0,0,1,{n(4)},{n(2)},{tail}",
+        "boxed": f"Style: Cap,{font},{n(72)},&H00FFFFFF,&H00FFFFFF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,3,{n(16)},0,{tail}",
     }[style]
     HL = ass_colour(look.get("hl"))
     hdr = f"""[Script Info]
@@ -743,8 +884,8 @@ WrapStyle: 0
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
 {cap_style}
-Style: Hook,{CAP_FONT},{nh(58)},&H00111111,&H00111111,&H00FFFFFF,&H00000000,0,0,0,0,100,100,0,0,3,{nh(20)},0,8,{R + 20},{R + 20},{L['hookTop']},1
-Style: Cta,{CAP_FONT},{nh(58)},&H00111111,&H00111111,&H0000E6FF,&H00000000,0,0,0,0,100,100,0,0,3,{nh(20)},0,8,{R + 20},{R + 20},{L['hookTop']},1
+Style: Hook,{font},{nh(58)},&H00111111,&H00111111,&H00FFFFFF,&H00000000,0,0,0,0,100,100,0,0,3,{nh(20)},0,8,{R + 20},{R + 20},{L['hookTop']},-1
+Style: Cta,{font},{nh(58)},&H00111111,&H00111111,&H0000E6FF,&H00000000,0,0,0,0,100,100,0,0,3,{nh(20)},0,8,{R + 20},{R + 20},{L['hookTop']},-1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -765,7 +906,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         g_end = groups[gi + 1][0]["s"] if gi + 1 < len(groups) else g[-1]["e"] + 0.3
         if style == "clean":   # one event per phrase, no per-word highlight
             s0 = T(g[0]["s"]); e0 = min(T(g_end), s0 + 3.5)
-            text = " ".join(x["w"].replace("{", "(").replace("}", ")") for x in g)
+            text = join_words([x["w"] for x in g], [x["w"].replace("{", "(").replace("}", ")") for x in g])
             lines.append(f"Dialogue: 0,{_ass_time(s0)},{_ass_time(max(e0, s0 + 0.05))},Cap,,0,0,0,,{text}")
             continue
         for wi, w in enumerate(g):
@@ -774,7 +915,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
             if e - s > 1.6:
                 e = s + 1.6
             parts = [(hi + _clean(x["w"]) + lo) if k == wi else _clean(x["w"]) for k, x in enumerate(g)]
-            lines.append(f"Dialogue: 0,{_ass_time(s)},{_ass_time(max(e, s + 0.05))},Cap,,0,0,0,,{' '.join(parts)}")
+            lines.append(f"Dialogue: 0,{_ass_time(s)},{_ass_time(max(e, s + 0.05))},Cap,,0,0,0,,{join_words([x["w"] for x in g], parts)}")
     path.write_text(hdr + "\n".join(lines) + "\n", encoding="utf-8")
 
 
@@ -784,7 +925,7 @@ def write_srt(m: Moment, path: Path, keep):
         t = remap(t - m.start, keep)
         h, r = divmod(t, 3600); mi, s = divmod(r, 60)
         return f"{int(h):02d}:{int(mi):02d}:{int(s):02d},{int((s % 1) * 1000):03d}"
-    out = [f"{n}\n{ts(g[0]['s'])} --> {ts(g[-1]['e'])}\n{' '.join(x['w'] for x in g)}\n"
+    out = [f"{n}\n{ts(g[0]['s'])} --> {ts(g[-1]['e'])}\n{join_words([x['w'] for x in g])}\n"
            for n, g in enumerate((words[i:i + 7] for i in range(0, len(words), 7)), 1)]
     path.write_text("\n".join(out), encoding="utf-8")
 
@@ -843,7 +984,7 @@ def render(video: Path, m: Moment, out: Path, layout="fit", captions=True, crop_
     subs = ""
     if overlay:
         write_ass(m, ass, plat, keep, captions, hook, cta, style, look)
-        subs = f",ass='{_ffesc(str(ass))}':fontsdir='{_ffesc(FONT_DIR)}'"
+        subs = f",ass='{_ffesc(str(ass))}':fontsdir='{_ffesc(font_dir(caption_font(m)))}'"
     # brand logo: laid over the picture under the captions, so a long headline draws on top of it
     lp = look.get("logo_path")
     logo = lp if look.get("logo") and layout != "original" and lp and Path(lp).is_file() else None
@@ -964,7 +1105,7 @@ def fmt_t(t):
 # ---------------------------------------------------------------- pipeline
 def run(source, outdir: Path, n=5, min_len=None, max_len=None, layout="fit", captions=True,
         model="base", crop_x=0.5, platform="all", hook=True, tighten=True, version="both", cta="",
-        enhance=True, style="pop", progress=_noop, look=None, logo=None) -> dict:
+        enhance=True, style="pop", progress=_noop, look=None, logo=None, language="auto") -> dict:
     """version: 'both' = long cut + a short cut with the same opening; 'short' or 'long' = one cut.
     look: {format, hl, size, pos, logo, lpos, lsize, lop} caption/frame/brand choices (defaults: 9:16, yellow,
     medium, lower third, no logo). logo: path to the brand logo image, used when look["logo"] is on."""
@@ -989,7 +1130,7 @@ def run(source, outdir: Path, n=5, min_len=None, max_len=None, layout="fit", cap
         raise RuntimeError("The audio is silent, so there's nothing to clip. Check the file has sound.")
     (outdir / "quiet.json").write_text(json.dumps(quiet_map(wav)))
     progress("analyze", 100, "Audio analysed")
-    segs = transcribe(wav, model, progress, info["duration"])
+    segs = transcribe(wav, model, progress, info["duration"], language)
     (outdir / "transcript.json").write_text(json.dumps(segs))
     pool = find_moments(segs, loud, info["duration"], n + 4, min_len, max_len, platform, progress, version)
     clips, dropped = [], 0
@@ -1157,6 +1298,7 @@ if __name__ == "__main__":
     ap.add_argument("--keep-pauses", action="store_true", help="don't cut dead air or um/uh")
     ap.add_argument("--no-enhance", action="store_true", help="skip audio clean-up, sharpening and punch-ins")
     ap.add_argument("--model", default="base", help="tiny | base | small | medium")
+    ap.add_argument("--language", default="auto", choices=LANGUAGES, help="spoken language code, or auto (detect)")
     ap.add_argument("--version", choices=["both", "short", "long"], default="both",
                     help="both = long cut + short cut with the same opening")
     ap.add_argument("--cta", default="", help="end-card text on the long cut, e.g. 'Which one would you pick?'")
@@ -1173,7 +1315,7 @@ if __name__ == "__main__":
     res = run(a.source, Path(a.out), a.n, a.min, a.max, a.layout, not a.no_captions, a.model,
               platform=a.platform, hook=not a.no_hook, tighten=not a.keep_pauses, version=a.version,
               cta=a.cta, enhance=not a.no_enhance, style=a.style, progress=pr,
-              look={"logo": bool(a.logo), "lpos": a.logo_pos} if a.logo else None, logo=a.logo)
+              look={"logo": bool(a.logo), "lpos": a.logo_pos} if a.logo else None, logo=a.logo, language=a.language)
     for c in res["clips"]:
         print(f"{c['score']:>4}  {c['range']:>13s}  {c['duration']}s  {c['file']}  {c['title']}")
         if c.get("short"):

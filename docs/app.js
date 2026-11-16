@@ -13,8 +13,15 @@ const CORE = "https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.10/dist/esm";
 const PN = { tiktok: "TikTok", reels: "Reels", shorts: "YT Shorts", facebook: "Facebook", snapchat: "Snapchat", x: "X" };
 const DEF = { platform: "all", n: "3", version: "both", quality: "fast", model: "Xenova/whisper-base.en", format: "9:16",
               captions: "1", hook: "1", tighten: "1", enhance: "1", layout: "fit", style: "pop", hl: "#FFF000", size: "m", pos: "bottom",
-              logo: "1", lpos: "tl", lsize: "m", lop: "0.7" };
+              logo: "1", lpos: "tl", lsize: "m", lop: "0.7", lang: "en" };
 const opts = { ...DEF };
+// Spoken languages offered in the picker (Whisper codes). English uses the English-only models on the web, which are
+// faster and more accurate for English; any other language switches to the multilingual model of the same size.
+const LANGS = [["en", "English"], ["ar", "Arabic"], ["zh", "Chinese"], ["cs", "Czech"], ["da", "Danish"], ["nl", "Dutch"], ["fi", "Finnish"],
+  ["fr", "French"], ["de", "German"], ["el", "Greek"], ["he", "Hebrew"], ["hi", "Hindi"], ["hu", "Hungarian"], ["id", "Indonesian"],
+  ["it", "Italian"], ["ja", "Japanese"], ["ko", "Korean"], ["ms", "Malay"], ["no", "Norwegian"], ["pl", "Polish"], ["pt", "Portuguese"],
+  ["ro", "Romanian"], ["ru", "Russian"], ["es", "Spanish"], ["sv", "Swedish"], ["tl", "Tagalog"], ["th", "Thai"], ["tr", "Turkish"],
+  ["uk", "Ukrainian"], ["vi", "Vietnamese"]];
 // DESK = set when this page is served by the desktop app: videos and links are processed by its native engine
 // (faster-whisper + ffmpeg on this computer) instead of in the browser.
 let DESK = null;
@@ -33,6 +40,14 @@ const typing = e => e.target.closest?.("input, textarea, select, [contenteditabl
 
 // ---------------------------------------------------------------- settings (chips, presets)
 function setChip(k, v, save = true) {
+  if (k === "lang") {                              // a dropdown, not chips
+    const sel = $("#lang");
+    if (![...sel.options].some(o => o.value === v)) return;
+    sel.value = v; opts.lang = v;
+    $("#langSum").textContent = sel.selectedOptions[0].textContent.replace("Detect automatically", "auto-detect");
+    if (save) { saveLast(); markCustom(); }
+    return;
+  }
   const g = document.querySelector(`.chips[data-k="${k}"]`);
   if (!g) return;
   const b = g.querySelector(`.chip[data-v="${CSS.escape(v)}"]`);
@@ -57,6 +72,8 @@ $$(".chips[data-k]").forEach(g => g.addEventListener("click", e => {
   setChip(g.dataset.k, b.dataset.v);
 }));
 $("#hlc").addEventListener("input", e => setChip("hl", e.target.value));
+$("#lang").innerHTML = LANGS.map(([c, n]) => `<option value="${c}">${n}</option>`).join("");
+$("#lang").addEventListener("change", e => { setChip("lang", e.target.value); preloadASR(); });
 $("#cta").addEventListener("input", () => { saveLast(); markCustom(); });
 function showPlat() {
   const p = X.F.platforms[opts.platform];
@@ -428,9 +445,10 @@ addEventListener("drop", e => { if (!hasFiles(e)) return; e.preventDefault(); dr
 let asrW = null, asrReject = null;
 const asrWorker = () => asrW ||= new Worker(new URL("./asr-worker.js", import.meta.url), { type: "module" });
 const dropASR = () => { try { asrW?.terminate(); } catch {} asrW = null; };
-function preloadASR() { if (!IS_WEBKIT && !DESK) asrWorker().postMessage({ type: "preload", model: opts.model }); }
+const asrModel = () => opts.lang === "en" ? opts.model : opts.model.replace(/\.en$/, "");   // multilingual twin of the chosen size
+function preloadASR() { if (!IS_WEBKIT && !DESK) asrWorker().postMessage({ type: "preload", model: asrModel() }); }
 const ASR_SILENCE = 150000;      // no word from the speech model for this long = stalled (out of memory), not slow
-function transcribe(pcm, windows, model, keep = false) {
+function transcribe(pcm, windows, model, keep = false, language = "en") {
   return new Promise((resolve, reject) => {
     const w = asrWorker();
     let dev = "", dog = 0;
@@ -447,7 +465,7 @@ function transcribe(pcm, windows, model, keep = false) {
       if (d.type === "done") { clearTimeout(dog); asrReject = null; if (IS_WEBKIT && !keep) dropASR(); resolve(d.words); }
       if (d.type === "error") { clearTimeout(dog); asrReject = null; dropASR(); reject(new Error("Speech model: " + d.message)); }
     };
-    w.postMessage({ audio: pcm, windows, model });
+    w.postMessage({ audio: pcm, windows, model, language });
   });
 }
 
@@ -501,6 +519,22 @@ function filterGraph(m, keep, info, o, hasASS) {
 
 // ---------------------------------------------------------------- brand logo
 // One logo per browser (a PNG data URL, at most 512 px). Inside the desktop app the app's copy is the source of truth.
+// ---------------------------------------------------------------- caption fonts for other scripts
+// Montserrat ships with the page; a clip in Greek, Arabic, Hebrew, Hindi, Thai, Japanese, Korean or Chinese needs its
+// Noto Sans Black, fetched once per page (the service worker keeps pinned CDN files across visits).
+const fontBytes = new Map();
+async function fontIntoEngine(E, f) {
+  if (!f?.url) return;
+  const path = `/fonts/${f.file}`;
+  if (E.cache.has(path)) return;
+  if (!fontBytes.has(f.file)) {
+    const r = await fetch(f.url).catch(() => null);
+    if (!r?.ok) throw new Error(`Couldn't load the ${f.label} caption font (${f.mb} MB). Check your connection and try again.`);
+    fontBytes.set(f.file, new Uint8Array(await r.arrayBuffer()));
+  }
+  E.cache.set(path, fontBytes.get(f.file));
+  await E.ff.writeFile(path, fontBytes.get(f.file).slice());   // a copy: writeFile hands its buffer to the worker
+}
 async function brandIntoEngine(E) {
   if (E.logoV === brand.v) return;
   brand.bytes ||= new Uint8Array(await (await fetch(brand.url)).arrayBuffer());
@@ -558,6 +592,7 @@ async function renderClip(sess, m, look, cta, onPct, E = E0) {
   const plat = X.F.platforms[o.platform];
   const hasASS = (o.captions && m.words.length) || (o.hook && m.title) || cta;
   if (hasASS) await writeFS("/sub.ass", X.buildASS(m, plat, keep, { captions: o.captions, hook: o.hook, cta, style: o.style, hl: o.hl, size: o.size, pos: o.pos, format: o.format }), E);
+  if (hasASS) await fontIntoEngine(E, X.captionFont(m));
   o.logo = !!(o.logo && brand.url);
   if (o.logo) await brandIntoEngine(E);
   const { fc, fps, W, H, audiogram } = filterGraph(m, keep, sess.info, o, hasASS);
@@ -712,7 +747,7 @@ async function processSession(sess, phase = "all") {
     }
     if (phase === "all" || phase === "listen") {
     if (IS_WEBKIT) dropEngine(E0);               // Safari: give the speech model the whole WebAssembly budget...
-    words = await transcribe(pcm, X.asrWindows(loud, info.duration), opts.model, phase === "listen");
+    words = await transcribe(pcm, X.asrWindows(loud, info.duration), asrModel(), phase === "listen", opts.lang);
     if (cancelled) throw new Error("Cancelled.");
     perf.lap("transcribe");
     if (phase === "listen") { Object.assign(sess.prep, { words, pcm: null }); sess.status = "queued"; sess.msg = ""; return; }
@@ -883,7 +918,7 @@ async function processRemote(sess) {
   if (!active || (!active.clips.length && active.status !== "done")) setActive(sess);
   paintQueue(); renderBoard();
   const b = { n: o.n, platform: o.platform, version: o.version, hook: o.hook ? "1" : "0", tighten: o.tighten ? "1" : "0", enhance: o.enhance ? "1" : "0",
-              captions: o.captions ? "1" : "0", style: o.style, layout: o.layout, cta: sess.cta, model: opts.model, format: o.format, hl: o.hl, size: o.size, pos: o.pos,
+              captions: o.captions ? "1" : "0", style: o.style, layout: o.layout, cta: sess.cta, model: opts.model, lang: opts.lang, format: o.format, hl: o.hl, size: o.size, pos: o.pos,
               logo: o.logo ? "1" : "0", lpos: o.lpos, lsize: o.lsize, lop: String(o.lop) };
   try {
     let id;
@@ -951,16 +986,36 @@ async function remoteEdit(job) {
     }
   }
 }
+// Desktop only (the website is always current): once a day, ask GitHub for the latest release and offer it if newer.
+const newerVersion = (a, b) => { const p = s => String(s || "").replace(/^v/, "").split(".").map(n => parseInt(n, 10) || 0);
+  const x = p(a), y = p(b); for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); return false; };
+async function checkUpdate() {
+  const K = "clipmachine.update", now = Date.now(); let c = store.get(K, null);
+  if (!c?.tag || now - c.at > 864e5) {
+    try {
+      const r = await fetch("https://api.github.com/repos/blin0908/clip-machine/releases/latest", { headers: { Accept: "application/vnd.github+json" }, cache: "no-store" });
+      if (!r.ok) return; const j = await r.json(); if (!/^v?\d+\.\d+/.test(j.tag_name || "")) return;
+      c = { at: now, tag: j.tag_name, url: /^https:\/\/github\.com\//.test(j.html_url) ? j.html_url : "https://github.com/blin0908/clip-machine/releases/latest" };
+      store.set(K, c);
+    } catch { return; }
+  }
+  if (!newerVersion(c.tag, X.F.version)) return;
+  $("#ver").innerHTML = `Version ${esc(X.F.version)}. <a class="upd" href="${esc(c.url)}" target="_blank" rel="noopener">Download ${esc(c.tag)}</a>`;
+  toast(`Clip Machine ${c.tag} is out. The download link is at the bottom of the settings.`);
+}
 async function enterDesktop(info) {
   DESK = info;
   document.body.classList.add("desk");
-  DEF.model = "base";
+  DEF.model = "base"; DEF.lang = "auto";
+  $("#lang").insertAdjacentHTML("afterbegin", `<option value="auto">Detect automatically</option>`);   // faster-whisper detects the language first
+  if (!store.get(LKEY, {}).lang) setChip("lang", "auto", false);
   $('.chips[data-k="model"]').innerHTML = `<button class="chip" data-v="tiny">Fastest</button><button class="chip" data-v="base" aria-pressed="true">Balanced</button><button class="chip" data-v="small">Most accurate (slower)</button>`;
   $("#qualityRow").hidden = true;                   // the desktop app always exports full HD
   $(".lhint").textContent = "Paste a YouTube, TikTok, Twitch, X or any video link. The desktop app downloads it on this computer.";
   $("#link").placeholder = "Paste a YouTube, TikTok or video link";
   $(".tag").textContent = "Desktop app · runs on this computer";
   $("#logStorage").textContent = "Saved on the computer running Clip Machine.";
+  $(".foot.private").firstChild.textContent = "Your videos stay on the computer running Clip Machine: nothing goes to a cloud service. ";
   const tl = $(".toplink"); tl.href = "classic"; tl.removeAttribute("target"); tl.setAttribute("aria-label", "Classic view"); tl.querySelector("span").textContent = "Classic view";
   try {                                            // the app's logo is the one that renders
     const r = await fetch("api/brand/logo", { cache: "no-store" });
@@ -1222,10 +1277,10 @@ function renderTranscript() {
   for (const c of s.clips) for (const v of [c, c.short]) if (v) s.words.forEach((w, i) => { if (w.s >= v.start && w.s <= v.end) inClip[i] = true; });
   const paras = []; let cur = null;
   s.words.forEach((w, i) => {
-    if (!cur || w.s - s.words[i - 1].e > 1.2 || (cur.n > 40 && /[.?!]$/.test(s.words[i - 1].w))) { cur = { t: w.s, html: [], n: 0 }; paras.push(cur); }
-    cur.html.push(`<w data-i="${i}" class="${inClip[i] ? "inclip" : ""}${X.F.fillerSet.has(w.w.toLowerCase().replace(/[^a-z]/g, "")) ? " filler" : ""}">${esc(w.w)}</w>`); cur.n++;
+    if (!cur || w.s - s.words[i - 1].e > 1.2 || (cur.n > 40 && /[.?!。！？]$/.test(s.words[i - 1].w))) { cur = { t: w.s, html: [], raw: [], n: 0 }; paras.push(cur); }
+    cur.html.push(`<w data-i="${i}" class="${inClip[i] ? "inclip" : ""}${X.F.fillerSet.has(w.w.toLowerCase().replace(/[^a-z]/g, "")) ? " filler" : ""}">${esc(w.w)}</w>`); cur.raw.push(w.w); cur.n++;
   });
-  tx.innerHTML = paras.map(p => `<p><button class="tcb" data-t="${p.t}" aria-label="Open the studio at ${X.fmtT(p.t)}">${X.fmtT(p.t)}</button><span>${p.html.join(" ")}</span></p>`).join("");
+  tx.innerHTML = paras.map(p => `<p><button class="tcb" data-t="${p.t}" aria-label="Open the studio at ${X.fmtT(p.t)}">${X.fmtT(p.t)}</button><span>${X.joinWords(p.raw, p.html)}</span></p>`).join("");
   paintSel(); runSearch();
 }
 function paintSel() {
@@ -1584,6 +1639,8 @@ if (!/github\.io$/.test(location.hostname) && location.protocol.startsWith("http
   try { const r = await fetch("api/info", { cache: "no-store" }); if (r.ok) { const j = await r.json(); if (j.desktop) await enterDesktop(j); } } catch {}
 }
 if (!DESK && "serviceWorker" in navigator && location.protocol.startsWith("http")) navigator.serviceWorker.register("sw.js").catch(() => {});
+$("#ver").textContent = `Version ${X.F.version}.`;
+if (DESK) checkUpdate();
 fillPresets("");
 if (innerWidth < 1000) $$(".grp[open]").forEach(d => { d.open = false; });   // phones: settings folded so the button and progress stay in reach
 const params = new URLSearchParams(location.search);
