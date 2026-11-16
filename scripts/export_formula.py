@@ -13,8 +13,8 @@ data = {"platforms": c.PLATFORMS, "hype": c.HYPE, "sponsor": list(c.SPONSOR), "s
         "weights": c.WEIGHTS, "raw": sorted(c.RAW), "captionFonts": c.CAPTION_FONTS, "version": c.VERSION}
 out = ROOT / "docs" / "formula.json"
 if "--check" in sys.argv:
-    same = json.loads(out.read_text()) == json.loads(json.dumps(data))
+    same = json.loads(out.read_text(encoding="utf-8")) == json.loads(json.dumps(data))
     print("formula.json is up to date" if same else "formula.json is STALE: run scripts/export_formula.py")
     sys.exit(0 if same else 1)
-out.write_text(json.dumps(data, indent=1, ensure_ascii=False) + "\n")   # indented: readable diffs
+out.write_text(json.dumps(data, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")   # indented: readable diffs
 print(f"wrote {out} ({out.stat().st_size} bytes)")
