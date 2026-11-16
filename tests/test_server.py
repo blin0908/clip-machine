@@ -20,8 +20,8 @@ import app as server  # noqa: E402
 class ServerTest(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
-        self._jobs_dir, self._log = server.JOBS, server.LOG
-        server.JOBS, server.LOG = self.tmp / "jobs", self.tmp / "results_log.json"
+        self._jobs_dir, self._log, self._studio = server.JOBS, server.LOG, server.STUDIO
+        server.JOBS, server.LOG, server.STUDIO = self.tmp / "jobs", self.tmp / "results_log.json", self.tmp / "studio_import.json"
         server.JOBS.mkdir()
         server.jobs.clear()
         while not server.queue.empty():
@@ -30,7 +30,7 @@ class ServerTest(unittest.TestCase):
         self.k = {"X-Key": server.KEY}
 
     def tearDown(self):
-        server.JOBS, server.LOG = self._jobs_dir, self._log
+        server.JOBS, server.LOG, server.STUDIO = self._jobs_dir, self._log, self._studio
         server.jobs.clear()
         shutil.rmtree(self.tmp, ignore_errors=True)
 
@@ -230,6 +230,30 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(len(self.c.get("/api/log", headers=self.k).get_json()), 1)
         self.c.delete(f"/api/log/{row['id']}", headers=self.k)
         self.assertEqual(self.c.get("/api/log", headers=self.k).get_json(), [])
+
+    def test_log_keeps_the_clips_signals(self):
+        sig = json.dumps({"hook": 1.25, "deadair": -0.4}, separators=(",", ":"))
+        row = self.c.post("/api/log", json={"title": "T", "score": "84", "signals": sig}, headers=self.k).get_json()
+        self.assertEqual((row["score"], row["signals"]), ("84", sig))
+        record = next(csv.DictReader(io.StringIO(self.c.get("/api/log.csv", headers=self.k).data.decode())))
+        self.assertEqual(json.loads(record["signals"])["hook"], 1.25)
+
+    def test_studio_import(self):
+        self.assertIsNone(self.c.get("/api/studio", headers=self.k).get_json()["studio"])
+        self.assertEqual(self.c.post("/api/studio", json={"rows": []}).status_code, 403)
+        good = {"file": "Table data.csv", "imported": "2026-11-16", "columns": ["Views", "Average percentage viewed (%)"],
+                "rows": [{"title": "Why this works", "published": "Nov 1, 2026", "values": {"Views": 1200, "Average percentage viewed (%)": 61.5, "junk": 3}},
+                         {"title": "x" * 900, "values": {"Views": "lots", "Average percentage viewed (%)": True}}]}
+        self.assertEqual(self.c.post("/api/studio", json=good, headers=self.k).status_code, 200)
+        saved = self.c.get("/api/studio", headers=self.k).get_json()["studio"]
+        self.assertEqual(saved["rows"][0]["values"], {"Views": 1200.0, "Average percentage viewed (%)": 61.5})
+        self.assertEqual(len(saved["rows"][1]["title"]), 300)
+        self.assertEqual(saved["rows"][1]["values"], {"Views": None, "Average percentage viewed (%)": None})
+        for junk in ([1, 2], {"rows": "no"}, {"rows": [1]}, {"rows": [{}] * 5001}, {"rows": [], "columns": ["c"] * 61}):
+            self.assertEqual(self.c.post("/api/studio", json=junk, headers=self.k).status_code, 400, junk if not isinstance(junk, dict) or len(str(junk)) < 80 else "big")
+        self.assertEqual(self.c.get("/api/studio", headers=self.k).get_json()["studio"]["file"], "Table data.csv")   # a bad import keeps the last good one
+        self.c.delete("/api/studio", headers=self.k)
+        self.assertIsNone(self.c.get("/api/studio", headers=self.k).get_json()["studio"])
 
     def test_log_fields_are_capped(self):
         row = self.c.post("/api/log", json={"notes": "n" * 5000}, headers=self.k).get_json()

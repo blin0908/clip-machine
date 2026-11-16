@@ -316,6 +316,7 @@ class Moment:
     hashtags: list = field(default_factory=list)
     captions: dict = field(default_factory=dict)
     words: list = field(default_factory=list)
+    signals: dict = field(default_factory=dict)   # each scoring signal relative to this video (z-score), for learning from results
 
 
 def _units(segs, duration):
@@ -431,7 +432,8 @@ def find_moments(segs, loud, duration, n=5, min_len=None, max_len=None, platform
             continue
         zrow = dict(zip(keys, z[idx]))
         picked.append(Moment(start=round(s, 2), end=round(e, 2), score=float(scores[idx]), text=text,
-                             words=words, reasons=_reasons(zrow, f), checklist=_checklist(zrow, f, e - s, plat)))
+                             words=words, reasons=_reasons(zrow, f), checklist=_checklist(zrow, f, e - s, plat),
+                             signals={k: round(float(v), 2) for k, v in zrow.items()}))
         if len(picked) >= n:
             break
 

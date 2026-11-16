@@ -33,7 +33,7 @@ Works best in **Chrome or Edge** on computers and Android phones. Firefox works 
    - clean in/out points
 
    A clip that fails a hard check is re-rendered in safe mode, and replaced with the next-best moment if it still fails.
-5. **Helps you post.** You get per-platform captions and a "before you post" checklist for each platform. A results log tracks the numbers that matter at 24 h, 72 h, and 7 d, with CSV export.
+5. **Helps you post.** You get per-platform captions and a "before you post" checklist for each platform. A results log tracks the numbers that matter at 24 h, 72 h, and 7 d, with CSV export. Import a YouTube Studio export and it shows which scoring signals your best clips share, and whether Clip Machine's own score is predicting your results.
 
 Each clip shows *why* it was picked, with evidence labels: **Official** (the platform documents it), **Data** (an observational study) or **Test** (a hypothesis to try on your own account). See [FORMULA.md](FORMULA.md) for the research and sources.
 

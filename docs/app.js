@@ -1368,6 +1368,8 @@ $("#out").addEventListener("submit", async e => {
   const p = X.F.platforms[f.platform.value], row = Object.fromEntries(new FormData(f));
   ["metric1", "metric2", "metric3"].forEach((n, i) => { if (row[n]) row[n] = `${p.judge[i] || n}: ${row[n]}`; });
   row.title = c.title;
+  if (c.score != null) row.score = String(c.score);
+  if (c.signals && Object.keys(c.signals).length) row.signals = JSON.stringify(c.signals);   // what the scorer saw, to compare with results later
   submit.disabled = true;
   try {
     if (DESK) {
@@ -1396,13 +1398,14 @@ async function loadLog() {
   const request = ++logRequest;
   try {
     if (DESK) await importBrowserLog();
-    const rows = DESK ? await api("api/log") : readBrowserLog();
+    const [rows] = await Promise.all([DESK ? api("api/log") : readBrowserLog(), loadStudio()]);
     if (request === logRequest) renderLog(rows);
   } catch {
     if (request === logRequest) $("#logtbl").textContent = "Couldn't load the results. Check the desktop app and reopen the log.";
   }
 }
 function renderLog(rows) {
+  logRows = rows; renderLearn();
   $("#logtbl").innerHTML = rows.length ? `<div class="lwrap"><table class="ltable"><tr><th>Platform</th><th>Clip</th><th>At</th><th>Views</th><th>Metrics</th><th><span class="sr">Delete</span></th></tr>` +
     rows.slice().reverse().map(r => `<tr><td>${esc(PN[r.platform] || r.platform)}<br><span class="st">${esc(r.posted)}</span></td><td>${esc(String(r.title ?? "").slice(0, 40))}<br><span class="st">${esc(r.cut)}</span></td><td>${esc(r.checkpoint)}</td><td>${esc(r.views)}</td><td>${logMetrics(r)}${r.notes ? `<br><span class="st">${esc(r.notes)}</span>` : ""}</td><td><button class="x" data-dellog="${esc(r.id)}" aria-label="Delete">${icon("x")}</button></td></tr>`).join("") + `</table></div>` : "No results logged yet.";
 }
@@ -1434,10 +1437,91 @@ $("#csv").onclick = async () => {
     return;
   }
   const cols = ["logged", "platform", "cut", "title", "posted", "checkpoint", "views", "metric1", "metric2", "metric3", "notes",
-    ...SHORTS_METRICS.map(({ name }) => name)];
+    ...SHORTS_METRICS.map(({ name }) => name), "score", "signals"];
   const q = v => `"${String(v ?? "").replace(/"/g, '""')}"`;
   download(new Blob([[cols.join(","), ...readBrowserLog().map(r => cols.map(k => q(r[k])).join(","))].join("\n")], { type: "text/csv" }), "clip_results.csv");
 };
+
+// ---------------------------------------------------------------- learning from results (YouTube Studio import)
+// Studio's export is matched to logged clips by title; each logged clip carries the scoring signals it was picked on,
+// so the report shows which signals the best clips share. Website: kept in this browser. Desktop: kept on the computer.
+const STUDIOKEY = "clipmachine.studio", METRICKEY = "clipmachine.learnMetric";
+let ytImport = null, logRows = [];
+async function loadStudio() {
+  try { ytImport = DESK ? (await api("api/studio")).studio || null : store.get(STUDIOKEY, null); } catch { ytImport = null; }
+}
+async function saveStudio(v) {
+  if (DESK) await (v ? api("api/studio", v) : api("api/studio", undefined, "DELETE"));
+  else if (v) {
+    ytImport = v; store.set(STUDIOKEY, v);
+    if (!store.get(STUDIOKEY, null)) throw new Error("This browser's storage is full, so the import is shown but won't be kept after a reload. Export a shorter date range.");
+  }
+  else try { localStorage.removeItem(STUDIOKEY); } catch {}
+  ytImport = v;
+}
+const fmtSig = (k, v) => k === "score" ? String(Math.round(v)) : (v > 0 ? "+" : v < 0 ? "−" : "") + Math.abs(v).toFixed(2);
+function rhoCell(r) {
+  const a = Math.abs(r), w = Math.min(50, a * 50), strength = a >= 0.5 ? "Strong" : a >= 0.3 ? "Moderate" : a >= 0.1 ? "Weak" : "None";
+  const dir = a < 0.1 ? "" : r > 0 ? " · better" : " · worse";
+  return `<span class="rho"><span class="bar" aria-hidden="true"><i class="${r >= 0 ? "up" : "down"}" style="left:${r >= 0 ? 50 : 50 - w}%;width:${w}%"></i></span><span>${strength}${dir} <span class="st">${r.toFixed(2)}</span></span></span>`;
+}
+const listOf = xs => xs.length < 2 ? xs.join("") : xs.slice(0, -1).join(", ") + " and " + xs.at(-1);
+function renderLearn() {
+  const out = $("#learnOut");
+  if (!ytImport?.rows?.length) {
+    out.innerHTML = `<ol><li>In YouTube Studio, open <b>Analytics</b> and choose <b>Advanced mode</b>.</li>
+      <li>Set a date range that covers your clips, and keep the <b>Video title</b> column. Add <b>Average percentage viewed</b> if it isn't there.</li>
+      <li>Choose <b>Export current view</b> → <b>Comma-separated values (.csv)</b>, unzip it, and import the table file (one row per video).</li></ol>
+      <p>Videos are matched to your logged posts by title, so log each post from the clip it came from.</p>`;
+    return;
+  }
+  const m = X.matchStudio(ytImport.rows, logRows), cols = (ytImport.columns || []).filter(c => !/^(video )?duration$/i.test(c.trim()));   // a video's length isn't a result
+  let metric = store.get(METRICKEY, "");
+  if (!cols.includes(metric)) metric = cols.find(c => /average percentage viewed/i.test(c)) || cols.find(c => /^views$/i.test(c)) || cols[0] || "";
+  const rep = metric ? X.signalReport(m.matched, metric) : { n: 0, enough: false, signals: [] };
+  const withSig = m.matched.filter(x => x.clip.signals).length;
+  let html = `<div class="learn-sum"><span>${ytImport.rows.length} videos in ${esc(ytImport.file || "the import")} · <b>${m.matched.length}</b> matched to logged clips${withSig < m.matched.length ? ` (${withSig} with saved signals)` : ""}</span>
+    ${cols.length ? `<label>Judge by <select id="learnMetric">${cols.map(c => `<option ${c === metric ? "selected" : ""}>${esc(c)}</option>`).join("")}</select></label>` : ""}
+    <button class="btn sm" type="button" id="studioDel">Remove import</button></div>`;
+  if (!cols.length) html += `<p>This export has no number columns. Add Views or Average percentage viewed in Advanced mode, then export again.</p>`;
+  else if (!rep.enough) html += `<p>Needs at least ${X.MIN_LEARN} matched clips with saved signals; this import has ${rep.n}. Posts logged before this update don't have their signals, so log new posts from the clips board.</p>`;
+  else {
+    const others = rep.signals.filter(x => x.key !== "score"), own = rep.signals.find(x => x.key === "score");
+    const up = others.filter(x => x.rho >= 0.3).slice(0, 3).map(x => x.label.toLowerCase()), down = others.filter(x => x.rho <= -0.3).slice(0, 2).map(x => x.label.toLowerCase());
+    const what = esc(metric.replace(/\s*\(.*?\)\s*/g, " ").trim().toLowerCase());
+    const take = (up.length ? `Your best clips score higher on <b>${esc(listOf(up))}</b>.` : "No signal stands out yet.") +
+      (down.length ? ` Clips that score higher on <b>${esc(listOf(down))}</b> did worse.` : "") +
+      (own ? own.rho >= 0.3 ? ` Clip Machine's own score is tracking ${what} so far.` : own.rho <= -0.3 ? ` Clip Machine's own score is pointing the wrong way on ${what} so far.` : ` Clip Machine's own score isn't predicting ${what} yet.` : "");
+    html += `<p class="learn-take">${take}</p>
+      <p>${rep.early ? `Early read from ${rep.n} clips` : `Based on ${rep.n} clips`} <span class="ev">Test</span> ${rep.early ? "Patterns this small can flip. Change one thing at a time and keep logging." : "A pattern in your own clips, not proof of what caused it."}</p>
+      <div class="lwrap"><table class="ltable sig"><tr><th>Signal</th><th>Best third</th><th>Worst third</th><th>Link to ${esc(metric)}</th></tr>
+      ${rep.signals.map(x => `<tr class="${x.key === "score" ? "own" : ""}"><td>${esc(x.label)}</td><td>${fmtSig(x.key, x.best)}</td><td>${fmtSig(x.key, x.worst)}</td><td>${rhoCell(x.rho)}</td></tr>`).join("")}</table></div>
+      <p>Signal levels are relative to each clip's source video (0 = that video's average moment).</p>`;
+  }
+  if (m.matched.length) html += `<details><summary>Matched clips (${m.matched.length})</summary><ul>${m.matched.map(x =>
+    `<li>${esc(x.clip.title)}${normTitleSame(x) ? "" : ` → ${esc(x.studio.title)}`}${metric && Number.isFinite(x.studio.values[metric]) ? ` · ${esc(String(x.studio.values[metric]))}` : ""}${x.clip.signals ? "" : " · no saved signals"}</li>`).join("")}</ul></details>`;
+  if (m.unmatchedStudio.length) html += `<details><summary>Studio videos with no logged clip (${m.unmatchedStudio.length})</summary><ul>${m.unmatchedStudio.slice(0, 40).map(x => `<li>${esc(x.title)}</li>`).join("")}${m.unmatchedStudio.length > 40 ? `<li>…and ${m.unmatchedStudio.length - 40} more</li>` : ""}</ul></details>`;
+  out.innerHTML = html;
+}
+const normTitleSame = x => X.normTitle(x.clip.title) === X.normTitle(x.studio.title);
+$("#studioPick").onclick = () => $("#studioFile").click();
+$("#studioFile").addEventListener("change", async e => {
+  const f = e.target.files[0]; e.target.value = "";
+  if (!f) return;
+  if (f.size > 5e6) { toast("That file is over 5 MB. Export a shorter date range, or only the Content report."); return; }
+  try {
+    const t = X.studioTable(await f.text());
+    if (!t.rows.length) throw new Error("That export has no videos in it. Pick a date range that includes your uploads and export again.");
+    await saveStudio({ file: f.name.slice(0, 120), imported: new Date().toISOString().slice(0, 10), columns: t.columns.slice(0, 60), rows: t.rows.slice(0, 5000) });
+    renderLearn(); toast(`Imported ${Math.min(t.rows.length, 5000)} videos from YouTube Studio`);
+  } catch (err) { renderLearn(); toast(err.status ? "Couldn't save the import. Check the desktop app and try again." : err.message); }
+});
+$("#learnOut").addEventListener("change", e => { if (e.target.id === "learnMetric") { store.set(METRICKEY, e.target.value); renderLearn(); } });
+$("#learnOut").addEventListener("click", async e => {
+  if (e.target.closest("#studioDel") && confirm("Remove the YouTube Studio import? Your results log stays.")) {
+    try { await saveStudio(null); renderLearn(); } catch { toast("Couldn't remove the import. Check the desktop app and try again."); }
+  }
+});
 
 // ---------------------------------------------------------------- keyboard
 $("#keysBtn").onclick = () => $("#keys").showModal();

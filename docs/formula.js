@@ -141,7 +141,8 @@ export function findMoments(segs, loud, duration, n, platformKey, version) {
   for (const c of cands) {
     if (picked.some(m => !(c.e + 2 <= m.start || c.s >= m.end + 2))) continue;
     picked.push({ start: +c.s.toFixed(2), end: +c.e.toFixed(2), raw: c.score, text: c.text, words: c.words,
-                  reasons: reasons(c.z, c.f), checklist: checklist(c.z, c.f, c.e - c.s, plat) });
+                  reasons: reasons(c.z, c.f), checklist: checklist(c.z, c.f, c.e - c.s, plat),
+                  signals: Object.fromEntries(keys.map(k => [k, Math.round(c.z[k] * 100) / 100])) });   // for learning from results
     if (picked.length >= n) break;
   }
   if (picked.length) {
@@ -440,3 +441,122 @@ export function buildSRT(m, keep) {
 }
 
 export const fmtT = t => { t = Math.floor(t || 0); return t >= 3600 ? `${Math.floor(t / 3600)}:${String(Math.floor(t % 3600 / 60)).padStart(2, "0")}:${String(t % 60).padStart(2, "0")}` : `${Math.floor(t / 60)}:${String(t % 60).padStart(2, "0")}`; };
+
+// ---------------------------------------------------------------- learning from results
+// Read a YouTube Studio export, match its videos to logged clips by title, and compare each scoring signal with how
+// the clips actually did. Small samples prove little, so the report says how many clips it rests on.
+
+/** RFC 4180 CSV: quoted fields, "" escapes, CRLF or LF, a leading BOM. */
+export function parseCSV(text) {
+  const rows = []; let row = [], cell = "", q = false;
+  text = String(text).replace(/^﻿/, "");
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (q) { if (ch === '"') { if (text[i + 1] === '"') { cell += '"'; i++; } else q = false; } else cell += ch; continue; }
+    if (ch === '"') q = true;
+    else if (ch === ",") { row.push(cell); cell = ""; }
+    else if (ch === "\n" || ch === "\r") { if (ch === "\r" && text[i + 1] === "\n") i++; row.push(cell); rows.push(row); row = []; cell = ""; }
+    else cell += ch;
+  }
+  if (cell !== "" || row.length) { row.push(cell); rows.push(row); }
+  return rows.filter(r => r.some(c => c.trim() !== ""));
+}
+
+/** A Studio cell as a number: "1,234" → 1234, "12.5%" → 12.5, "1:05" → 65 (seconds). Anything else → NaN. */
+export function studioNumber(v) {
+  const s = String(v ?? "").trim().replace(/%$/, "").trim();
+  if (!s) return NaN;
+  if (/^\d+(:\d{1,2}){1,2}$/.test(s)) return s.split(":").reduce((a, x) => a * 60 + +x, 0);
+  if (/^-?\d{1,3}(,\d{3})+(\.\d+)?$/.test(s)) return +s.replace(/,/g, "");
+  return /^-?\d*\.?\d+(e-?\d+)?$/i.test(s) ? +s : NaN;
+}
+
+/** Parse a Studio "Export current view" CSV into { columns: numeric column names, rows: [{ title, published, values }] }. */
+export function studioTable(text) {
+  const rows = parseCSV(text);
+  const isTitle = c => /^(video )?title$/i.test(c.trim()) || /video title/i.test(c);
+  const h = rows.findIndex(r => r.some(isTitle));
+  if (h < 0) throw new Error("No video title column found. In YouTube Studio, open Analytics → Advanced mode, show the Video title column, then Export current view as CSV.");
+  const head = rows[h].map(c => c.trim()), ti = head.findIndex(isTitle), pi = head.findIndex(c => /publish/i.test(c));
+  const data = rows.slice(h + 1).filter(r => (r[ti] || "").trim() && !r.slice(0, 2).some(c => /^total$/i.test(c.trim())));
+  const columns = head.filter((c, i) => c && i !== ti && i !== pi && !/^(content|video)$/i.test(c) &&
+    data.filter(r => Number.isFinite(studioNumber(r[i]))).length >= Math.max(1, data.length * 0.8));
+  return {
+    columns,
+    rows: data.map(r => ({ title: r[ti].trim(), published: pi >= 0 ? (r[pi] || "").trim() : "",
+                           values: Object.fromEntries(columns.map(c => [c, studioNumber(r[head.indexOf(c)])])) })),
+  };
+}
+
+export const normTitle = t => String(t ?? "").normalize("NFKD").replace(/[̀-ͯ]/g, "").toLowerCase()
+  .replace(/#\w+/g, " ").replace(/[^a-z0-9]+/g, " ").trim();
+/** 1 = same title; 0.95 = one is the other cut short (Shorts titles stop at 100 characters); else word overlap. */
+export function titleSimilarity(a, b) {
+  const A = normTitle(a), B = normTitle(b);
+  if (!A || !B) return 0;
+  if (A === B) return 1;
+  const [s, l] = A.length < B.length ? [A, B] : [B, A];
+  if (s.length >= 12 && l.startsWith(s)) return 0.95;
+  const x = new Set(A.split(" ")), y = new Set(B.split(" "));
+  let both = 0; for (const w of x) if (y.has(w)) both++;
+  return both / (x.size + y.size - both);
+}
+
+/** Pair Studio videos with logged clips, one to one, best title match first (at least 0.6 similar).
+ *  Log rows for the same clip and cut (its 24 h, 72 h and 7 d check-ins) count as one clip. */
+export function matchStudio(studioRows, logRows) {
+  const clips = new Map();
+  for (const r of logRows) {
+    const k = normTitle(r.title) + "|" + (r.cut || "");
+    if (!normTitle(r.title)) continue;
+    const c = clips.get(k) || { title: r.title, cut: r.cut || "", platform: r.platform, signals: null, score: null, rows: 0 };
+    c.rows++;
+    if (!c.signals && r.signals) { try { const s = typeof r.signals === "string" ? JSON.parse(r.signals) : r.signals; if (s && typeof s === "object") c.signals = s; } catch {} }
+    if (c.score == null && r.score !== "" && Number.isFinite(+r.score) && r.score != null) c.score = +r.score;
+    clips.set(k, c);
+  }
+  const list = [...clips.values()], pairs = [];
+  list.forEach((c, ci) => studioRows.forEach((s, si) => { const sim = titleSimilarity(c.title, s.title); if (sim >= 0.6) pairs.push([sim, ci, si]); }));
+  pairs.sort((a, b) => b[0] - a[0]);
+  const usedC = new Set(), usedS = new Set(), matched = [];
+  for (const [sim, ci, si] of pairs) {
+    if (usedC.has(ci) || usedS.has(si)) continue;
+    usedC.add(ci); usedS.add(si); matched.push({ clip: list[ci], studio: studioRows[si], sim });
+  }
+  return { matched, unmatchedStudio: studioRows.filter((_, i) => !usedS.has(i)), unmatchedClips: list.filter((_, i) => !usedC.has(i)) };
+}
+
+export const SIGNAL_LABELS = {
+  score: "Clip Machine's own score", energy: "High energy", peak: "Loudest peak", swing: "Changes in volume", hype: "Hype words",
+  laugh: "Laughter", exclaim: "Exclamations", pace: "Fast delivery", hook: "Strong opening hook", first1: "Something happens in the first second",
+  payoff: "Builds to a payoff", ends_clean: "Ends on a full sentence", midstart: "Starts mid-thought", deadair: "Dead air",
+  fit: "Length fits the platform", sponsor: "Ad read",
+};
+const ranks = xs => {
+  const o = xs.map((x, i) => [x, i]).sort((a, b) => a[0] - b[0]), r = new Array(xs.length);
+  for (let i = 0; i < o.length;) { let j = i; while (j + 1 < o.length && o[j + 1][0] === o[i][0]) j++; for (let k = i; k <= j; k++) r[o[k][1]] = (i + j) / 2 + 1; i = j + 1; }
+  return r;
+};
+/** Spearman rank correlation (−1…1); 0 when either side doesn't vary. */
+export function spearman(xs, ys) {
+  const a = ranks(xs), b = ranks(ys), ma = mean(a), mb = mean(b);
+  let num = 0, da = 0, db = 0;
+  for (let i = 0; i < a.length; i++) { num += (a[i] - ma) * (b[i] - mb); da += (a[i] - ma) ** 2; db += (b[i] - mb) ** 2; }
+  return da && db ? num / Math.sqrt(da * db) : 0;
+}
+export const MIN_LEARN = 6;
+/** For each signal: rank correlation with the chosen Studio metric, and its average in the best and worst third of clips. */
+export function signalReport(matched, metric) {
+  const data = matched.filter(m => m.clip.signals && Number.isFinite(m.studio.values?.[metric]));
+  if (data.length < MIN_LEARN) return { n: data.length, enough: false, signals: [] };
+  const ys = data.map(m => m.studio.values[metric]), order = ys.map((y, i) => [y, i]).sort((a, b) => b[0] - a[0]).map(x => x[1]);
+  const third = Math.max(2, Math.floor(data.length / 3)), best = order.slice(0, third), worst = order.slice(-third);
+  const keys = ["score", ...Object.keys(F.weights)];
+  const signals = keys.map(k => {
+    const xs = data.map(m => k === "score" ? m.clip.score : m.clip.signals[k]);
+    if (xs.some(x => !Number.isFinite(x))) return null;
+    const avg = idx => Math.round(mean(idx.map(i => xs[i])) * 100) / 100;
+    return { key: k, label: SIGNAL_LABELS[k] || k, rho: Math.round(spearman(xs, ys) * 100) / 100, best: avg(best), worst: avg(worst) };
+  }).filter(Boolean).sort((a, b) => (b.key === "score") - (a.key === "score") || Math.abs(b.rho) - Math.abs(a.rho));
+  return { n: data.length, enough: true, early: data.length < 15, signals };
+}

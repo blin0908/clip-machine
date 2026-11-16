@@ -252,6 +252,27 @@ label.t{display:block;font-size:12px;color:var(--mute);margin:12px 0 6px;font-we
 .x{min-width:36px;min-height:36px;color:var(--mute)}
 .loghead{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:12px}
 .loghead p{flex:1;min-width:240px;margin:0;color:var(--mute);font-size:13px}
+.learn{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:14px;margin-bottom:14px;display:grid;grid-template-columns:minmax(0,1fr);gap:12px}
+.learn-h{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+.learn-h > div{flex:1;min-width:220px}
+.learn h3{margin:0 0 2px;font:800 14px var(--f-disp);font-stretch:110%;letter-spacing:.08em;text-transform:uppercase}
+.learn p{margin:0;color:var(--mute);font-size:13px}
+.learn ol{margin:0;padding-left:20px;color:var(--mute);font-size:13px;display:grid;gap:3px}
+.learn-sum{display:flex;flex-wrap:wrap;gap:10px;align-items:center;font-size:13px;color:var(--mute)}
+.learn-sum label{display:flex;gap:8px;align-items:center}
+.learn-sum select{min-height:36px;padding:6px 9px;font-size:13px}
+.learn-take{font-size:14px;color:var(--text)}
+.learn-take b{font-weight:700}
+.sig td:nth-child(2),.sig td:nth-child(3){font-family:var(--f-mono);font-variant-numeric:tabular-nums;white-space:nowrap}
+.sig tr.own td{border-bottom:2px solid var(--line2)}
+.rho{display:grid;grid-template-columns:72px auto;gap:8px;align-items:center;white-space:nowrap}
+.rho .bar{position:relative;height:8px;background:var(--well);border-radius:4px}
+.rho .bar::after{content:"";position:absolute;left:50%;top:-2px;bottom:-2px;width:1px;background:var(--line2)}
+.rho .bar i{position:absolute;top:0;bottom:0;border-radius:4px}
+.rho .up{background:var(--good)}.rho .down{background:var(--rec)}
+.learn details{font-size:13px;color:var(--mute)}
+.learn details ul{margin:6px 0 0;padding-left:18px;display:grid;gap:2px}
+@media (max-width:560px){.sig th:nth-child(2),.sig td:nth-child(2),.sig th:nth-child(3),.sig td:nth-child(3){display:none}}
 
 /* ---------- transcript */
 .txbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:12px;position:sticky;top:99px;background:var(--ink);padding:6px 0;z-index:2}
@@ -533,6 +554,14 @@ dialog::backdrop{background:rgba(0,0,0,.6)}
 
     <section class="pane" id="pLog" role="tabpanel" aria-labelledby="tLog" hidden>
       <div class="loghead"><p>Judge each cut by its job. Log the numbers at 24 hours, 72 hours, and 7 days, and compare clips at the same age. <span id="logStorage">Saved in this browser.</span> Log a post from a clip's "More" panel.</p><button class="btn" id="csv"><svg class="i"><use href="#i-dl"/></svg>Export CSV</button></div>
+      <div class="learn" id="learn">
+        <div class="learn-h">
+          <div><h3>Learn from your results</h3><p>Import a YouTube Studio export to see which scoring signals your best clips share.</p></div>
+          <button class="btn" id="studioPick" type="button"><svg class="i"><use href="#i-up"/></svg>Import YouTube Studio CSV</button>
+          <input type="file" id="studioFile" class="vh" accept=".csv,text/csv" tabindex="-1" aria-hidden="true">
+        </div>
+        <div id="learnOut"></div>
+      </div>
       <div id="logtbl" class="msg">No results logged yet.</div>
     </section>
   </main>

@@ -137,6 +137,84 @@ test("moments respect platform lengths and don't overlap", () => {
   sorted.forEach((m, i) => { if (i) assert.ok(m.start >= sorted[i - 1].end - 1e-6, "no overlap"); });
 });
 
+test("both engines save the same scoring signals on each moment", () => {
+  const words = [];
+  for (let t = 0; t < 120; t += 0.4) words.push(W(["why", "is", "this", "insane", "here's", "the", "secret.", "so"][Math.floor(t * 2.5) % 8], t, t + 0.3));
+  const segs = X.segmentsFromWords(words);
+  const loud = Array.from({ length: 240 }, (_, i) => +(Math.sin(i / 5) + (i % 37 === 0 ? 2 : 0)).toFixed(3));
+  const js = X.findMoments(segs, Float32Array.from(loud), 120, 3, "tiktok", "short");
+  const py = JSON.parse(execFileSync(PY, ["-c", `
+import sys, json; sys.path.insert(0, ${JSON.stringify(ROOT)})
+import numpy as np, clipper
+a = json.loads(sys.stdin.read())
+ms = clipper.find_moments(a["segs"], np.array(a["loud"], dtype=np.float32), 120, 3, platform="tiktok", version="short")
+print(json.dumps([dict(start=m.start, signals=m.signals) for m in ms]))`], { input: JSON.stringify({ segs, loud }), encoding: "utf8" }).trim().split("\n").at(-1));
+  assert.ok(js.length >= 2);
+  assert.deepEqual(Object.keys(js[0].signals).sort(), Object.keys(X.F.weights).sort());
+  assert.equal(py.length, js.length);
+  js.forEach((m, i) => {
+    assert.ok(Math.abs(m.start - py[i].start) < 0.02, `moment ${i}: ${m.start} vs ${py[i].start}`);
+    for (const k of Object.keys(m.signals)) assert.ok(Math.abs(m.signals[k] - py[i].signals[k]) <= 0.011, `${k}: ${m.signals[k]} vs ${py[i].signals[k]}`);
+  });
+});
+
+test("a YouTube Studio export is read whatever columns it has", () => {
+  const csv = '\uFEFFContent,Video title,Video publish time,Duration,Views,Watch time (hours),Average percentage viewed (%),Average view duration\r\n' +
+    'Total,,,,"1,290",3.1,52.3,0:28\r\n' +
+    'abc123,"Why this is insane, honestly","Nov 1, 2026",34,"1,200",2.9,61.5%,0:41\r\n' +
+    'def456,"She said ""no"" #shorts","Nov 2, 2026",20,90,0.2,30.1,0:12\r\n';
+  const t = X.studioTable(csv);
+  assert.deepEqual(t.columns, ["Duration", "Views", "Watch time (hours)", "Average percentage viewed (%)", "Average view duration"]);
+  assert.equal(t.rows.length, 2);
+  assert.deepEqual(t.rows[0], { title: "Why this is insane, honestly", published: "Nov 1, 2026",
+    values: { Duration: 34, Views: 1200, "Watch time (hours)": 2.9, "Average percentage viewed (%)": 61.5, "Average view duration": 41 } });
+  assert.equal(t.rows[1].title, 'She said "no" #shorts');
+  assert.throws(() => X.studioTable("Views,Likes\n1,2\n"), /Video title/);
+  assert.ok(Number.isNaN(X.studioNumber("n/a")));
+  assert.equal(X.studioNumber("1:02:03"), 3723);
+});
+
+test("Studio videos match logged clips by title, one to one", () => {
+  assert.equal(X.titleSimilarity("Why THIS is insane!! #shorts", "why this is insane"), 1);
+  assert.equal(X.titleSimilarity("Here's the secret nobody tells you about pricing your work", "Here's the secret nobody tells you"), 0.95);
+  assert.ok(X.titleSimilarity("Here's the secret", "A totally different video") < 0.6);
+  const sig = JSON.stringify({ hook: 1.2 });
+  const log = [
+    { title: "Why this is insane", cut: "short", checkpoint: "24h", signals: sig, score: "88" },
+    { title: "Why this is insane", cut: "short", checkpoint: "7d" },                       // same clip, later check-in
+    { title: "Here is the secret", cut: "long", checkpoint: "24h" },
+    { title: "", cut: "long" },
+  ];
+  const studio = [{ title: "why this is insane #shorts", values: { Views: 10 } }, { title: "Why this is insane (part 2)", values: { Views: 5 } }, { title: "Unrelated", values: { Views: 1 } }];
+  const m = X.matchStudio(studio, log);
+  assert.equal(m.matched.length, 1);
+  assert.equal(m.matched[0].studio.values.Views, 10);
+  assert.deepEqual(m.matched[0].clip.signals, { hook: 1.2 });
+  assert.equal(m.matched[0].clip.score, 88);
+  assert.equal(m.matched[0].clip.rows, 2);
+  assert.equal(m.unmatchedStudio.length, 2);
+  assert.equal(m.unmatchedClips.length, 1);
+});
+
+test("the signal report ranks what the best clips share", () => {
+  assert.equal(X.spearman([1, 2, 3, 4], [10, 20, 30, 40]), 1);
+  assert.equal(X.spearman([1, 2, 3, 4], [4, 3, 2, 1]), -1);
+  assert.equal(X.spearman([1, 1, 1], [1, 2, 3]), 0);
+  const keys = Object.keys(X.F.weights);
+  const mk = (i, views) => ({ clip: { title: "c" + i, score: 60 + i, signals: Object.fromEntries(keys.map(k => [k, k === "hook" ? i : k === "deadair" ? -i : 0])) }, studio: { values: { Views: views } } });
+  assert.equal(X.signalReport([mk(1, 5), mk(2, 9)], "Views").enough, false);
+  const data = [1, 2, 3, 4, 5, 6, 7].map(i => mk(i, i * 100));
+  data.push({ clip: { title: "old", signals: null }, studio: { values: { Views: 1 } } });   // logged before signals were saved: left out
+  const r = X.signalReport(data, "Views");
+  assert.equal(r.n, 7); assert.ok(r.enough && r.early);
+  assert.equal(r.signals[0].key, "score");
+  assert.equal(r.signals[0].rho, 1);
+  const hook = r.signals.find(x => x.key === "hook"), dead = r.signals.find(x => x.key === "deadair"), pace = r.signals.find(x => x.key === "pace");
+  assert.equal(hook.rho, 1); assert.equal(dead.rho, -1); assert.equal(pace.rho, 0);
+  assert.deepEqual([hook.best, hook.worst], [6.5, 1.5]);
+  assert.equal(r.signals[1].key === "hook" || r.signals[1].key === "deadair", true);
+});
+
 test("frame formats and caption branding match the desktop engine", () => {
   const m = { start: 0, end: 6, title: "Big {news}\\ today", words: [W("so", 0.3, 0.6), W("this", 0.7, 1.0), W("is", 1.1, 1.3), W("huge", 1.4, 1.9), W("right", 2.0, 2.4), W("now", 2.5, 2.9)] };
   const looks = [{}, { format: "1:1", hl: "#22ccff", size: "l", pos: "top" }, { format: "16:9", size: "s", pos: "middle" }, { format: "4:5", hl: "#FF4FA3" }];

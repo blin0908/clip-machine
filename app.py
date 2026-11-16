@@ -344,7 +344,8 @@ def files(jid, name):
 # ---- results log: judge each cut by its job (24 h, 72 h, and 7 day check-ins)
 LOG = Path(os.environ.get("CLIP_LOG") or HERE / "results_log.json")
 LOG_COLUMNS = ["logged", "platform", "clip", "cut", "title", "posted", "checkpoint", "views",
-               "metric1", "metric2", "metric3", "notes", "feed_shown", "feed_share", "avg_view_duration"]
+               "metric1", "metric2", "metric3", "notes", "feed_shown", "feed_share", "avg_view_duration",
+               "score", "signals"]   # signals: the clip's scoring signals as compact JSON, for learning from results
 LOG_FIELDS = ["job", *LOG_COLUMNS[1:]]
 log_lock = threading.Lock()
 
@@ -410,6 +411,56 @@ def import_log():
 def del_log(rid):
     with log_lock:
         write_atomic(LOG, json.dumps([r for r in read_log() if r.get("id") != rid], indent=1))
+    return jsonify(ok=True)
+
+
+# ---- YouTube Studio import: the latest export, matched against the log in the page to learn which signals work
+STUDIO = Path(os.environ.get("CLIP_STUDIO") or HERE / "studio_import.json")
+
+
+def clean_studio(d):
+    """Keep only the shape the page writes: {file, imported, columns, rows: [{title, published, values}]}."""
+    if not isinstance(d, dict) or not isinstance(d.get("rows"), list) or not isinstance(d.get("columns", []), list):
+        return None
+    if len(d["rows"]) > 5000 or len(d.get("columns", [])) > 60:
+        return None
+    cols = [str(c)[:120] for c in d.get("columns", [])]
+    rows = []
+    for r in d["rows"]:
+        if not isinstance(r, dict) or not isinstance(r.get("values", {}), dict):
+            return None
+        vals = {}
+        for c in cols:
+            v = r.get("values", {}).get(c)
+            vals[c] = float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) else None
+        rows.append({"title": str(r.get("title", ""))[:300], "published": str(r.get("published", ""))[:60], "values": vals})
+    return {"file": str(d.get("file", ""))[:120], "imported": str(d.get("imported", ""))[:20], "columns": cols, "rows": rows}
+
+
+@app.get("/api/studio")
+def get_studio():
+    try:
+        return jsonify(studio=json.loads(STUDIO.read_text()))
+    except FileNotFoundError:
+        return jsonify(studio=None)
+
+
+@app.post("/api/studio")
+def put_studio():
+    if (request.content_length or 0) > 5_000_000:
+        return jsonify(error="That import is too large. Export a shorter date range."), 400
+    d = clean_studio(request.get_json(silent=True))
+    if d is None:
+        return jsonify(error="The YouTube Studio import could not be saved. Import the CSV again."), 400
+    with log_lock:
+        write_atomic(STUDIO, json.dumps(d))
+    return jsonify(ok=True)
+
+
+@app.delete("/api/studio")
+def del_studio():
+    with log_lock:
+        STUDIO.unlink(missing_ok=True)
     return jsonify(ok=True)
 
 

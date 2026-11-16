@@ -206,10 +206,45 @@ try {
     .every(value => shortsRow.includes(value)), "the 72h Shorts metrics show in the results log", shortsRow);
   const [dl] = await Promise.all([page.waitForEvent("download", { timeout: 20000 }), page.click("#csv")]);
   const [header, reelsRow, shortsCsvRow] = (await readFile(await dl.path(), "utf8")).split("\n");
-  check(header.endsWith(",feed_shown,feed_share,avg_view_duration"), "CSV has the Shorts metric column names", header);
-  check(reelsRow.includes('"reels"') && reelsRow.endsWith(',"","",""'), "CSV leaves Shorts metrics blank for Reels");
-  check(shortsCsvRow.includes('"72h","1234"') && shortsCsvRow.endsWith(',"2000","92.7","00:17"'),
+  const cells = line => [...line.matchAll(/"((?:[^"]|"")*)"/g)].map(x => x[1].replace(/""/g, '"'));
+  const col = (line, name) => cells(line)[header.split(",").indexOf(name)];
+  check(header.endsWith(",feed_shown,feed_share,avg_view_duration,score,signals"), "CSV has the Shorts metric, score and signal column names", header);
+  check(reelsRow.includes('"reels"') && ["feed_shown", "feed_share", "avg_view_duration"].every(k => col(reelsRow, k) === ""), "CSV leaves Shorts metrics blank for Reels");
+  check(shortsCsvRow.includes('"72h","1234"') && col(shortsCsvRow, "feed_shown") === "2000" && col(shortsCsvRow, "feed_share") === "92.7" && col(shortsCsvRow, "avg_view_duration") === "00:17",
     "CSV exports the checkpoint and raw Shorts metric values");
+  let sig = {}; try { sig = JSON.parse(col(shortsCsvRow, "signals")); } catch {}
+  check(Number.isFinite(sig.hook) && Number.isFinite(sig.deadair) && +col(shortsCsvRow, "score") > 0, "a logged post keeps the clip's score and scoring signals", col(shortsCsvRow, "signals"));
+
+  // ---- learn from results: a YouTube Studio export matched to logged clips
+  check(await page.locator("#learnOut ol").isVisible(), "the learn panel explains how to export from YouTube Studio");
+  const realTitle = await page.evaluate(() => JSON.parse(localStorage.getItem("clipmachine.log")).at(-1).title);
+  await page.evaluate(() => {                       // six earlier posts: the stronger the hook, the better they did
+    const keys = ["energy", "peak", "swing", "hype", "laugh", "exclaim", "pace", "hook", "first1", "payoff", "ends_clean", "midstart", "deadair", "fit", "sponsor"];
+    const rows = JSON.parse(localStorage.getItem("clipmachine.log"));
+    for (let i = 1; i <= 6; i++) rows.push({ id: "seed" + i, platform: "shorts", cut: "short", checkpoint: "7d", title: `Seeded clip number ${i} about pricing`,
+      score: String(60 + i), signals: JSON.stringify(Object.fromEntries(keys.map(k => [k, k === "hook" ? i / 2 : k === "deadair" ? -i / 4 : 0]))) });
+    localStorage.setItem("clipmachine.log", JSON.stringify(rows));
+  });
+  await page.click("#tClips"); await page.click("#tLog");
+  const studioCsv = "Content,Video title,Video publish time,Views,Average percentage viewed (%)\nTotal,,,9999,50\n" +
+    [1, 2, 3, 4, 5, 6].map(i => `v${i},Seeded clip number ${i} about pricing #shorts,"Nov ${i}, 2026",${i * 300},${30 + i * 5}`).join("\n") +
+    `\nv7,"${realTitle.replace(/"/g, '""')}","Nov 9, 2026",4000,40\nv8,Some video that was never logged,"Nov 9, 2026",10,20\n`;
+  await page.setInputFiles("#studioFile", { name: "Table data.csv", mimeType: "text/csv", buffer: Buffer.from(studioCsv) });
+  await page.locator("#learnOut table.sig").waitFor({ timeout: 10000 });
+  const sum = await page.locator(".learn-sum").textContent();
+  check(/8 videos/.test(sum) && /\b7\b matched/.test(sum), "the Studio export matches 7 of its 8 videos to logged clips", sum.replace(/\s+/g, " "));
+  check(await page.locator("#learnMetric").inputValue() === "Average percentage viewed (%)", "the report judges by average percentage viewed by default");
+  const take = await page.locator(".learn-take").textContent();
+  check(/strong opening hook/.test(take) && /dead air/.test(take), "the report names the signals the best clips share", take);
+  check((await page.locator("table.sig tr").nth(1).textContent()).startsWith("Clip Machine's own score"), "the report starts with Clip Machine's own score");
+  await page.locator("#learnMetric").selectOption("Views");
+  check(/Link to Views/.test(await page.locator("table.sig").textContent()), "switching the metric redraws the report");
+  check(await page.evaluate(() => !!JSON.parse(localStorage.getItem("clipmachine.studio"))?.rows?.length), "the website keeps the import in this browser");
+  page.once("dialog", d => d.accept());
+  await page.click("#studioDel");
+  await page.locator("#learnOut ol").waitFor();
+  check(await page.evaluate(() => localStorage.getItem("clipmachine.studio") === null), "removing the import clears it");
+  await page.evaluate(() => localStorage.setItem("clipmachine.log", JSON.stringify(JSON.parse(localStorage.getItem("clipmachine.log")).filter(r => !/^seed/.test(r.id)))));
   await page.click("#tClips");
 
   // ---- remove the video

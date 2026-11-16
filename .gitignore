@@ -3,6 +3,7 @@ __pycache__/
 jobs/
 .access_key
 results_log.json
+studio_import.json
 .claude/
 docs/sample.mp4
 .DS_Store

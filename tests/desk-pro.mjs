@@ -27,8 +27,8 @@ const media = createServer(async (req, res) => {
 await new Promise(r => media.listen(0, "127.0.0.1", r));
 const MEDIA_URL = `http://127.0.0.1:${media.address().port}/`;
 
-const LOG = join(JOBS, "results_log.json");
-const srv = spawn(PY, ["app.py"], { cwd: ROOT, env: { ...process.env, CLIP_PORT: String(PORT), CLIP_JOBS: JOBS, CLIP_KEY: KEY, CLIP_LOG: LOG }, stdio: ["ignore", "pipe", "pipe"] });
+const LOG = join(JOBS, "results_log.json"), STUDIO = join(JOBS, "studio_import.json");
+const srv = spawn(PY, ["app.py"], { cwd: ROOT, env: { ...process.env, CLIP_PORT: String(PORT), CLIP_JOBS: JOBS, CLIP_KEY: KEY, CLIP_LOG: LOG, CLIP_STUDIO: STUDIO }, stdio: ["ignore", "pipe", "pipe"] });
 let srvLog = ""; srv.stdout.on("data", d => { srvLog += d; }); srv.stderr.on("data", d => { srvLog += d; });
 const BASE = `http://127.0.0.1:${PORT}/`;
 for (let i = 0; i < 60; i++) { try { if ((await fetch(BASE + "api/info?key=" + KEY)).ok) break; } catch {} await new Promise(r => setTimeout(r, 500)); }
@@ -94,6 +94,8 @@ try {
   ]);
   const row = await post.json();
   check(post.ok() && row.feed_shown === "2048" && row.job && row.clip, "the desktop saves Shorts metrics with their source clip");
+  let sig = {}; try { sig = JSON.parse(row.signals); } catch {}
+  check(Number.isFinite(sig.hook) && Object.keys(sig).length === 15 && +row.score > 0, "the native engine's scoring signals are saved with the result", row.signals);
   const disk = JSON.parse(await readFile(LOG, "utf8"));
   check(disk.length === 2 && disk.some(r => r.id === row.id) && disk.some(r => r.title === "Previously saved in browser"),
     "the results file contains the new result and the imported browser entry");
@@ -107,6 +109,22 @@ try {
     const csv = await readFile(await csvDownload.path(), "utf8");
     check(csv.includes("feed_shown,feed_share,avg_view_duration") && csv.includes(",2048,92.7,00:17"),
       "desktop CSV exports the saved server values");
+    // a YouTube Studio import is kept on the computer, so every browser sees it
+    const csvText = `Video title,Views\nTotal,99\n"${row.title.replace(/"/g, '""')}",1500\nNot a clip,3\n`;
+    await other.setInputFiles("#studioFile", { name: "Table data.csv", mimeType: "text/csv", buffer: Buffer.from(csvText) });
+    await other.locator(".learn-sum").waitFor();
+    const saved = JSON.parse(await readFile(STUDIO, "utf8"));
+    check(saved.rows.length === 2 && saved.rows[0].values.Views === 1500, "the desktop app saves the Studio import on the computer");
+    await page.click("#tClips"); await page.click("#tLog");
+    await page.locator(".learn-sum").waitFor();
+    const firstSum = (await page.locator(".learn-sum").textContent()).replace(/\s+/g, " ");
+    check(/2 videos/.test(firstSum) && /\b1\b matched/.test(firstSum) && /Needs at least 6/.test(await page.locator("#learnOut").textContent()),
+      "the other browser sees the import and says how many more clips it needs", firstSum);
+    other.once("dialog", dialog => dialog.accept());
+    await other.click("#studioDel");
+    await other.locator("#learnOut ol").waitFor();
+    check(!existsSync(STUDIO), "removing the import deletes it from the computer");
+    await page.click("#tClips");
     other.once("dialog", dialog => dialog.accept());
     await savedRow.getByRole("button", { name: "Delete" }).click();
     await savedRow.waitFor({ state: "detached" });
