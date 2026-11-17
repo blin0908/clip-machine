@@ -1,0 +1,190 @@
+{
+ "mens_health": [
+  [
+   316,
+   356,
+   "A",
+   "cheat food is Russian food; first-ever pizza night on the station"
+  ],
+  [
+   456,
+   498,
+   "A",
+   "couldn't eat 3000 calories; lost 10 pounds on his first flight"
+  ],
+  [
+   699,
+   727,
+   "A",
+   "300-pound suit blown up like a balloon; exhausted after a spacewalk"
+  ],
+  [
+   176,
+   209,
+   "B",
+   "misses crunchy things: salad, pizza, ice cream"
+  ],
+  [
+   615,
+   646,
+   "B",
+   "floating exercise machine; the bike is an ab workout"
+  ],
+  [
+   744,
+   778,
+   "B",
+   "single-leg squats are the worst; 'nobody likes squats'"
+  ],
+  [
+   925,
+   946,
+   "B",
+   "watched the Olympics together; made up a space Olympics"
+  ],
+  [
+   962,
+   1017,
+   "B",
+   "rapid fire: Star Wars, lift off, Matt Damon in The Martian"
+  ]
+ ],
+ "spanish": [
+  [
+   68,
+   107,
+   "A",
+   "decided as a kid: photos of stars and planets, wanted to travel there"
+  ],
+  [
+   223,
+   243,
+   "A",
+   "favourite teacher was his mum, his maths teacher"
+  ],
+  [
+   248,
+   278,
+   "B",
+   "excited and nervous; least exciting part is waking at 4 am"
+  ],
+  [
+   314,
+   376,
+   "B",
+   "loves the outdoors; would love to fly a helicopter on Mars"
+  ]
+ ],
+ "students": [
+  [
+   195,
+   240,
+   "A",
+   "carbonated drinks: a soda can would shoot off, soda splattered everywhere"
+  ],
+  [
+   426,
+   488,
+   "A",
+   "coolest sight: the station glowing gold from the Dragon window"
+  ],
+  [
+   712,
+   766,
+   "A",
+   "surgery in space: med kit, Dragon capsule used as an ambulance"
+  ],
+  [
+   144,
+   195,
+   "B",
+   "has there been a fire? the Mir fire, how they'd put it out"
+  ],
+  [
+   288,
+   368,
+   "B",
+   "mice run racetrack loops around their habitat"
+  ],
+  [
+   557,
+   613,
+   "B",
+   "a sunrise or sunset every 90 minutes, auroras"
+  ],
+  [
+   768,
+   819,
+   "B",
+   "baking-soda volcano becomes a floating bubbling sphere"
+  ],
+  [
+   1035,
+   1083,
+   "B",
+   "'it's almost like space chose me'"
+  ]
+ ],
+ "crew11": [
+  [
+   1093,
+   1160,
+   "A",
+   "reentry: plasma glow, shuttle pink vs Soyuz fireworks, 5 Gs, first splashdown"
+  ],
+  [
+   341,
+   372,
+   "A",
+   "fireball over San Diego, dolphins came to visit after splashdown"
+  ],
+  [
+   2708,
+   2735,
+   "A",
+   "Kimi's arms so long he'd grab the cargo ship if the robot arm broke"
+  ],
+  [
+   1466,
+   1504,
+   "A",
+   "what they missed: hamburgers, his wife, ramen (any noodles became ramen)"
+  ],
+  [
+   2638,
+   2671,
+   "B",
+   "New Year's together, calling every mission control at midnight"
+  ],
+  [
+   1186,
+   1243,
+   "B",
+   "spacewalk called off a day before: 'spaceflight is larger than any one person'"
+  ],
+  [
+   1244,
+   1306,
+   "B",
+   "portable ultrasound saved the day in the emergency"
+  ],
+  [
+   2335,
+   2361,
+   "B",
+   "liquids crawling out of the pipette in weightlessness"
+  ],
+  [
+   2798,
+   2827,
+   "B",
+   "three space cakes in one week"
+  ],
+  [
+   920,
+   951,
+   "B",
+   "most surprising was how unsurprising it was; reentry beat launch"
+  ]
+ ]
+}
