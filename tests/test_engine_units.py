@@ -2,6 +2,7 @@
 
     .venv/bin/python -m unittest tests/test_engine_units.py -v
 """
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -241,6 +242,68 @@ class SpeechDevice(unittest.TestCase):
         sys.modules["faster_whisper"].WhisperModel = boom
         with self.assertRaises(RuntimeError):
             clipper.transcribe(self.wav, "base", language="en")
+
+
+class ParallelRender(unittest.TestCase):
+    """Clips render several at a time, but the result must match rendering one by one: ranking order, the quality gate
+    replacing a failed clip with the next candidate, and no temporary files left over."""
+
+    def run_with(self, fail_starts, workers, n=3):
+        import tempfile, threading, time
+        tmp = Path(tempfile.mkdtemp())
+        src = tmp / "src.mp4"; src.write_bytes(b"x")
+        cands = [Moment(start=10.0 * i, end=10.0 * i + 8, title=f"m{i}", words=[]) for i in range(7)]
+        P = {}
+        def patch(name, fn):
+            P[name] = getattr(clipper, name); setattr(clipper, name, fn)
+        live, peak = [0], [0]
+        lock = threading.Lock()
+        def render(video, m, out, *a, **k):
+            with lock:
+                live[0] += 1; peak[0] = max(peak[0], live[0])
+            time.sleep(0.05 if m.start % 20 else 0.12)   # uneven render times, so finishing order differs from ranking
+            out.write_bytes(b"v"); out.with_suffix(".jpg").write_bytes(b"j")
+            with lock:
+                live[0] -= 1
+            return {"final_duration": m.end - m.start, "_tighten": False}
+        patch("fetch", lambda source, outdir, progress: (src, "Title"))
+        patch("probe", lambda v: {"duration": 120.0, "has_audio": True, "has_video": True})
+        patch("extract_audio", lambda v, w: Path(w).write_bytes(b"\0\0" * 10))
+        patch("loudness_curve", lambda w: [0.0])
+        patch("audio_peak_db", lambda w: -10.0)
+        patch("quiet_map", lambda w: [])
+        patch("transcribe", lambda *a, **k: [])
+        patch("find_moments", lambda *a, **k: list(cands))
+        patch("render", render)
+        patch("quality_check", lambda out, st, m, captions=True: [{"k": "x", "ok": m.start not in fail_starts, "detail": "", "hard": True}])
+        patch("shorten", lambda m, *a: Moment(start=m.start, end=m.start + 4, title=m.title + "s", words=[]))
+        patch("write_srt", lambda m, path, keep: Path(path).write_text("srt"))
+        patch("_post_copy", lambda m, platform, title: {})
+        os.environ["CLIP_RENDER_JOBS"] = str(workers)
+        try:
+            res = clipper.run("src.mp4", tmp / "out", n=n, platform="tiktok")
+        finally:
+            os.environ.pop("CLIP_RENDER_JOBS", None)
+            for k, v in P.items(): setattr(clipper, k, v)
+        return res, sorted(f.name for f in (tmp / "out").iterdir()), peak[0]
+
+    def test_same_clips_as_one_at_a_time(self):
+        one, files1, _ = self.run_with({10.0, 30.0}, workers=1)
+        par, files3, peak = self.run_with({10.0, 30.0}, workers=3)
+        starts = lambda r: [c["start"] for c in r["clips"]]
+        self.assertEqual(starts(one), [0.0, 20.0, 40.0])      # 10 and 30 failed the gate: replaced in ranking order
+        self.assertEqual(starts(par), starts(one))
+        self.assertEqual(par["dropped_for_quality"], 2)
+        self.assertEqual(files3, files1)
+        self.assertFalse([f for f in files3 if f.startswith("_cand")], "temporary renders left behind")
+        self.assertIn("clip_02_short.mp4", files3)
+        self.assertEqual(par["clips"][1]["file"], "clip_02.mp4")
+        self.assertGreater(peak, 1, "renders didn't overlap")
+
+    def test_runs_out_of_candidates(self):
+        res, files, _ = self.run_with({0.0, 10.0, 20.0, 30.0, 40.0, 50.0}, workers=2)
+        self.assertEqual([c["start"] for c in res["clips"]], [60.0])
+        self.assertFalse([f for f in files if f.startswith("_cand")])
 
 
 if __name__ == "__main__":

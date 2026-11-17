@@ -54,7 +54,7 @@ YTDLP = _tool("yt-dlp")
 # Captions use the bundled Montserrat Black (OFL) so output looks the same on macOS, Windows, Linux and the web app.
 FONT_DIR = str(next((d for d in (HERE / "docs" / "fonts", HERE / "fonts") if (d / "Montserrat-Black.ttf").exists()),
                     HERE / "fonts"))
-VERSION = "1.7.1"            # shown in the app; the desktop app compares it with the latest GitHub release
+VERSION = "1.7.2"            # shown in the app; the desktop app compares it with the latest GitHub release
 CAP_FONT = "Montserrat Black"   # the family name stored inside Montserrat-Black.ttf (libass matches on it)
 # Other scripts use the matching Noto Sans Black (OFL), fetched the first time a clip needs it. The web app reads this
 # table from formula.json, so both engines pick the same font. Montserrat covers Latin (every European accent),
@@ -1281,6 +1281,14 @@ def render(video: Path, m: Moment, out: Path, layout="fit", captions=True, crop_
             **({"reframe": rf} if rf else {})}
 
 
+def render_workers():
+    """How many clips render at once. CLIP_RENDER_JOBS overrides; otherwise 1 per 3 cores, 1 to 3."""
+    try:
+        return max(1, int(os.environ["CLIP_RENDER_JOBS"]))
+    except (KeyError, ValueError):
+        return max(1, min(3, (os.cpu_count() or 2) // 3))
+
+
 def reframe_plan(video, m, out_aspect, layout, jobdir):
     """Face plan for one cut (reframe.py), cached per job. Never fails a render: problems become a centred crop + note."""
     try:
@@ -1416,45 +1424,83 @@ def run(source, outdir: Path, n=5, min_len=None, max_len=None, layout="fit", cap
             st["_tighten"] = safe_tighten
         return st, qc
 
-    for m in pool:
-        if len(clips) >= n:
-            break
-        i = len(clips) + 1
-        progress("render", 100 * (i - 1) / n, f"Rendering + checking clip {i} of {n}")
-        m.captions = _post_copy(m, platform, title)
-        name = f"clip_{i:02d}"
-        # CTA goes on the long cut only, so the short cut keeps a clean payoff
-        stats, qc = make(m, outdir / f"{name}.mp4", cta if (version != "short" or custom) else "")
-        if not _passed(qc):
-            dropped += 1
-            continue                      # quality gate: replace with the next-best moment
-        write_srt(m, outdir / f"{name}.srt", keep_intervals(m, stats.get("_tighten", tighten)))
-        d = asdict(m)
-        d.pop("words")
-        d.update({k: v for k, v in stats.items() if not k.startswith("_")})
-        cut_look = dict(look, style=style, layout=layout, cx=crop_x, tighten=tighten, captions=captions, hook=hook)
-        d.update(look=cut_look, cta=cta if (version != "short" or custom) else "")
-        d.update(file=f"{name}.mp4", thumb=f"{name}.jpg", srt=f"{name}.srt", quality=qc,
-                 duration=stats["final_duration"], range=f"{fmt_t(m.start)}–{fmt_t(m.end)}", short=None)
-        if version == "both" and not custom:
+    # Several candidates render at once (each ffmpeg keeps only ~3 of 8 cores busy: its filters are single-threaded),
+    # into temporary names. Results are taken in ranking order, and a candidate that fails the quality gate is replaced
+    # by the next one, so the clips and their order are the same as rendering one at a time.
+    want_short = version == "both" and not custom
+    use_cta = cta if (version != "short" or custom) else ""   # CTA on the long cut only: the short keeps a clean payoff
+
+    def candidate(k, m):
+        st, qc = make(m, outdir / f"_cand{k:02d}.mp4", use_cta)
+        sm = sst = sqc = None
+        if want_short and _passed(qc):
             sm = shorten(m, segs, loud, *plat["short"])
             if sm:
-                sst, sqc = make(sm, outdir / f"{name}_short.mp4", "")
-                if _passed(sqc):
-                    write_srt(sm, outdir / f"{name}_short.srt", keep_intervals(sm, sst.get("_tighten", tighten)))
-                    d["short"] = dict({k: v for k, v in sst.items() if not k.startswith("_")},
-                                      file=f"{name}_short.mp4", thumb=f"{name}_short.jpg", quality=sqc, look=cut_look, cta="",
-                                      start=sm.start, end=sm.end, title=sm.title,
-                                      srt=f"{name}_short.srt", duration=sst["final_duration"],
-                                      range=f"{fmt_t(sm.start)}–{fmt_t(sm.end)}")
-        clips.append(d)
+                sst, sqc = make(sm, outdir / f"_cand{k:02d}_short.mp4", "")
+        return m, st, qc, sm, sst, sqc
+
+    def move(k, name, short=False):
+        src = f"_cand{k:02d}{'_short' if short else ''}"
+        for ext in (".mp4", ".jpg"):
+            if (outdir / (src + ext)).exists():
+                os.replace(outdir / (src + ext), outdir / (name + ext))
+
+    def discard(k):
+        for f in outdir.glob(f"_cand{k:02d}*"):
+            f.unlink(missing_ok=True)
+
+    from concurrent.futures import ThreadPoolExecutor
+    workers = render_workers()
+    todo, inflight = list(enumerate(pool)), []
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        def submit():
+            while todo and len(clips) + len(inflight) < n:   # the pool runs `workers` of them at a time
+                k, m = todo.pop(0)
+                m.captions = _post_copy(m, platform, title)
+                inflight.append((k, ex.submit(candidate, k, m)))
+        submit()
+        while inflight and len(clips) < n:
+            k, fut = inflight.pop(0)
+            progress("render", 100 * len(clips) / n, f"Rendering + checking clip {len(clips) + 1} of {n}")
+            m, stats, qc, sm, sst, sqc = fut.result()
+            if not _passed(qc):
+                dropped += 1
+                discard(k)
+                submit()
+                continue                      # quality gate: replace with the next-best moment
+            i = len(clips) + 1
+            name = f"clip_{i:02d}"
+            move(k, name)
+            write_srt(m, outdir / f"{name}.srt", keep_intervals(m, stats.get("_tighten", tighten)))
+            d = asdict(m)
+            d.pop("words")
+            d.update({k_: v for k_, v in stats.items() if not k_.startswith("_")})
+            cut_look = dict(look, style=style, layout=layout, cx=crop_x, tighten=tighten, captions=captions, hook=hook)
+            d.update(look=cut_look, cta=use_cta)
+            d.update(file=f"{name}.mp4", thumb=f"{name}.jpg", srt=f"{name}.srt", quality=qc,
+                     duration=stats["final_duration"], range=f"{fmt_t(m.start)}–{fmt_t(m.end)}", short=None)
+            if sm and _passed(sqc):
+                move(k, f"{name}_short", short=True)
+                write_srt(sm, outdir / f"{name}_short.srt", keep_intervals(sm, sst.get("_tighten", tighten)))
+                d["short"] = dict({k_: v for k_, v in sst.items() if not k_.startswith("_")},
+                                  file=f"{name}_short.mp4", thumb=f"{name}_short.jpg", quality=sqc, look=cut_look, cta="",
+                                  start=sm.start, end=sm.end, title=sm.title,
+                                  srt=f"{name}_short.srt", duration=sst["final_duration"],
+                                  range=f"{fmt_t(sm.start)}–{fmt_t(sm.end)}")
+            discard(k)
+            clips.append(d)
+            submit()
+        for k, fut in inflight:               # enough clips: let stragglers finish, then drop their files
+            fut.cancel()
+    for k, _ in enumerate(pool):
+        discard(k)
     progress("render", 100, "Done")
     wav.unlink(missing_ok=True)
     (outdir / "session.json").write_text(json.dumps({
         "video": str(video), "has_video": info["has_video"], "duration": info["duration"],
         "settings": dict(layout=layout, captions=captions, crop_x=crop_x, platform=platform, hook=hook,
                          tighten=tighten, enhance=enhance, style=style, cta=cta, version=version, **look)}))
-    result = {"dropped_for_quality": dropped, "title": title, "source": source, "duration": info["duration"], "platform": platform,
+    result = {"dropped_for_quality": dropped, "title": title, "source": str(source), "duration": info["duration"], "platform": platform,
               "platform_name": plat["name"], "platform_note": plat["note"], "judge": plat["judge"],
               "publish": plat["publish"], "version": version, "clips": clips}
     (outdir / "result.json").write_text(json.dumps(result, indent=2))

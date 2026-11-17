@@ -56,6 +56,7 @@ The desktop app opens the same workspace in your browser, but does the work on y
 - the results log is shared by browsers connected to the same desktop app
 - faster processing with native ffmpeg and faster-whisper, and 99 speech languages
 - on Apple Silicon Macs, speech runs on the GPU: about 1.5x faster on long videos, with the same transcript (it falls back to the CPU by itself if the GPU backend fails; `CLIP_DEVICE=cpu` forces the CPU)
+- clips render two or three at a time (one per three processor cores), with the same clips and quality checks as one at a time; `CLIP_RENDER_JOBS=1` renders them one by one
 - **Follow speaker**: fills the vertical frame and keeps whoever is talking in shot. It finds the faces, judges who's talking from mouth movement during speech, cuts between people like an editor would (no flicker on one-word interjections), and holds the frame still instead of shaking with every head movement
 - **Split screen** for podcasts and interviews: two people on screen at once become one per half, the left person on top (side by side for 16:9)
 - use it from your phone over Wi-Fi with a QR code
