@@ -175,7 +175,7 @@ def new_job(source, form, upload_dir=None):
         "cta": str(form.get("cta") or "")[:80],
         "enhance": str(form.get("enhance", "1")) in ("1", "true", "on"),
         "style": form.get("style") if form.get("style") in clipper.CAPTION_STYLES else "pop",
-        "layout": form.get("layout", "fit") if form.get("layout") in ("fit", "crop", "original") else "fit",
+        "layout": form.get("layout", "fit") if form.get("layout") in (*clipper.LAYOUTS, "original") else "fit",
         "captions": str(form.get("captions", "1")) in ("1", "true", "on"),
         "model": form.get("model", "base") if form.get("model") in ("tiny", "base", "small", "medium") else "base",
         "lang": form.get("lang") if form.get("lang") in clipper.LANGUAGES else "auto",
@@ -298,6 +298,31 @@ def transcript(jid):
     return jsonify(words=words, quiet=quiet, has_video=sess.get("has_video", True), duration=sess.get("duration"))
 
 
+@app.get("/api/jobs/<jid>/reframe")
+def reframe_plan(jid):
+    """Where auto-reframe or split-screen will put the frame for start..end (reframe.py), so the studio previews it
+    before rendering. Times are source seconds; positions are face centres, 0-1 of the source frame."""
+    if jid not in jobs:
+        abort(404)
+    sess = _session(jid)
+    try:
+        start, end = float(request.args["start"]), float(request.args["end"])
+        assert math.isfinite(start) and math.isfinite(end) and 0 <= start < end and end - start <= 900
+    except Exception:
+        return jsonify(error="Bad start/end."), 400
+    mode = request.args.get("mode") if request.args.get("mode") in ("auto", "split") else "auto"
+    W, H = clipper.frame_size(request.args.get("format") if request.args.get("format") in clipper.FORMATS else "9:16")
+    if not sess.get("has_video", True):
+        return jsonify(mode="none", note="Audio-only source: nothing to reframe.")
+    try:
+        segs = json.loads((JOBS / jid / "transcript.json").read_text())
+    except Exception:
+        segs = []
+    words = [w for sg in segs for w in sg.get("words", []) if start - 1 <= w["s"] <= end + 1]
+    m = clipper.Moment(start=start, end=end, title="", words=words)
+    return jsonify(clipper.reframe_plan(Path(sess["video"]), m, W / H, mode, JOBS / jid))
+
+
 @app.get("/api/jobs/<jid>/source")
 def source(jid):
     """The source video, for the studio's live preview (supports seeking: range requests)."""
@@ -339,7 +364,7 @@ def del_logo():
 def info():
     # jobs_dir: where clips are written, so mcp_server.py can hand agents real file paths
     return jsonify(desktop=True, version=clipper.VERSION, models=["tiny", "base", "small"], formats=list(clipper.FORMATS),
-                   jobs_dir=str(JOBS.resolve()))
+                   layouts=list(clipper.LAYOUTS), jobs_dir=str(JOBS.resolve()))
 
 
 @app.get("/api/jobs")

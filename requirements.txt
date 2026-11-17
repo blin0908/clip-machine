@@ -5,3 +5,4 @@ yt-dlp[default]
 qrcode
 static-ffmpeg
 opencc-python-reimplemented==0.1.7
+opencv-python-headless>=4.8,<6

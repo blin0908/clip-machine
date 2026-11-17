@@ -178,6 +178,26 @@ class ServerTest(unittest.TestCase):
         o = server.jobs[r.get_json()["id"]]["opts"]
         self.assertEqual((o["format"], o["hl"], o["pos"], o["size"]), ("16:9", "#00FF00", "top", "m"))
 
+    def test_layouts_accepted(self):
+        for lay in ("auto", "split", "crop"):
+            r = self.c.post("/api/jobs", json={"url": "https://example.com/v", "layout": lay}, headers=self.k)
+            self.assertEqual(server.jobs[r.get_json()["id"]]["opts"]["layout"], lay)
+        self.assertIn("split", self.c.get("/api/info", headers=self.k).get_json()["layouts"])
+
+    def test_reframe_plan_endpoint(self):
+        jid = self._done_job()
+        (server.JOBS / jid / "transcript.json").write_text(json.dumps([{"s": 0, "e": 2, "text": "hi", "words": [{"w": "hi", "s": 0.1, "e": 0.4}]}]))
+        (server.JOBS / jid / "session.json").write_text(json.dumps({"video": "/nonexistent/x.mp4", "has_video": True, "duration": 9.0, "settings": {}}))
+        u = f"/api/jobs/{jid}/reframe"
+        for q in ("", "?start=x&end=2", "?start=3&end=2", "?start=0&end=nan", "?start=0&end=2000"):
+            self.assertEqual(self.c.get(u + q, headers=self.k).status_code, 400, q)
+        self.assertEqual(self.c.get("/api/jobs/nope/reframe?start=0&end=2", headers=self.k).status_code, 404)
+        p = self.c.get(u + "?start=0&end=2&mode=split&format=9:16", headers=self.k).get_json()
+        self.assertEqual(p["mode"], "none")                     # unreadable source: a centred crop and a note, never a 500
+        self.assertTrue(p["note"])
+        (server.JOBS / jid / "session.json").write_text(json.dumps({"video": "/x.mp3", "has_video": False, "duration": 9.0, "settings": {}}))
+        self.assertEqual(self.c.get(u + "?start=0&end=2", headers=self.k).get_json()["mode"], "none")
+
     def test_cancel_flags_a_running_job(self):
         jid = self._done_job()
         server.jobs[jid]["status"] = "running"

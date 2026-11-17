@@ -343,7 +343,7 @@ def tool_rerender_clip(a):
                                  ("format", "format"), ("layout", "layout"), ("captions", "captions"),
                                  ("headline", "hook"), ("cut_pauses", "tighten"), ("logo", "logo"),
                                  ("reframe_x", "cx")) if a.get(s) is not None}
-    for k, allowed in (("style", STYLES), ("format", FORMATS), ("layout", ("fit", "crop")), ("size", ("s", "m", "l")),
+    for k, allowed in (("style", STYLES), ("format", FORMATS), ("layout", ("fit", "crop", "auto", "split")), ("size", ("s", "m", "l")),
                        ("pos", ("bottom", "middle", "top"))):
         if k in look and look[k] not in allowed:
             raise ToolError(f"{k} must be one of {', '.join(allowed)}.")
@@ -469,8 +469,9 @@ TOOLS = [
                       enum=["both", "short", "long"]),
          "language": S("string", "Spoken language code (en, es, hi, zh…) or auto to detect (default)."),
          "cta": S("string", "End-card question on the long cut, e.g. 'Which one would you pick?' (max 80 chars)."),
-         "layout": S("string", "fit = full frame over a blurred fill; crop = fill the frame; original = keep the source shape.",
-                     enum=["fit", "crop", "original"]),
+         "layout": S("string", "fit = full frame over a blurred fill; crop = fill the frame; auto = fill the frame and follow "
+                     "whoever is talking (face tracking); split = two people stacked, one per half (podcasts); "
+                     "original = keep the source shape.", enum=["fit", "crop", "auto", "split", "original"]),
          "model": S("string", "Speech model: tiny is fastest, small is most accurate (default base).",
                     enum=["tiny", "base", "small", "medium"]),
          "min_seconds": S("integer", "Shortest clip length (default: the platform's sweet spot)."),
@@ -493,7 +494,8 @@ TOOLS = [
          "job_id": JOB_ID,
          "clip": S("integer", "Clip number from list_clips.", minimum=1),
          "cut": S("string", "Which cut to re-render (default long).", enum=["long", "short"]),
-         "layout": S("string", "fit = full frame over a blurred fill; crop = fill the frame.", enum=["fit", "crop"]),
+         "layout": S("string", "fit = full frame over a blurred fill; crop = fill the frame; auto = follow whoever is talking; "
+                     "split = two people stacked.", enum=["fit", "crop", "auto", "split"]),
          "reframe_x": S("number", "With layout crop: horizontal centre of the crop, 0 (left) to 1 (right)."),
          "start": S("number", "New start in the source video, in seconds."),
          "end": S("number", "New end in the source video, in seconds."),

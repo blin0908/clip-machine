@@ -67,6 +67,10 @@ function setChip(k, v, save = true) {
     opts[k] = v;
   }
   if (k === "platform") showPlat();
+  if (k === "layout") {
+    const h = $("#layoutHint"), t = LAYOUT_HINT[v] || "";
+    h.textContent = t; h.hidden = !t;
+  }
   if (["logo", "lpos"].includes(k) && typeof paintBrand === "function") paintBrand();
   lookSummary();
   if (save) { saveLast(); markCustom(); }
@@ -94,6 +98,10 @@ function lookSummary() {
   $("#lookSum").textContent = (opts.captions === "1" ? `${opts.style} · ${opts.size.toUpperCase()} · ${opts.format}` : `no captions · ${opts.format}`) + lg;
 }
 
+const LAYOUT_HINT = {
+  auto: "Fills the frame and follows whoever is talking, cutting between people like an editor would. Finding the faces adds a few seconds per clip.",
+  split: "One person in each half, the left one on top. Needs two people on screen at once; with one it follows them instead. Captions in the middle sit on the seam.",
+};
 const PKEY = "clipmachine.presets", LKEY = "clipmachine.last";
 const store = { get(k, d) { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } },
                 set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} } };
@@ -523,7 +531,7 @@ function filterGraph(m, keep, info, o, hasASS) {
   let vf;
   const sharpen = o.enhance ? ",unsharp=5:5:0.45:5:5:0,eq=contrast=1.04:saturation=1.07" : "";
   const cx = Math.min(1, Math.max(0, o.cx ?? 0.5)).toFixed(3), cy = Math.min(1, Math.max(0, o.cy ?? 0.5)).toFixed(3);
-  if (o.layout === "crop") vf = `scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H}:(iw-ow)*${cx}:(ih-oh)*${cy}${sharpen}`;
+  if (o.layout !== "fit") vf = `scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H}:(iw-ow)*${cx}:(ih-oh)*${cy}${sharpen}`;
   else {
     // blurred backdrop: blur a 1/8-size copy and scale it up (looks the same, ~5x less work than blurring full size);
     // only the visible video gets sharpened, since sharpening a blur is wasted work
@@ -919,7 +927,7 @@ function upload(url, fd, onPct) {
   });
 }
 const oFromJob = o => ({ platform: o.platform || "all", n: o.n || 5, version: o.version || "both", hd: true, captions: o.captions !== false, hook: o.hook !== false,
-  tighten: o.tighten !== false, enhance: o.enhance !== false, layout: o.layout === "crop" ? "crop" : "fit", style: o.style || "pop",
+  tighten: o.tighten !== false, enhance: o.enhance !== false, layout: ["crop", "auto", "split"].includes(o.layout) ? o.layout : "fit", style: o.style || "pop",
   hl: o.hl || "#FFF000", size: o.size || "m", pos: o.pos || "bottom", format: o.format || "9:16",
   logo: o.logo === true, lpos: o.lpos || "tl", lsize: o.lsize || "m", lop: X.logoOpacity(o.lop) });
 // Poll a desktop job until it finishes. A missed answer or two (the app busy, the laptop waking up) is retried;
@@ -1050,6 +1058,9 @@ async function enterDesktop(info) {
   if (!store.get(LKEY, {}).lang) setChip("lang", "auto", false);
   $('.chips[data-k="model"]').innerHTML = `<button class="chip" data-v="tiny">Fastest</button><button class="chip" data-v="base" aria-pressed="true">Balanced</button><button class="chip" data-v="small">Most accurate (slower)</button>`;
   $("#qualityRow").hidden = true;                   // the desktop app always exports full HD
+  document.querySelectorAll('.chips[data-k="layout"] .deskonly').forEach(b => { b.disabled = false; });   // face tracking runs natively
+  const lastLayout = store.get(LKEY, {}).layout;
+  if (["auto", "split"].includes(lastLayout) && !new URLSearchParams(location.search).has("layout")) setChip("layout", lastLayout, false);
   $(".lhint").textContent = "Paste a YouTube, TikTok, Twitch, X or any video link. The desktop app downloads it on this computer.";
   $("#link").placeholder = "Paste a YouTube, TikTok or video link";
   $(".tag").textContent = "Desktop app · runs on this computer";
@@ -1640,6 +1651,8 @@ addEventListener("keydown", e => {
 const studio = createStudio({
   X, esc, toast, fmtTC, icon, IS_WEBKIT,
   list: () => boardList(), srcURL, lookFrom, queueRender, jobFor, jobLabel, brand: () => brand.url,
+  // follow speaker / split screen: where the desktop app's face tracking puts the frame (reframe.py)
+  reframe: (s, start, end, format, mode) => api(`api/jobs/${encodeURIComponent(s.jid)}/reframe?` + new URLSearchParams({ start, end, format, mode })),
   onClose(c) { renderBoard(); if (c) { select(c.uid); document.querySelector(`.clip[data-uid="${c.uid}"] [data-edit]`)?.focus(); } },
   onWords(sess) { txState.dirty = true; if (sess === active && !$("#pTx").hidden) renderTranscript(); },
 });

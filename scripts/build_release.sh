@@ -5,10 +5,11 @@ cd "$(dirname "$0")/.."
 PY=.venv/bin/python; [ -x "$PY" ] || PY=python3
 "$PY" scripts/export_formula.py --check || exit 1   # web + desktop must score clips the same way
 rm -rf dist/stage && mkdir -p "dist/stage/Clip Machine/fonts"
-cp clipper.py app.py search.py mcp_server.py index.html requirements.txt README.md FORMULA.md LICENSE \
+cp clipper.py app.py search.py reframe.py mcp_server.py index.html requirements.txt README.md FORMULA.md LICENSE \
    Install.command "Start Clip Machine.command" install.sh start.sh \
    "Install (Windows).bat" "Start Clip Machine.bat" "dist/stage/Clip Machine/"
 cp docs/fonts/Montserrat-Black.ttf docs/fonts/OFL.txt "dist/stage/Clip Machine/fonts/"
+mkdir -p "dist/stage/Clip Machine/models" && cp models/* "dist/stage/Clip Machine/models/"   # face detector for follow speaker / split
 # the browser UI (the desktop app serves the same pages as the website, backed by its native engine)
 mkdir -p "dist/stage/Clip Machine/web"
 cp docs/index.html docs/app.js docs/studio.js docs/zip.js docs/formula.js docs/formula.json docs/asr-worker.js docs/search.js docs/search-worker.js docs/sw.js \

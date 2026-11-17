@@ -4,6 +4,7 @@
 export function createStudio(api) {
   const { X, esc, toast, fmtTC } = api;
   const $ = id => document.getElementById(id);
+  const split = $("stSplit"), sctx = split.getContext("2d");
   const root = $("studio"), vid = $("stVid"), out = $("stOut"), frame = $("stFrame"), bg = $("stBg"), cap = $("stCap"), hook = $("stHook");
   const tl = $("stTl"), tctx = tl.getContext("2d"), bctx = bg.getContext("2d");
   const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -268,8 +269,10 @@ export function createStudio(api) {
   }
   function paintFrame() {
     const L = ST.d.look, lay = X.captionLayout(plat(), L);
-    frame.classList.toggle("crop", L.layout === "crop");
-    vid.style.objectPosition = L.layout === "crop" ? `${(L.cx ?? 0.5) * 100}% ${(L.cy ?? 0.5) * 100}%` : "";
+    frame.classList.toggle("crop", L.layout !== "fit");
+    frame.classList.toggle("drag", L.layout === "crop");
+    vid.style.objectPosition = L.layout !== "fit" ? `${(L.cx ?? 0.5) * 100}% ${(L.cy ?? 0.5) * 100}%` : "";
+    wantPlan();
     const base = { pop: 84, clean: 70, boxed: 72 }[L.style] || 84;
     frame.style.setProperty("--fs", (base * lay.scale / lay.PX * 100).toFixed(3));
     frame.style.setProperty("--hs", (58 * Math.min(1, lay.scale / ({ s: 0.82, m: 1, l: 1.2 }[L.size] || 1)) / lay.PX * 100).toFixed(3));
@@ -327,6 +330,79 @@ export function createStudio(api) {
     if (vr > fr) { sw = sh * fr; sx = (vid.videoWidth - sw) / 2; } else { sh = sw / fr; sy = (vid.videoHeight - sh) / 2; }
     try { bctx.drawImage(vid, sx, sy, sw, sh, 0, 0, W, H); } catch {}
   }
+  // ------------------------------------------------------------ follow speaker / split screen (desktop: reframe.py)
+  // The desktop app finds the faces and says where the frame goes over time; the preview draws exactly that.
+  let planT = 0;
+  const planKey = () => { const d = ST.d, L = d.look; return `${ST.sess.jid}|${d.start.toFixed(2)}|${d.end.toFixed(2)}|${L.format}|${L.layout}`; };
+  function faceNote(t) { const n = $("stFaceNote"); n.textContent = t || ""; n.hidden = !t; }
+  function wantPlan() {
+    const L = ST.d.look, on = L.layout === "auto" || L.layout === "split";
+    if (!on || !ST.sess.remote || !api.reframe) { ST.rf = null; faceNote(""); applyPlan(); return; }
+    const k = planKey();
+    if (ST.rf?.key === k) return applyPlan();
+    ST.rf = { key: k, plan: null };
+    faceNote("Finding faces…");
+    applyPlan();
+    clearTimeout(planT);
+    planT = setTimeout(async () => {
+      const d = ST.d;
+      let plan;
+      try { plan = await api.reframe(ST.sess, d.start, d.end, d.look.format, d.look.layout); }
+      catch (e) { plan = { mode: "none", note: `Couldn't check for faces: ${e.message}` }; }
+      if (!ST || ST.rf?.key !== k) return;
+      ST.rf.plan = plan;
+      faceNote(plan.note || (plan.mode === "split" ? "Split screen: one person per half, left one on top."
+        : `Following the speaker${plan.faces > 1 ? `: ${plan.faces} people, ${plan.switches} switch${plan.switches === 1 ? "" : "es"}` : ""}.`));
+      applyPlan(); need();
+    }, 350);
+  }
+  function applyPlan() {
+    const p = ST?.rf?.plan, isSplit = p?.mode === "split";
+    frame.classList.toggle("split", isSplit);
+    split.hidden = !isSplit;
+    if (isSplit) {
+      const [a, b] = X.FORMATS[ST.d.look.format] || [9, 16];
+      const w = a <= b ? 540 : Math.round(540 * a / b), h = a <= b ? Math.round(540 * b / a) : 540;
+      if (split.width !== w || split.height !== h) { split.width = w; split.height = h; }
+    }
+  }
+  function at(keys, t) {                          // mirrors reframe.at: smoothstep between keyframes
+    if (!keys?.length) return [0.5, 0.5];
+    if (t <= keys[0][0]) return [keys[0][1], keys[0][2]];
+    for (let i = 1; i < keys.length; i++) {
+      const a = keys[i - 1], b = keys[i];
+      if (t < b[0]) {
+        const d = b[0] - a[0]; if (d < 0.01) return [a[1], a[2]];
+        const u = Math.min(1, Math.max(0, (t - a[0]) / d)), s = u * u * (3 - 2 * u);
+        return [a[1] + (b[1] - a[1]) * s, a[2] + (b[2] - a[2]) * s];
+      }
+    }
+    const z = keys[keys.length - 1]; return [z[1], z[2]];
+  }
+  function paintPlan(t) {
+    const p = ST.rf?.plan;
+    if (!p || ST.mode !== "source" || !vid.videoWidth) return;
+    const vw = vid.videoWidth, vh = vid.videoHeight;
+    if (p.mode === "auto" && p.keys?.length) {
+      const [fx, fy] = at(p.keys, t), [a, b] = X.FORMATS[ST.d.look.format] || [9, 16], vr = vw / vh, fr = a / b;
+      const clamp = v => Math.min(1, Math.max(0, v));
+      let px = 0.5, py = 0.5;
+      if (vr > fr) { const ww = fr / vr; px = clamp((fx - ww / 2) / (1 - ww)); }
+      else if (vr < fr) { const wh = vr / fr; py = clamp((fy - wh / 2) / (1 - wh)); }
+      vid.style.objectPosition = `${(px * 100).toFixed(2)}% ${(py * 100).toFixed(2)}%`;
+    } else if (p.mode === "split") {
+      const W = split.width, H = split.height, v = p.stack === "v";
+      const sizes = v ? [[W, Math.round(H / 2)], [W, H - Math.round(H / 2)]] : [[Math.round(W / 2), H], [W - Math.round(W / 2), H]];
+      let off = 0;
+      p.panels.forEach((pn, i) => {
+        const [fx, fy] = at(pn.keys, t), rw = pn.rw * vw, rh = pn.rh * vh;
+        const sx = Math.min(vw - rw, Math.max(0, fx * vw - rw / 2)), sy = Math.min(vh - rh, Math.max(0, fy * vh - rh / 2));
+        const [pw, ph] = sizes[i];
+        try { sctx.drawImage(vid, sx, sy, rw, rh, v ? 0 : off, v ? off : 0, pw, ph); } catch {}
+        off += v ? ph : pw;
+      });
+    }
+  }
   function seek(t) { if (!ST) return; t = Math.max(0, Math.min(dur(), t)); try { vid.currentTime = t; } catch {} ST.lastT = t; follow(t); need(); }
   function togglePlay() {
     if (ST.mode === "rendered") { out.paused ? out.play() : out.pause(); return; }
@@ -369,7 +445,7 @@ export function createStudio(api) {
       }
       follow(t);
     }
-    paintCaption(t); paintBg();
+    paintCaption(t); paintBg(); paintPlan(t);
     const shown = ST.mode === "rendered" ? out.currentTime : t;
     const tc = ST.mode === "rendered" ? `${fmtTC(shown)} / ${fmtTC(out.duration || 0)}` : `${fmtTC(t)}${t >= d.start && t <= d.end ? `  ·  clip ${fmtTC(X.remap(t - d.start, ST.keep))}` : ""}`;
     if ($("stTC")._t !== tc) { $("stTC")._t = tc; $("stTC").textContent = tc; }

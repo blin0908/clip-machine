@@ -323,11 +323,14 @@ label.t{display:block;font-size:12px;color:var(--mute);margin:12px 0 6px;font-we
 .st-body{display:grid;grid-template-columns:minmax(300px,1fr) minmax(320px,420px);min-height:0}
 .st-stage{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:14px;min-height:0;background:radial-gradient(ellipse at 50% 40%,#1b1d22,var(--ink) 70%)}
 .st-frame{position:relative;height:min(100%,calc(100vh - 330px));max-width:100%;aspect-ratio:var(--ar,9/16);background:#000;overflow:hidden;border-radius:6px;box-shadow:0 0 0 1px var(--line2),0 20px 60px rgba(0,0,0,.5);container-type:size;touch-action:none}
-.st-frame.crop{cursor:grab}.st-frame.crop:active{cursor:grabbing}
+.st-frame.drag{cursor:grab}.st-frame.drag:active{cursor:grabbing}
 .st-frame video,.st-frame canvas{position:absolute;inset:0;width:100%;height:100%}
 .st-frame canvas{filter:blur(6px) brightness(.85);transform:scale(1.08)}
 .st-frame video{object-fit:contain}
 .st-frame.crop video{object-fit:cover}
+.st-frame canvas.split{filter:none;transform:none}
+.st-frame.split video:not(.out){opacity:0}
+body:not(.desk) .deskonly{display:none}
 .st-frame .out{object-fit:contain;background:#000}
 .st-safe{position:absolute;inset:0;pointer-events:none}
 .st-cap{position:absolute;left:var(--ml);right:var(--ml);text-align:center;font:900 calc(var(--fs)*1cqw)/1.12 var(--capfont,"Cap Black"),var(--f-disp);text-transform:uppercase;color:#fff;pointer-events:none;overflow-wrap:break-word}
@@ -482,7 +485,8 @@ dialog::backdrop{background:rgba(0,0,0,.6)}
       <div class="chips" data-k="pos"><button class="chip" data-v="bottom" aria-pressed="true">Lower third</button><button class="chip" data-v="middle">Middle</button><button class="chip" data-v="top">Upper</button></div>
       <div class="chips" data-k="hook" style="margin-top:10px"><button class="chip" data-v="1" aria-pressed="true">Headline for first 3s</button><button class="chip" data-v="0">No headline</button></div>
       <label class="t">Framing</label>
-      <div class="chips" data-k="layout"><button class="chip" data-v="fit" aria-pressed="true">Full frame + blur</button><button class="chip" data-v="crop">Fill (crop)</button></div>
+      <div class="chips" data-k="layout"><button class="chip" data-v="fit" aria-pressed="true">Full frame + blur</button><button class="chip" data-v="crop">Fill (crop)</button><button class="chip deskonly" data-v="auto" disabled title="Fills the frame and follows whoever is talking">Follow speaker</button><button class="chip deskonly" data-v="split" disabled title="Two people, one in each half: for podcasts and interviews">Split screen</button></div>
+      <p class="hint deskonly" id="layoutHint" hidden></p>
     </details>
 
     <details class="grp" id="brandGrp">
@@ -611,6 +615,7 @@ dialog::backdrop{background:rgba(0,0,0,.6)}
       <div class="st-frame" id="stFrame">
         <canvas id="stBg" width="36" height="64" aria-hidden="true"></canvas>
         <video id="stVid" playsinline preload="auto"></video>
+        <canvas id="stSplit" class="split" width="540" height="960" aria-hidden="true" hidden></canvas>
         <video id="stOut" class="out hide" playsinline controls preload="metadata"></video>
         <img class="st-logo" id="stLogo" alt="" aria-hidden="true" hidden>
         <div class="st-hook" id="stHook" aria-hidden="true"></div>
@@ -647,8 +652,9 @@ dialog::backdrop{background:rgba(0,0,0,.6)}
           <label class="t">Frame</label>
           <div class="chips" data-ek="format"><button class="chip ar" data-v="9:16"><i style="--w:9;--h:16"></i>9:16</button><button class="chip ar" data-v="4:5"><i style="--w:11;--h:14"></i>4:5</button><button class="chip ar" data-v="1:1"><i style="--w:13;--h:13"></i>1:1</button><button class="chip ar" data-v="16:9"><i style="--w:18;--h:10"></i>16:9</button></div>
           <label class="t">Framing</label>
-          <div class="chips" data-ek="layout"><button class="chip" data-v="fit">Full frame + blur</button><button class="chip" data-v="crop">Fill (crop)</button></div>
+          <div class="chips" data-ek="layout"><button class="chip" data-v="fit">Full frame + blur</button><button class="chip" data-v="crop">Fill (crop)</button><button class="chip deskonly" data-v="auto">Follow speaker</button><button class="chip deskonly" data-v="split">Split screen</button></div>
           <p class="pnote" id="stCropHint">With Fill, drag the picture to reframe it.</p>
+          <p class="pnote" id="stFaceNote" role="status" hidden></p>
           <div id="stBrand">
             <label class="t">Logo</label>
             <div class="chips" data-ek="logo"><button class="chip" data-v="1">On</button><button class="chip" data-v="0">Off</button></div>

@@ -989,6 +989,7 @@ def _ass_safe(text):
 
 CAPTION_STYLES = ("pop", "clean", "boxed")
 FORMATS = {"9:16": (9, 16), "4:5": (4, 5), "1:1": (1, 1), "16:9": (16, 9)}
+LAYOUTS = ("fit", "crop", "auto", "split")   # auto = follow the speaker's face, split = two people stacked (reframe.py)
 SIZES = {"s": 0.82, "m": 1.0, "l": 1.2}
 _rnd = lambda x: int(math.floor(x + 0.5))   # JavaScript's Math.round, so both engines place captions identically
 
@@ -1067,7 +1068,7 @@ def clean_look(d, base=None):
         except (KeyError, TypeError, ValueError):
             pass
     if d.get("style") in CAPTION_STYLES: out["style"] = d["style"]
-    if d.get("layout") in ("fit", "crop"): out["layout"] = d["layout"]
+    if d.get("layout") in LAYOUTS: out["layout"] = d["layout"]
     for k in ("tighten", "captions", "hook"):
         if isinstance(d.get(k), bool): out[k] = d[k]
     if isinstance(d.get("logo"), bool): out["logo"] = d["logo"]
@@ -1177,10 +1178,35 @@ def render(video: Path, m: Moment, out: Path, layout="fit", captions=True, crop_
 
     # light clarity grade: gentle sharpen + a touch of contrast/colour
     sharpen = ",unsharp=5:5:0.45:5:5:0,eq=contrast=1.04:saturation=1.07" if enhance and layout != "original" else ""
-    if layout == "crop":
+    rf = None
+    if layout in ("auto", "split") and info.get("has_video"):
+        rf = reframe_plan(video, m, W / H, layout, out.parent)
+    to_out = lambda ts: remap(ts - m.start, keep)
+    if rf and rf["mode"] == "split":
+        import reframe
+        stacked = rf["stack"] == "v"
+        if stacked:
+            sizes = [(W, _rnd(H / 4) * 2)]
+            sizes.append((W, H - sizes[0][1]))
+        else:
+            sizes = [(_rnd(W / 4) * 2, H)]
+            sizes.append((W - sizes[0][0], H))
+        parts = []
+        for k, (p, (pw, ph)) in enumerate(zip(rf["panels"], sizes)):
+            xe = f"clip(({reframe.expr(p['keys'], 1, to_out)})*iw-ow/2,0,iw-ow)"
+            ye = f"clip(({reframe.expr(p['keys'], 2, to_out)})*ih-oh/2,0,ih-oh)"
+            parts.append(f"[r{k}]crop=w='trunc(iw*{p['rw']}/2)*2':h='trunc(ih*{p['rh']}/2)*2':x='{xe}':y='{ye}',"
+                         f"scale={pw}:{ph}{sharpen}[s{k}]")
+        vf = f"split[r0][r1];{parts[0]};{parts[1]};[s0][s1]{'vstack' if stacked else 'hstack'}"
+    elif layout in ("crop", "auto", "split"):
         cx = min(max(float(look.get("cx", crop_x)), 0), 1)
         cy = min(max(float(look.get("cy", 0.5)), 0), 1)
-        vf = f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H}:(iw-ow)*{cx:.3f}:(ih-oh)*{cy:.3f}" + sharpen
+        xe, ye = f"(iw-ow)*{cx:.3f}", f"(ih-oh)*{cy:.3f}"
+        if rf and rf["mode"] == "auto" and rf.get("keys"):    # follow the speaker: crop position changes over time
+            import reframe
+            xe = f"'clip(({reframe.expr(rf['keys'], 1, to_out)})*iw-ow/2,0,iw-ow)'"
+            ye = f"'clip(({reframe.expr(rf['keys'], 2, to_out)})*ih-oh/2,0,ih-oh)'"
+        vf = f"scale={W}:{H}:force_original_aspect_ratio=increase,crop={W}:{H}:{xe}:{ye}" + sharpen
     elif layout == "original":
         vf = "scale=trunc(iw/2)*2:trunc(ih/2)*2"
     else:  # fit: full frame over a blurred fill
@@ -1251,7 +1277,19 @@ def render(video: Path, m: Moment, out: Path, layout="fit", captions=True, crop_
     return {"final_duration": round(sum(b - a for a, b in keep), 1), "cuts": len(keep) - 1, "fps": fps,
             "size_mb": round(out.stat().st_size / 1e6, 1), "fillers_cut": fillers, "enhanced": enhance,
             "_audiogram": not info["has_video"], "W": W, "H": H,
-            "_expected": sum(b - a for a, b in keep), "_layout": layout, "_detect_log": detect_log}
+            "_expected": sum(b - a for a, b in keep), "_layout": layout, "_detect_log": detect_log,
+            **({"reframe": rf} if rf else {})}
+
+
+def reframe_plan(video, m, out_aspect, layout, jobdir):
+    """Face plan for one cut (reframe.py), cached per job. Never fails a render: problems become a centred crop + note."""
+    try:
+        import reframe
+        faces = reframe.Faces.for_job(video, FFMPEG, Path(jobdir) / "faces.json")
+        return reframe.plan(faces, m.start, m.end, m.words, out_aspect, layout)
+    except Exception as e:  # noqa: BLE001
+        print(f"[reframe] {e}", file=sys.stderr)
+        return {"mode": "none", "note": "Face reframing failed on this clip, so the crop stays centred."}
 
 
 # ---------------------------------------------------------------- quality gate
@@ -1358,6 +1396,12 @@ def run(source, outdir: Path, n=5, min_len=None, max_len=None, layout="fit", cap
     (outdir / "transcript.json").write_text(json.dumps(segs))
     pool = find_moments(segs, loud, info["duration"], n + 4, min_len, max_len, platform, progress, version)
     clips, dropped = [], 0
+    if layout in ("auto", "split") and info["has_video"]:
+        progress("render", 0, "Getting face detection ready")
+        import reframe
+        why = reframe.unavailable()        # installs OpenCV on first use
+        if why:
+            print(f"[reframe] {why}; clips use a centred crop", file=sys.stderr)
 
     def make(mm, path, use_cta):
         """Render, measure, and if a hard check fails re-render once with safe settings."""
@@ -1516,7 +1560,8 @@ if __name__ == "__main__":
     ap.add_argument("-p", "--platform", choices=list(PLATFORMS), default="all")
     ap.add_argument("--min", type=int, help="min clip length (default: platform sweet spot)")
     ap.add_argument("--max", type=int, help="max clip length (default: platform sweet spot)")
-    ap.add_argument("--layout", choices=["fit", "crop", "original"], default="fit")
+    ap.add_argument("--layout", choices=[*LAYOUTS, "original"], default="fit",
+                    help="fit = full frame over blur, crop = fill, auto = follow whoever's talking, split = two people stacked")
     ap.add_argument("--no-captions", action="store_true")
     ap.add_argument("--no-hook", action="store_true", help="skip the headline overlay")
     ap.add_argument("--keep-pauses", action="store_true", help="don't cut dead air or um/uh")
