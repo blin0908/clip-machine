@@ -30,7 +30,10 @@ from pathlib import Path
 import http.client
 
 HERE = Path(__file__).resolve().parent
-VERSION = "1.0.0"
+try:   # the app's version, read rather than imported (importing clipper loads the whole engine)
+    VERSION = re.search(r'^VERSION = "([^"]+)"', (HERE / "clipper.py").read_text(encoding="utf-8"), re.M).group(1)
+except (OSError, AttributeError):
+    VERSION = "unknown"
 PROTOCOLS = ("2025-06-18", "2025-03-26", "2024-11-05")
 PLATFORMS = ("all", "tiktok", "reels", "shorts", "facebook", "snapchat", "x")
 STYLES = ("pop", "clean", "boxed")
