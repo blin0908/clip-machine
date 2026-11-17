@@ -288,6 +288,7 @@ def _cut(jid, v, kind):
             "thumbnail": app.path_of(jid, v["thumb"]) if v.get("thumb") else None,
             "quality": f"{sum(1 for c in q if c.get('ok'))}/{len(q)} checks passed",
             "failed_checks": [f"{c['k']} ({c.get('detail', '')})" for c in q if not c.get("ok")],
+            "score": v.get("score"),
             "look": v.get("look"), "edited": bool(v.get("edited"))}
 
 
@@ -299,10 +300,15 @@ def tool_list_clips(a):
         raise ToolError(f"Job {j['id']} has no clips yet (status: {j['status']}{', ' + j['msg'] if j.get('msg') else ''}).")
     clips = []
     for i, c in enumerate(res["clips"], 1):
+        long_cut = _cut(j["id"], c, "long")
+        p = c.get("payoff")
+        misses = [k for k, v in (("long", c), ("short", c.get("short"))) if v and p is not None and (v["end"] < p + 1 or v["start"] > p)]
         clips.append({"clip": i, "score": c.get("score"), "title": c.get("title"), "reasons": c.get("reasons"),
+                      "title_may_be_misheard": c.get("title_sure") is False, "payoff": p,
+                      "cuts_missing_the_payoff": misses, "why_no_short": c.get("short_note") or None,
                       "hashtags": c.get("hashtags"), "post_text": c.get("captions"),
                       "checklist": [("✓ " if x.get("ok") else "✗ ") + x.get("k", "") for x in c.get("checklist") or []],
-                      "long": _cut(j["id"], c, "long"), "short": _cut(j["id"], c["short"], "short") if c.get("short") else None})
+                      "long": long_cut, "short": _cut(j["id"], c["short"], "short") if c.get("short") else None})
     return {"job_id": j["id"], "video_title": _title(j), "platform": res.get("platform_name"),
             "job_folder": str(app.jobs_dir() / j["id"]), "clips": clips}
 
@@ -353,6 +359,8 @@ def tool_rerender_clip(a):
     end = float(a["end"]) if a.get("end") is not None else float(target["end"])
     body = {"clip": idx, "cut": kind, "start": start, "end": end, "title": a.get("title") or target.get("title") or "",
             "words": _words(j["id"], target, start, end), "style": look.get("style"), "look": look}
+    if "payoff" in a:
+        body["payoff"] = None if a["payoff"] is None else float(a["payoff"])
     if a.get("cta") is not None:
         body["cta"] = str(a["cta"])
     rev = j.get("edit_rev", 0)
@@ -483,8 +491,10 @@ TOOLS = [
      "inputSchema": {"type": "object", "required": ["job_id"], "properties": {
          "job_id": JOB_ID, "wait_seconds": S("number", "Wait up to this long for the job to finish (0–900, default 0).")}}},
     {"name": "list_clips", "fn": tool_list_clips,
-     "description": "The finished clips of a job, best first: score, why each was picked, title, hashtags, post text "
-                    "per platform, quality-gate result, and the file paths of each cut (.mp4, .srt, thumbnail).",
+     "description": "The finished clips of a job, best first: score, why each was picked, title (flagged when the speech "
+                    "model was unsure of it), hashtags, post text per platform, quality-gate result, why there's no short "
+                    "cut when there isn't one, cuts that end before a marked payoff, and the file paths of each cut "
+                    "(.mp4, .srt, thumbnail).",
      "inputSchema": {"type": "object", "required": ["job_id"], "properties": {"job_id": JOB_ID}}},
     {"name": "rerender_clip", "fn": tool_rerender_clip,
      "description": "Re-render one cut with a new look (caption style, highlight colour, size, position, frame, layout), "
@@ -501,6 +511,8 @@ TOOLS = [
          "end": S("number", "New end in the source video, in seconds."),
          "title": S("string", "New headline (max 90 chars)."),
          "cta": S("string", "New end-card text; empty string removes it."),
+         "payoff": S("number", "Source time (seconds) of the moment the clip has to reach: a reveal, punchline or answer. "
+                     "Shared by the clip's long and short cut; list_clips then reports any cut that ends before it."),
          "wait_seconds": S("number", "Give up waiting after this long (default 600)."),
          **LOOK}}},
     {"name": "export_zip", "fn": tool_export_zip,
