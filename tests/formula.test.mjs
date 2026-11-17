@@ -429,3 +429,47 @@ print(json.dumps({"joins": [clipper.join_words(w) for w in a["joins"]],
   assert.deepEqual(js.joins.slice(0, 4), ["il s'est passé", "l'équipe", "I don't know", "c’est fou"]);
   js.titles.slice(0, 2).forEach(t => assert.ok(t.length <= 31 && t.endsWith("…"), t));
 });
+
+test("short cuts reach the payoff or are skipped with a reason, and get their own score, the same in both engines", () => {
+  const words = [];
+  for (let t = 0; t < 120; t += 0.4) words.push(W(["why", "is", "this", "insane", "here's", "the", "secret.", "so"][Math.floor(t * 2.5) % 8], t, t + 0.3));
+  const segs = X.segmentsFromWords(words);
+  // a quiet build with one loud payoff late in each 40 s stretch, and a flatter one
+  const loud = Array.from({ length: 240 }, (_, i) => +((i % 80 > 66 && i % 80 < 72 ? 3 : 0) + 0.2 * Math.sin(i / 3)).toFixed(3));
+  const js = X.findMoments(segs, Float32Array.from(loud), 120, 3, "tiktok", "long").map(m => {
+    const sm = X.shorten(m, segs, Float32Array.from(loud), ...X.F.platforms.tiktok.short);
+    return { start: m.start, end: m.end, score: m.score, short: sm ? { end: sm.end, score: sm.score } : null, note: m.shortNote };
+  });
+  const py = JSON.parse(execFileSync(PY, ["-c", `
+import sys, json; sys.path.insert(0, ${JSON.stringify(ROOT)})
+import numpy as np, clipper
+a = json.loads(sys.stdin.read()); loud = np.array(a["loud"], dtype=np.float32)
+out = []
+for m in clipper.find_moments(a["segs"], loud, 120, 3, platform="tiktok", version="long"):
+    sm = clipper.shorten(m, a["segs"], loud, *clipper.PLATFORMS["tiktok"]["short"])
+    out.append(dict(start=m.start, end=m.end, score=m.score, short=dict(end=sm.end, score=sm.score) if sm else None, note=m.short_note))
+print(json.dumps(out))`], { input: JSON.stringify({ segs, loud }), encoding: "utf8" }).trim().split("\n").at(-1));
+  assert.equal(js.length, py.length);
+  js.forEach((m, i) => {
+    assert.equal(!!m.short, !!py[i].short, `moment ${i}: short in one engine only`);
+    assert.equal(m.note, py[i].note);
+    if (m.short) {
+      assert.ok(Math.abs(m.short.end - py[i].short.end) < 0.02);
+      assert.equal(m.short.score, py[i].short.score);
+    } else if (m.note) assert.match(m.note, /payoff lands \d+s in/);
+  });
+  for (const m of js) if (m.short) assert.ok(m.short.end <= m.end && m.short.score >= 45 && m.short.score <= 99);
+  // a cut whose payoff lands at 27 s: a same-opening short (12-18 s) would stop before it, so there is none, in both engines
+  const late = Array.from({ length: 240 }, (_, i) => (i >= 50 && i <= 56 ? 3 : 0) + 0.1 * Math.sin(i));
+  const m = { start: 0, end: 30, words: words.filter(w => w.e <= 30), text: "" };
+  assert.equal(X.shorten(m, segs, Float32Array.from(late), 12, 18), null);
+  assert.match(m.shortNote, /payoff lands 2\ds in/);
+  const pyNote = execFileSync(PY, ["-c", `
+import sys, json; sys.path.insert(0, ${JSON.stringify(ROOT)})
+import numpy as np, clipper
+a = json.loads(sys.stdin.read())
+m = clipper.Moment(start=0, end=30, words=[w for w in a["words"] if w["e"] <= 30])
+print(json.dumps([clipper.shorten(m, a["segs"], np.array(a["late"], dtype=np.float32), 12, 18) is None, m.short_note]))`],
+    { input: JSON.stringify({ segs, late, words }), encoding: "utf8" }).trim().split("\n").at(-1);
+  assert.deepEqual(JSON.parse(pyNote), [true, m.shortNote]);
+});

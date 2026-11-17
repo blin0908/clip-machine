@@ -306,5 +306,58 @@ class ParallelRender(unittest.TestCase):
         self.assertFalse([f for f in files if f.startswith("_cand")])
 
 
+class Headlines(unittest.TestCase):
+    @staticmethod
+    def seg(text, s, p):
+        ws = text.split()
+        step = 3.0 / len(ws)
+        return {"s": s, "e": s + 3, "text": text,
+                "words": [{"w": w, "s": s + i * step, "e": s + (i + 1) * step, "p": p} for i, w in enumerate(ws)]}
+
+    def test_a_misheard_sentence_is_never_the_headline_when_a_clear_one_exists(self):
+        segs = [self.seg("Wait this is insane, the mall of instable!", 0, 0.31),   # loud, hype-y, but misheard
+                self.seg("That is the Turkish eye in the font.", 3, 0.93)]
+        title, sure = clipper._title(Moment(0, 6), segs, with_confidence=True)
+        self.assertEqual(title, "That is the Turkish eye in the font")
+        self.assertTrue(sure)
+
+    def test_all_shaky_still_gets_a_headline_but_says_so(self):
+        segs = [self.seg("Wait this is insane!", 0, 0.3), self.seg("Mall of instable", 3, 0.4)]
+        title, sure = clipper._title(Moment(0, 6), segs, with_confidence=True)
+        self.assertTrue(title)
+        self.assertFalse(sure)
+
+    def test_transcripts_without_confidence_behave_as_before(self):
+        segs = [{"s": 0, "e": 3, "text": "Wait this is insane!", "words": [{"w": "Wait", "s": 0, "e": 1}]}]
+        self.assertEqual(clipper._title(Moment(0, 3), segs), "Wait this is insane!")
+        self.assertEqual(clipper._title(Moment(0, 3), segs, with_confidence=True), ("Wait this is insane!", True))
+
+
+class ShortCuts(unittest.TestCase):
+    def test_short_gets_its_own_score_and_a_late_payoff_skips_it(self):
+        import numpy as np
+        words = [{"w": w, "s": t * 0.4, "e": t * 0.4 + 0.3}
+                 for t, w in enumerate((["why", "is", "this", "insane", "here's", "the", "secret.", "so"] * 40)[:300])]
+        segs = clipper.segments_from_words(words) if hasattr(clipper, "segments_from_words") else None
+        if segs is None:
+            segs, cur = [], []
+            for w in words:
+                cur.append(w)
+                if w["w"].endswith("."):
+                    segs.append({"s": cur[0]["s"], "e": cur[-1]["e"], "text": " ".join(x["w"] for x in cur), "words": cur})
+                    cur = []
+        loud = np.array([3.0 if 50 <= i <= 56 else 0.1 * np.sin(i) for i in range(240)], dtype=np.float32)
+        m = Moment(0, 30, words=[w for w in words if w["e"] <= 30])
+        self.assertIsNone(clipper.shorten(m, segs, loud, 12, 18))
+        self.assertIn("payoff lands", m.short_note)
+        flat = np.array([0.1 * np.sin(i) for i in range(240)], dtype=np.float32)
+        ms = clipper.find_moments(segs, flat, 120, 2, platform="tiktok", version="long")
+        sm = clipper.shorten(ms[0], segs, flat, *clipper.PLATFORMS["tiktok"]["short"])
+        self.assertIsNotNone(sm)
+        self.assertEqual(ms[0].short_note, "")
+        self.assertTrue(45 <= sm.score <= 99 and sm.checklist)
+        self.assertTrue(any("Length" in c["k"] and c["ok"] for c in sm.checklist))   # judged against the short range
+
+
 if __name__ == "__main__":
     unittest.main()

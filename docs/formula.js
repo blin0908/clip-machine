@@ -183,9 +183,11 @@ export function findMoments(segs, loud, duration, n, platformKey, version) {
   const keys = Object.keys(F.weights), raw = new Set(F.raw);
   const cols = keys.map(k => cands.map(c => c.f[k]));
   const z = cands.map(() => ({}));
+  const norm = { mu: {}, sd: {}, flat: {}, plat };          // this video's baseline, so a short cut is scored the same way
   keys.forEach((k, ki) => {
     const col = cols[ki], m = mean(col), sd = Math.sqrt(mean(col.map(x => (x - m) ** 2)));
     const flat = sd <= 1e-6 * Math.max(1, Math.abs(m));     // doesn't vary: neutral (mirrors clipper.find_moments)
+    norm.mu[k] = m; norm.sd[k] = flat ? 1 : sd; norm.flat[k] = flat;
     cands.forEach((c, ci) => { z[ci][k] = raw.has(k) ? col[ci] : flat ? 0 : (col[ci] - m) / sd; });
   });
   cands.forEach((c, ci) => { c.z = z[ci]; c.score = keys.reduce((a, k) => a + F.weights[k] * z[ci][k], 0); });
@@ -195,19 +197,25 @@ export function findMoments(segs, loud, duration, n, platformKey, version) {
     if (picked.some(m => !(c.e + 2 <= m.start || c.s >= m.end + 2))) continue;
     picked.push({ start: +c.s.toFixed(2), end: +c.e.toFixed(2), raw: c.score, text: c.text, words: c.words,
                   reasons: reasons(c.z, c.f), checklist: checklist(c.z, c.f, c.e - c.s, plat),
-                  signals: Object.fromEntries(keys.map(k => [k, Math.round(c.z[k] * 100) / 100])) });   // for learning from results
+                  signals: Object.fromEntries(keys.map(k => [k, Math.round(c.z[k] * 100) / 100])), norm });   // for learning from results
     if (picked.length >= n) break;
   }
   if (picked.length) {
     const hi = picked[0].raw, lo = Math.min(...picked.map(m => m.raw));
     for (const m of picked) {
-      const passed = m.checklist.filter(x => x.ok).length / m.checklist.length;
-      m.score = Math.round(45 + 30 * (hi > lo ? (m.raw - lo) / (hi - lo) : 1) + 24 * passed);
+      m.rel = hi > lo ? (m.raw - lo) / (hi - lo) : 1;
+      m.score = score(m.rel, m.checklist);
       m.title = title(m, segs);
       m.hashtags = tags(m.text, base.tags);
     }
   }
   return picked;
+}
+
+// The 0-100 moment score: rank among this video's moments, nudged by how many checks pass (clipper._score).
+export function score(rel, list) {
+  const passed = list.filter(x => x.ok).length / Math.max(list.length, 1);
+  return Math.round(45 + 30 * rel + 24 * passed);
 }
 
 function reasons(z, f) {
@@ -270,16 +278,38 @@ export function postCopy(m, sourceTitle) {
   };
 }
 
+// Short cut with the SAME opening, ending on the strongest sentence end between lo and hi seconds. If the long cut's
+// payoff lands later than a short can reach, there's no short: returns null and says why in m.shortNote.
+// Mirrors clipper.shorten.
 export function shorten(m, segs, loud, lo, hi) {
+  m.shortNote = "";
   if (m.end - m.start <= hi + 1) return null;
   let ends = segs.map(s => s.e).filter(e => e >= m.start + lo && e <= Math.min(m.start + hi, m.end));
   if (!ends.length) ends = m.words.map(w => w.e).filter(e => e >= m.start + lo && e <= m.start + hi);
   if (!ends.length) ends = [m.start + (lo + hi) / 2];
-  const punch = e => { const i = Math.floor(e / HOP); return mean(Array.from(loud.slice(Math.max(0, i - 2 / HOP), i + 1))); };
+  const punch = e => { const i = Math.floor(e / HOP); return i < loud.length ? mean(Array.from(loud.slice(Math.max(0, i - 2 / HOP), i + 1))) : 0; };
   const e = ends.reduce((a, b) => punch(b) > punch(a) ? b : a);
+  const later = segs.map(s => s.e).filter(x => x > m.start + hi && x <= m.end + 0.05);
+  if (later.length) {
+    const peak = later.reduce((a, b) => punch(b) > punch(a) ? b : a);
+    if (punch(peak) - punch(e) >= F.payoffMargin) {
+      m.shortNote = `No short cut: the payoff lands ${Math.round(peak - m.start)}s in, and a short with the same opening has to end by ${hi}s.`;
+      return null;
+    }
+  }
   const words = m.words.filter(w => w.e <= e + 0.05);
   const end = Math.min(m.end, words.length ? words.at(-1).e + 0.35 : e);
-  return { ...m, end: +end.toFixed(2), words, text: joinWords(words.map(w => w.w)), short: true };
+  const sm = { ...m, end: +end.toFixed(2), words, text: joinWords(words.map(w => w.w)), short: true };
+  if (m.norm) {   // score the short on its own: its length, ending and dead air differ from the long cut's
+    const keys = Object.keys(F.weights), raw = new Set(F.raw), plat = { ...m.norm.plat, sweet: [lo, hi] };
+    const first = (segs.find(s => s.s >= m.start - 0.3) || { text: sm.text }).text;
+    const f = features(sm.start, sm.end, sm.text, words, loud, first, plat);
+    const z = Object.fromEntries(keys.map(k => [k, raw.has(k) ? f[k] : m.norm.flat[k] ? 0 : (f[k] - m.norm.mu[k]) / m.norm.sd[k]]));
+    sm.checklist = checklist(z, f, sm.end - sm.start, plat);
+    sm.reasons = reasons(z, f);
+    sm.score = score(m.rel ?? 1, sm.checklist);
+  }
+  return sm;
 }
 
 // ---------------------------------------------------------------- edit decisions

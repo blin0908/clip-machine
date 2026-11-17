@@ -832,9 +832,13 @@ async function processSession(sess, phase = "all") {
       const clip = { ...m, ...long, rank: idx, range: `${X.fmtT(m.start)}–${X.fmtT(m.end)}`, short: null, view: "long", cta: version !== "short" ? sess.cta : "" };
       if (version === "both") {
         const sm = X.shorten(m, segs, loud, ...plat.short);
-        if (sm && !tooQuiet(sm)) {
+        clip.short_note = m.shortNote || "";
+        if (sm && tooQuiet(sm)) clip.short_note = "No short cut: it would hold a silence over 2 s (turn on Cut dead air).";
+        else if (sm) {
           const s = await makeCut(sess, sm, look, "", x => p(60 + x * 0.4), E);
-          if (passed(s.quality)) { clip.short = { ...s, start: sm.start, end: sm.end, title: sm.title, range: `${X.fmtT(sm.start)}–${X.fmtT(sm.end)}`, cta: "" }; clip.view = "short"; }
+          if (passed(s.quality)) { clip.short = { ...s, start: sm.start, end: sm.end, title: sm.title, range: `${X.fmtT(sm.start)}–${X.fmtT(sm.end)}`, cta: "",
+                                                 score: sm.score, checklist: sm.checklist, reasons: sm.reasons }; clip.view = "short"; }
+          else clip.short_note = `No short cut: it failed the quality gate (${s.quality.filter(x => x.hard && !x.ok).map(x => x.k).join(", ")}).`;
         }
       }
       return clip;
@@ -1183,6 +1187,19 @@ function boardList(s = active) {
   return l;
 }
 const cutOf = c => c.view === "short" && c.short ? c.short : c;
+// What still needs a look before this cut is posted: failed quality checks, then a headline the speech model was unsure of.
+function readiness(c, v) {
+  const issues = (v.quality || []).filter(x => !x.ok).map(x => x.k);
+  if (c.title_sure === false && !v.edited) issues.push("Headline may be misheard: check it against the audio");
+  return issues;
+}
+function readyHTML(c, v) {
+  if (c.custom && !(v.quality || []).length) return "";
+  const issues = readiness(c, v);
+  return issues.length
+    ? `<span class="ready warn" title="${esc(issues.join("\n"))}">Check: ${esc(issues[0])}${issues.length > 1 ? ` +${issues.length - 1}` : ""}</span>`
+    : `<span class="ready">Ready to post</span>`;
+}
 function qualityHTML(v) {
   const q = v.quality || [], ok = q.filter(x => x.ok).length, warn = q.length - ok;
   return `<details class="qc"><summary><span class="qbadge ${warn ? "warn" : ""}">Quality ${ok}/${q.length}</span>${v.retried ? ' <span class="st">safe mode</span>' : ""}${v.edited ? ' <span class="st">edited</span>' : ""}</summary>
@@ -1200,13 +1217,15 @@ function cardHTML(c) {
   const job = jobFor(c, which) || jobFor(c, which === "long" ? "short" : "long");
   return `<article class="clip${c.uid === selUid ? " sel" : ""}" data-uid="${c.uid}">
     <div class="vw"><video src="${v.url}" ${v.thumb ? `poster="${v.thumb}"` : ""} controls playsinline preload="metadata" style="--ar:${ar}"></video>
-      <div class="badge">${c.custom ? `<span class="score mine">Yours</span>` : `<span class="score" title="Moment score">${c.score}</span>`}</div>
+      <div class="badge">${c.custom ? `<span class="score mine">Yours</span>` : `<span class="score" title="Moment score: how strong this moment is next to the rest of the video. Whether it's ready to post is shown under the title.">${v.score ?? c.score}</span>`}</div>
       ${job && job.state !== "done" && job.state !== "failed" ? `<div class="rendering">${esc(jobLabel(job))}</div>` : ""}</div>
     <div class="b">
       ${c.short ? `<div class="vtabs" role="group" aria-label="Cut"><button data-cut="short" aria-pressed="${v === c.short}">Short ${c.short.duration}s</button><button data-cut="long" aria-pressed="${v === c}">Long ${c.duration}s</button></div>` : ""}
       <div class="row"><span class="when">${esc(c.idx)} · ${esc(v.range || c.range)}</span></div>
       <h3 class="ttl">${esc(v.title || c.title)}</h3>
-      ${c.reasons?.length ? `<p class="why">${c.reasons.map(esc).join(" · ")}</p>` : ""}
+      ${readyHTML(c, v)}
+      ${(v.reasons || c.reasons)?.length ? `<p class="why">${(v.reasons || c.reasons).map(esc).join(" · ")}</p>` : ""}
+      ${!c.short && c.short_note ? `<p class="why note">${esc(c.short_note)}</p>` : ""}
       <div class="cutbox">${qualityHTML(v)}<div class="vmeta">${vmeta(v)}</div></div>
       <div class="acts">
         <button class="btn sm grow" data-edit>${icon("edit")}Edit</button>
@@ -1216,7 +1235,7 @@ function cardHTML(c) {
       <details class="more"><summary>More: captions, .srt, checklist, log a post</summary><div class="in-more">
         <div class="copyrow">${order.filter(k => c.captions?.[k]).map(k => `<button class="btn sm" data-copy="${esc(c.captions[k])}">Copy ${PN[k]} caption</button>`).join("")}</div>
         <a class="btn sm" href="${srtURL(v)}" download="${fileBase(c, which)}.srt">${icon("dl")}Subtitles (.srt)</a>
-        ${c.checklist?.length ? `<ul class="check">${c.checklist.map(x => `<li class="${x.ok ? "ok" : "no"}"><b>${x.ok ? "✓" : "✗"}</b><span>${esc(x.k)} <span class="ev">${esc(x.ev)}</span>${x.tip ? ` ${esc(x.tip)}` : ""}</span></li>`).join("")}</ul>` : ""}
+        ${(v.checklist || c.checklist)?.length ? `<ul class="check">${(v.checklist || c.checklist).map(x => `<li class="${x.ok ? "ok" : "no"}"><b>${x.ok ? "✓" : "✗"}</b><span>${esc(x.k)} <span class="ev">${esc(x.ev)}</span>${x.tip ? ` ${esc(x.tip)}` : ""}</span></li>`).join("")}</ul>` : ""}
         ${logForm(c)}
       </div></details>
     </div></article>`;

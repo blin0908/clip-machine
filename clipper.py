@@ -409,7 +409,8 @@ def transcribe(wav: Path, model_size="base", progress=_noop, duration=None, lang
         total = duration or info.duration or 1
         segs = []
         for s in segs_iter:
-            words = [{"w": w.word.strip(), "s": w.start, "e": w.end} for w in (s.words or []) if w.word.strip()]
+            words = [{"w": w.word.strip(), "s": w.start, "e": w.end, "p": round(float(getattr(w, "probability", 1) or 0), 3)}
+                     for w in (s.words or []) if w.word.strip()]
             segs.append({"s": s.start, "e": s.end, "text": s.text.strip(), "words": words})
             progress("transcribe", min(99, 100 * s.end / total), f"Transcribing {fmt_t(s.end)} / {fmt_t(total)}")
         return segs, info, language
@@ -625,6 +626,10 @@ class Moment:
     captions: dict = field(default_factory=dict)
     words: list = field(default_factory=list)
     signals: dict = field(default_factory=dict)   # each scoring signal relative to this video (z-score), for learning from results
+    rel: float = 1.0                                # rank among this video's moments (0 = weakest picked, 1 = best)
+    title_sure: bool = True                         # False when every sentence it could use was transcribed with low confidence
+    short_note: str = ""                            # why there's no short cut, when there isn't one
+    norm: dict = field(default_factory=dict, repr=False)   # this video's signal baseline, so a short cut can be scored the same way
 
 
 CLAUSE_END = re.compile("[,;:\uFF0C\u3001\uFF1B\uFF1A][\"'\u2019\u201D)\\]\u300D\u300F\u00BB]*$")
@@ -776,7 +781,8 @@ def find_moments(segs, loud, duration, n=5, min_len=None, max_len=None, platform
         zrow = dict(zip(keys, z[idx]))
         picked.append(Moment(start=round(s, 2), end=round(e, 2), score=float(scores[idx]), text=text,
                              words=words, reasons=_reasons(zrow, f), checklist=_checklist(zrow, f, e - s, plat),
-                             signals={k: round(float(v), 2) for k, v in zrow.items()}))
+                             signals={k: round(float(v), 2) for k, v in zrow.items()},
+                             norm={"mu": mu.tolist(), "sd": sd.tolist(), "flat": flat.tolist(), "plat": plat}))
         if len(picked) >= n:
             break
 
@@ -785,8 +791,9 @@ def find_moments(segs, loud, duration, n=5, min_len=None, max_len=None, platform
         for m in picked:  # 0-100 score relative to this video, nudged by how many checks pass
             passed = sum(c["ok"] for c in m.checklist) / max(len(m.checklist), 1)
             rel = (m.score - lo) / (hi - lo) if hi > lo else 1
-            m.score = int(round(45 + 30 * rel + 24 * passed))
-            m.title = _title(m, segs)
+            m.rel = round(float(rel), 4)
+            m.score = _score(rel, m.checklist)
+            m.title, m.title_sure = _title(m, segs, with_confidence=True)
             m.hashtags = _tags(m.text, plat["tags"])
     progress("score", 100, f"Found {len(picked)} moments")
     return picked
@@ -834,12 +841,32 @@ def _checklist(z, f, dur, plat):
     return [dict(c, ok=bool(c["ok"])) for c in items]
 
 
-def _title(m, segs):
+def _score(rel, checklist):
+    """The 0-100 moment score: rank among this video's moments, nudged by how many checks pass. Mirrors formula.js."""
+    passed = sum(c["ok"] for c in checklist) / max(len(checklist), 1)
+    return int(round(45 + 30 * rel + 24 * passed))
+
+
+LOW_CONF = 0.55       # mean word probability under this = probably misheard
+
+
+def _sure(sent):
+    """False when Whisper was unsure of this sentence (mean word probability low, or many shaky words)."""
+    ps = [w["p"] for w in sent.get("words") or [] if "p" in w]
+    if not ps:
+        return True                       # no confidence data (older transcripts): don't guess
+    shaky = sum(p < 0.35 for p in ps) / len(ps)
+    return sum(ps) / len(ps) >= LOW_CONF and shaky <= 0.3
+
+
+def _title(m, segs, with_confidence=False):
     # long segments split into sentences/clauses first, or a clip inside one long segment would have no title
-    sents = [s["text"] for s in (u for sg in segs for u in _split_long(sg))
-             if s["s"] >= m.start - 0.3 and s["e"] <= m.end + 0.5 and s["text"]]
+    pool = [s for s in (u for sg in segs for u in _split_long(sg))
+            if s["s"] >= m.start - 0.3 and s["e"] <= m.end + 0.5 and s["text"]]
+    sure = [s for s in pool if _sure(s)]
+    sents = [s["text"] for s in (sure or pool)]   # a misheard sentence is never the headline when a clear one exists
     if not sents:
-        return "Wait for it…"
+        return ("Wait for it…", True) if with_confidence else "Wait for it…"
     def strength(t):
         return (sum(w for _, w in _hype(t)) + len(HOOK_RX.findall(t)) * 0.7
                 + t.count("!") - abs(len(t) - 45) / 25)
@@ -855,7 +882,7 @@ def _title(m, segs):
         best = cut.rstrip(",，、；;:： -\t\n") + "…"
     elif len(best) > 60:
         best = best[:60].rsplit(" ", 1)[0].rstrip(",;:-") + "…"
-    return best
+    return (best, bool(sure) or not pool) if with_confidence else best
 
 
 def _tags(text, k):
@@ -883,8 +910,20 @@ def _post_copy(m, platform, source_title=""):
     }
 
 
+PAYOFF_MARGIN = 1.0   # loudness is z-scored per video: a later sentence end one SD punchier is the payoff (checked on podcasts + GeoGuessr reveals)
+
+
+def _punch(loud, e):
+    """Energy in the last 2 s before a cut point: where the payoff lands."""
+    i = int(e / HOP)
+    return float(loud[max(0, i - int(2 / HOP)): i + 1].mean()) if i < len(loud) else 0.0
+
+
 def shorten(m: Moment, segs, loud, lo, hi):
-    """Short cut with the SAME opening: end on the strongest sentence end between lo and hi seconds."""
+    """Short cut with the SAME opening, ending on the strongest sentence end between lo and hi seconds. If the long
+    cut's payoff lands later than a short can reach, there's no short (a short that stops before the payoff is a worse
+    clip, not a shorter one): returns None and says why in m.short_note. Mirrors formula.js shorten."""
+    m.short_note = ""
     if m.end - m.start <= hi + 1:
         return None
     ends = [sg["e"] for sg in segs if m.start + lo <= sg["e"] <= min(m.start + hi, m.end)]
@@ -892,14 +931,33 @@ def shorten(m: Moment, segs, loud, lo, hi):
         ends = [w["e"] for w in m.words if m.start + lo <= w["e"] <= m.start + hi]
     if not ends:
         ends = [m.start + (lo + hi) / 2]
-    def punch(e):  # energy in the last 2 s before the cut = payoff
-        i = int(e / HOP)
-        return float(loud[max(0, i - int(2 / HOP)): i + 1].mean()) if i < len(loud) else 0.0
-    e = max(ends, key=punch)
+    e = max(ends, key=lambda x: _punch(loud, x))
+    later = [sg["e"] for sg in segs if m.start + hi < sg["e"] <= m.end + 0.05]
+    if later:
+        peak = max(later, key=lambda x: _punch(loud, x))
+        if _punch(loud, peak) - _punch(loud, e) >= PAYOFF_MARGIN:
+            m.short_note = (f"No short cut: the payoff lands {peak - m.start:.0f}s in, and a short with the same opening "
+                            f"has to end by {hi}s.")
+            return None
     words = [w for w in m.words if w["e"] <= e + 0.05]
     end = min(m.end, (words[-1]["e"] + 0.35) if words else e)
-    return Moment(start=m.start, end=round(end, 2), score=m.score, text=join_words([w["w"] for w in words]),
-                  title=m.title, words=words)
+    sm = Moment(start=m.start, end=round(end, 2), score=m.score, text=join_words([w["w"] for w in words]),
+                title=m.title, words=words, title_sure=m.title_sure, rel=m.rel)
+    if m.norm:   # score the short on its own: its length, ending and dead air differ from the long cut's
+        keys = list(WEIGHTS)
+        plat = dict(m.norm["plat"], sweet=(lo, hi))
+        first = next((sg["text"] for sg in segs if sg["s"] >= m.start - 0.3), sm.text)
+        f = _features(sm.start, sm.end, sm.text, words, loud, first, plat)
+        mu, sd, flat = (np.array(m.norm[k], dtype=float) for k in ("mu", "sd", "flat"))
+        row = np.array([f[k] for k in keys], dtype=float)
+        z = np.where(flat.astype(bool), 0.0, (row - mu) / sd)
+        for k in RAW:
+            z[keys.index(k)] = row[keys.index(k)]
+        zrow = dict(zip(keys, z))
+        sm.checklist = _checklist(zrow, f, sm.end - sm.start, plat)
+        sm.reasons = _reasons(zrow, f)
+        sm.score = _score(m.rel, sm.checklist)
+    return sm
 
 
 # ---------------------------------------------------------------- dead-air + filler removal
@@ -1396,9 +1454,11 @@ def run(source, outdir: Path, n=5, min_len=None, max_len=None, layout="fit", cap
     wav = outdir / "audio.pcm"
     extract_audio(video, wav)
     loud = loudness_curve(wav)
-    if audio_peak_db(wav) < -55:
+    qmap = quiet_map(wav)
+    # silent: no sample above -55 dBFS, or typical level (the 70th percentile, as in quiet_map) under -55 dB: hiss only
+    if audio_peak_db(wav) < -55 or qmap["thr"] + 25 < -55:
         raise RuntimeError("The audio is silent, so there's nothing to clip. Check the file has sound.")
-    (outdir / "quiet.json").write_text(json.dumps(quiet_map(wav)))
+    (outdir / "quiet.json").write_text(json.dumps(qmap))
     progress("analyze", 100, "Audio analysed")
     segs = transcribe(wav, model, progress, info["duration"], language)
     (outdir / "transcript.json").write_text(json.dumps(segs))
@@ -1474,6 +1534,7 @@ def run(source, outdir: Path, n=5, min_len=None, max_len=None, layout="fit", cap
             write_srt(m, outdir / f"{name}.srt", keep_intervals(m, stats.get("_tighten", tighten)))
             d = asdict(m)
             d.pop("words")
+            d.pop("norm", None)
             d.update({k_: v for k_, v in stats.items() if not k_.startswith("_")})
             cut_look = dict(look, style=style, layout=layout, cx=crop_x, tighten=tighten, captions=captions, hook=hook)
             d.update(look=cut_look, cta=use_cta)
@@ -1486,7 +1547,13 @@ def run(source, outdir: Path, n=5, min_len=None, max_len=None, layout="fit", cap
                                   file=f"{name}_short.mp4", thumb=f"{name}_short.jpg", quality=sqc, look=cut_look, cta="",
                                   start=sm.start, end=sm.end, title=sm.title,
                                   srt=f"{name}_short.srt", duration=sst["final_duration"],
-                                  range=f"{fmt_t(sm.start)}–{fmt_t(sm.end)}")
+                                  range=f"{fmt_t(sm.start)}–{fmt_t(sm.end)}",
+                                  score=sm.score, checklist=sm.checklist, reasons=sm.reasons)
+            elif sm:
+                d["short_note"] = "No short cut: it failed the quality gate (" + ", ".join(
+                    c["k"] for c in sqc if c["hard"] and not c["ok"]) + ")."
+            elif not want_short:
+                d["short_note"] = ""
             discard(k)
             clips.append(d)
             submit()

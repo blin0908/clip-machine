@@ -10,7 +10,8 @@ import clipper as c  # noqa: E402
 
 data = {"platforms": c.PLATFORMS, "hype": c.HYPE, "sponsor": list(c.SPONSOR), "stop": sorted(c.STOP),
         "weak": sorted(c.WEAK), "midstart": sorted(c.MIDSTART), "fillers": sorted(c.FILLERS),
-        "weights": c.WEIGHTS, "raw": sorted(c.RAW), "captionFonts": c.CAPTION_FONTS, "version": c.VERSION}
+        "weights": c.WEIGHTS, "raw": sorted(c.RAW), "captionFonts": c.CAPTION_FONTS, "version": c.VERSION,
+        "payoffMargin": c.PAYOFF_MARGIN}
 out = ROOT / "docs" / "formula.json"
 if "--check" in sys.argv:
     same = json.loads(out.read_text(encoding="utf-8")) == json.loads(json.dumps(data))
