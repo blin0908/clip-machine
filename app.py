@@ -11,11 +11,12 @@ import socket
 import threading
 import time
 import traceback
+import urllib.parse
 import uuid
 from pathlib import Path
 from queue import Queue
 
-from flask import Flask, abort, jsonify, request, send_file, send_from_directory, make_response
+from flask import Flask, abort, jsonify, make_response, redirect, request, send_file, send_from_directory
 
 import clipper
 import search
@@ -29,9 +30,28 @@ def logo_file():
     p = JOBS / "_brand" / "logo.png"
     return p if p.is_file() else None
 KEY_FILE = HERE / ".access_key"
-if not os.environ.get("CLIP_KEY") and not KEY_FILE.exists():
-    KEY_FILE.write_text(secrets.token_urlsafe(8))
-KEY = os.environ.get("CLIP_KEY") or KEY_FILE.read_text().strip()
+KEY_ROTATED = False
+
+
+def _load_key():
+    """The access key. Keys from before 1.7.1 (11 characters) were served to anyone on the network through
+    /manifest.json, so they are replaced once with a longer one; phones then need the new link or QR code."""
+    global KEY_ROTATED
+    if os.environ.get("CLIP_KEY"):
+        return os.environ["CLIP_KEY"]
+    old = KEY_FILE.read_text(encoding="utf-8").strip() if KEY_FILE.exists() else ""
+    if len(old) >= 20:
+        return old
+    KEY_FILE.write_text(secrets.token_urlsafe(18), encoding="utf-8")
+    try:
+        os.chmod(KEY_FILE, 0o600)
+    except OSError:
+        pass
+    KEY_ROTATED = bool(old)
+    return KEY_FILE.read_text(encoding="utf-8").strip()
+
+
+KEY = _load_key()
 
 app = Flask(__name__, static_folder=None)
 app.config["MAX_CONTENT_LENGTH"] = 4 * 1024 ** 3  # 4 GB uploads
@@ -55,8 +75,13 @@ def gate():
 
 @app.after_request
 def remember(resp):
-    if request.args.get("key") == KEY:
-        resp.set_cookie("ck", KEY, max_age=60 * 60 * 24 * 365, samesite="Lax")
+    if secrets.compare_digest(request.args.get("key") or "", KEY):
+        resp.set_cookie("ck", KEY, max_age=60 * 60 * 24 * 365, samesite="Lax", httponly=True)
+        if request.method == "GET" and request.path in ("/", "/classic") and resp.status_code == 200:
+            # the cookie now carries the key: take it out of the address bar (history, screenshots, shared links)
+            rest = urllib.parse.urlencode([(k, v) for k, v in request.args.items(multi=True) if k != "key"])
+            resp = redirect(request.path + ("?" + rest if rest else ""), 302)
+            resp.set_cookie("ck", KEY, max_age=60 * 60 * 24 * 365, samesite="Lax", httponly=True)
     return resp
 
 
@@ -586,9 +611,15 @@ def classic():
 
 @app.get("/manifest.json")
 def manifest():
-    return jsonify(name="Clip Machine", short_name="Clips", start_url=f"/?key={KEY}", display="standalone",
+    # public so a phone can install the app, but the key goes in start_url only for a device that already has it
+    # (a home-screen app on iOS keeps its own cookies, so it needs the key once on launch)
+    start = f"/?key={KEY}" if authed() else "/"
+    resp = jsonify(name="Clip Machine", short_name="Clips", start_url=start, display="standalone",
                    background_color="#0b0b0f", theme_color="#0b0b0f",
                    icons=[{"src": "/icon.svg", "sizes": "any", "type": "image/svg+xml"}])
+    resp.headers["Cache-Control"] = "no-store"
+    resp.headers["Vary"] = "Cookie"
+    return resp
 
 
 @app.get("/icon.svg")
@@ -619,6 +650,9 @@ if __name__ == "__main__":
     threading.Thread(target=worker, daemon=True).start()
     url = f"http://{lan_ip()}:{PORT}/?key={KEY}"
     print("\n  Clip Machine is running.\n")
+    if KEY_ROTATED:
+        print("  Security update: the access key has changed. Open the new link (or scan the new code) on your phone;\n"
+              "  a home-screen app added before this update needs deleting and adding again.\n")
     print(f"  On this Mac:   http://127.0.0.1:{PORT}/?key={KEY}")
     print(f"  On your phone: {url}   (same Wi-Fi)\n")
     try:

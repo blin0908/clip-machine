@@ -6,6 +6,7 @@ No rendering happens here (the job worker isn't started), so this runs in a coup
 import csv
 import io
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -48,6 +49,43 @@ class ServerTest(unittest.TestCase):
     def test_icon_and_manifest_are_public(self):
         self.assertEqual(self.c.get("/icon.svg").status_code, 200)
         self.assertEqual(self.c.get("/manifest.json").status_code, 200)
+
+    def test_manifest_never_gives_the_key_away(self):
+        r = self.c.get("/manifest.json")                       # anyone on the network
+        self.assertNotIn(server.KEY, r.get_data(as_text=True))
+        self.assertEqual(r.get_json()["start_url"], "/")
+        self.assertEqual(r.headers.get("Cache-Control"), "no-store")
+        self.assertEqual(self.c.get("/manifest.json", headers={"X-Key": "wrong"}).get_json()["start_url"], "/")
+        self.c.get(f"/api/jobs?key={server.KEY}")              # this device has the key: its home-screen app keeps it
+        self.assertEqual(self.c.get("/manifest.json").get_json()["start_url"], f"/?key={server.KEY}")
+
+    def test_key_link_leaves_the_address_bar(self):
+        r = self.c.get(f"/?key={server.KEY}&layout=auto")
+        self.assertEqual(r.status_code, 302)
+        self.assertEqual(r.headers["Location"], "/?layout=auto")
+        self.assertIn("HttpOnly", r.headers.get("Set-Cookie", ""))
+        self.assertEqual(self.c.get("/?layout=auto").status_code, 200)
+        self.assertEqual(self.c.get("/api/jobs?key=wrong").status_code, 403)
+
+    def test_short_keys_are_rotated(self):
+        f = Path(self.tmp) / "key"
+        saved = (server.KEY_FILE, server.KEY_ROTATED, os.environ.pop("CLIP_KEY", None))
+        try:
+            server.KEY_FILE = f
+            f.write_text("abcdefghijk", encoding="utf-8")       # an 11-character key from before 1.7.1
+            k = server._load_key()
+            self.assertGreaterEqual(len(k), 20)
+            self.assertNotEqual(k, "abcdefghijk")
+            self.assertTrue(server.KEY_ROTATED)
+            self.assertEqual(server._load_key(), k)             # stable after that
+            f.unlink()
+            server.KEY_ROTATED = False
+            self.assertGreaterEqual(len(server._load_key()), 20)  # fresh installs get a long key, no notice
+            self.assertFalse(server.KEY_ROTATED)
+        finally:
+            server.KEY_FILE, server.KEY_ROTATED = saved[0], saved[1]
+            if saved[2] is not None:
+                os.environ["CLIP_KEY"] = saved[2]
 
     # ---- creating jobs
     def test_link_must_be_http(self):
