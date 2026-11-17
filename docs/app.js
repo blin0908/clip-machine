@@ -1465,6 +1465,7 @@ function logForm(c) {
   return `<form class="logf" data-uid="${c.uid}"><span class="wide st">Log a post</span>
     <select name="platform" aria-label="Platform">${Object.keys(PN).map(k => `<option value="${k}" ${k === def ? "selected" : ""}>${PN[k]}</option>`).join("")}</select>
     <select name="cut" aria-label="Cut">${c.short ? `<option value="short">Short cut</option><option value="long">Long cut</option>` : `<option value="single">Clip</option>`}</select>
+    <input name="post" placeholder="Post link or id (catches double-logging)" aria-label="Post link or id" class="wide">
     <input name="posted" type="date" aria-label="Posted on"><select name="checkpoint" aria-label="Checkpoint"><option>24h</option><option>72h</option><option>7d</option></select>
     <input name="views" inputmode="numeric" placeholder="Views" aria-label="Views" class="wide">
     <input name="metric1" aria-label="Metric 1"><input name="metric2" aria-label="Metric 2"><input name="metric3" aria-label="Metric 3" class="wide">
@@ -1494,6 +1495,9 @@ $("#out").addEventListener("submit", async e => {
   const p = X.F.platforms[f.platform.value], row = Object.fromEntries(new FormData(f));
   ["metric1", "metric2", "metric3"].forEach((n, i) => { if (row[n]) row[n] = `${p.judge[i] || n}: ${row[n]}`; });
   row.title = c.title;
+  row.post = X.postId(row.post);
+  const cutV = row.cut === "short" ? c.short : c;
+  row.rev = String(cutV?.rev || 0);                    // which render of the cut was posted (an edit after posting bumps it)
   if (c.score != null) row.score = String(c.score);
   if (c.signals && Object.keys(c.signals).length) row.signals = JSON.stringify(c.signals);   // what the scorer saw, to compare with results later
   submit.disabled = true;
@@ -1503,11 +1507,14 @@ $("#out").addEventListener("submit", async e => {
     } else {
       const id = Math.random().toString(36).slice(2, 10);
       const logged = new Date().toISOString().slice(0, 16).replace("T", " ");
-      writeBrowserLog([...readBrowserLog(), { ...row, id, logged }]);
+      const rows = readBrowserLog(), full = { ...row, job: sess.id ?? "", clip: c.file || String(c.uid) };
+      const why = X.logConflict(rows, full);
+      if (why) throw Object.assign(new Error(why), { user: true });
+      writeBrowserLog([...rows, { ...full, id, logged }]);
     }
     f.reset(); setMetricLabels(f); loadLog(); toast("Result saved");
-  } catch {
-    toast("Couldn't save the result. Check the desktop app and try again.");
+  } catch (err) {
+    toast(err?.user || err?.status === 409 ? err.message : "Couldn't save the result. Check the desktop app and try again.");
   } finally {
     submit.disabled = false;
   }
@@ -1533,7 +1540,7 @@ async function loadLog() {
 function renderLog(rows) {
   logRows = rows; renderLearn();
   $("#logtbl").innerHTML = rows.length ? `<div class="lwrap"><table class="ltable"><tr><th>Platform</th><th>Clip</th><th>At</th><th>Views</th><th>Metrics</th><th><span class="sr">Delete</span></th></tr>` +
-    rows.slice().reverse().map(r => `<tr><td>${esc(PN[r.platform] || r.platform)}<br><span class="st">${esc(r.posted)}</span></td><td>${esc(String(r.title ?? "").slice(0, 40))}<br><span class="st">${esc(r.cut)}</span></td><td>${esc(r.checkpoint)}</td><td>${esc(r.views)}</td><td>${logMetrics(r)}${r.notes ? `<br><span class="st">${esc(r.notes)}</span>` : ""}</td><td><button class="x" data-dellog="${esc(r.id)}" aria-label="Delete">${icon("x")}</button></td></tr>`).join("") + `</table></div>` : "No results logged yet.";
+    rows.slice().reverse().map(r => `<tr><td>${esc(PN[r.platform] || r.platform)}<br><span class="st">${esc(r.posted)}${r.post ? ` · ${esc(r.post)}` : ""}</span></td><td>${esc(String(r.title ?? "").slice(0, 40))}<br><span class="st">${esc(r.cut)}</span></td><td>${esc(r.checkpoint)}</td><td>${esc(r.views)}</td><td>${logMetrics(r)}${r.notes ? `<br><span class="st">${esc(r.notes)}</span>` : ""}</td><td><button class="x" data-dellog="${esc(r.id)}" aria-label="Delete">${icon("x")}</button></td></tr>`).join("") + `</table></div>` : "No results logged yet.";
 }
 $("#logtbl").addEventListener("click", async e => {
   const button = e.target.closest("[data-dellog]");

@@ -473,3 +473,26 @@ print(json.dumps([clipper.shorten(m, a["segs"], np.array(a["late"], dtype=np.flo
     { input: JSON.stringify({ segs, late, words }), encoding: "utf8" }).trim().split("\n").at(-1);
   assert.deepEqual(JSON.parse(pyNote), [true, m.shortNote]);
 });
+
+test("post ids and the one-post-per-cut rule are the same in both engines", () => {
+  const links = ["https://youtube.com/shorts/dQw4w9WgXcQ?feature=share", "https://www.youtube.com/watch?si=x&v=dQw4w9WgXcQ", "https://youtu.be/dQw4w9WgXcQ",
+    "https://www.tiktok.com/@a.b/video/7312345678901234567?lang=en", "https://www.instagram.com/reel/C0abc123XYZ/?igsh=1", "https://x.com/me/status/1790000000000000000",
+    "https://www.facebook.com/reel/123456789012345", "C0abc123XYZ", "  someid  ", "https://example.com/p/abc/?x=1"];
+  const rows = [{ platform: "shorts", job: "j", clip: "c1", cut: "short", post: "dQw4w9WgXcQ", checkpoint: "24h", title: "One" }];
+  const tries = [{ platform: "shorts", job: "j", clip: "c1", cut: "short", post: "dQw4w9WgXcQ", checkpoint: "72h" },
+    { platform: "shorts", job: "j", clip: "c1", cut: "short", post: "dQw4w9WgXcQ", checkpoint: "24h" },
+    { platform: "shorts", job: "j", clip: "c1", cut: "short", post: "otherpost11", checkpoint: "7d" },
+    { platform: "shorts", job: "j", clip: "c2", cut: "short", post: "dQw4w9WgXcQ", checkpoint: "7d" },
+    { platform: "tiktok", job: "j", clip: "c1", cut: "short", post: "dQw4w9WgXcQ", checkpoint: "24h" },
+    { platform: "shorts", job: "j", clip: "c1", cut: "short", post: "", checkpoint: "24h" }];
+  const js = { ids: links.map(X.postId), why: tries.map(t => X.logConflict(rows, t)) };
+  const py = JSON.parse(execFileSync(PY, ["-c", `
+import sys, json, os; sys.path.insert(0, ${JSON.stringify(ROOT)}); os.environ.setdefault("CLIP_KEY", "t")
+import app
+a = json.loads(sys.stdin.read())
+print(json.dumps({"ids": [app.post_id(x) for x in a["links"]], "why": [app.log_conflict(a["rows"], t) for t in a["tries"]]}))`],
+    { input: JSON.stringify({ links, rows, tries }), encoding: "utf8" }).trim().split("\n").at(-1));
+  assert.deepEqual(js, py);
+  assert.deepEqual(js.ids.slice(0, 7), ["dQw4w9WgXcQ", "dQw4w9WgXcQ", "dQw4w9WgXcQ", "7312345678901234567", "C0abc123XYZ", "1790000000000000000", "123456789012345"]);
+  assert.deepEqual(js.why.map(w => w === null), [true, false, false, false, true, true]);
+});

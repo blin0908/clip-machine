@@ -604,6 +604,30 @@ export function studioTable(text) {
 
 export const normTitle = t => String(t ?? "").normalize("NFKD").replace(/[̀-ͯ]/g, "").toLowerCase()
   .replace(/#\w+/g, " ").replace(/[^a-z0-9]+/g, " ").trim();
+// ---------------------------------------------------------------- results log: one post per cut per platform
+const POST_ID = [/(?:youtube\.com\/(?:watch\?(?:.*&)?v=|shorts\/|live\/)|youtu\.be\/)([A-Za-z0-9_-]{11})/, /tiktok\.com\/@[\w.-]+\/video\/(\d+)/,
+  /instagram\.com\/(?:reels?|p)\/([\w-]+)/, /facebook\.com\/(?:reel\/|.*[?&]v=|watch\/\?v=)(\d+)/, /(?:x|twitter)\.com\/\w+\/status\/(\d+)/,
+  /snapchat\.com\/spotlight\/([\w-]+)/];
+/** A post's link or id → the platform's id (mirrors app.post_id). */
+export function postId(value) {
+  const v = String(value ?? "").trim();
+  for (const rx of POST_ID) { const m = v.match(rx); if (m) return m[1]; }
+  return v.startsWith("http") ? v.split("?")[0].replace(/\/+$/, "").split("/").pop().slice(0, 80) : v.slice(0, 80);
+}
+/** Why this result can't be logged, or null (mirrors app.log_conflict). */
+export function logConflict(rows, row) {
+  const pid = row.post || "";
+  if (!pid) return null;
+  const sameCut = r => (r.job ?? "") === (row.job ?? "") && (r.clip ?? "") === (row.clip ?? "") && (r.cut ?? "") === (row.cut ?? "");
+  for (const r of rows) {
+    if (r.platform !== row.platform) continue;
+    if (r.post === pid && !sameCut(r)) return `Post ${pid} is already logged for "${String(r.title || "another clip").slice(0, 60)}".`;
+    if (r.post && r.post !== pid && sameCut(r)) return `This cut is already logged on that platform as post ${r.post}. One post per platform: log new numbers against that post, or delete its rows first.`;
+    if (r.post === pid && r.checkpoint === row.checkpoint) return `The ${row.checkpoint} numbers for post ${pid} are already logged. Delete that row to replace them.`;
+  }
+  return null;
+}
+
 /** 1 = same title; 0.95 = one is the other cut short (Shorts titles stop at 100 characters); else word overlap. */
 export function titleSimilarity(a, b) {
   const A = normTitle(a), B = normTitle(b);

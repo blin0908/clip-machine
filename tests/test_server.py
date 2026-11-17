@@ -259,6 +259,24 @@ class ServerTest(unittest.TestCase):
         row = next(j for j in self.c.get("/api/jobs", headers=self.k).get_json() if j["id"] == jid)
         self.assertTrue(row["has_result"])                                          # the page can tell an edit from a first run
 
+    def test_one_post_per_cut_per_platform(self):
+        base = {"platform": "shorts", "job": "j1", "clip": "clip_01.mp4", "cut": "short", "title": "The reveal", "checkpoint": "24h"}
+        r = self.c.post("/api/log", json=dict(base, post="https://youtube.com/shorts/dQw4w9WgXcQ?feature=share"), headers=self.k)
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.get_json()["post"], "dQw4w9WgXcQ")                       # stored as the platform's id
+        later = self.c.post("/api/log", json=dict(base, post="dQw4w9WgXcQ", checkpoint="72h"), headers=self.k)
+        self.assertEqual(later.status_code, 200)                                     # more numbers for the same post: fine
+        for bad, word in ((dict(base, post="https://www.youtube.com/watch?v=dQw4w9WgXcQ"), "24h numbers"),
+                          (dict(base, post="abcdefghijk", checkpoint="7d"), "One post per platform"),
+                          (dict(base, clip="clip_02.mp4", post="dQw4w9WgXcQ", checkpoint="7d"), "already logged for")):
+            r = self.c.post("/api/log", json=bad, headers=self.k)
+            self.assertEqual(r.status_code, 409, bad)
+            self.assertIn(word, r.get_json()["error"])
+        ok = self.c.post("/api/log", json=dict(base, platform="tiktok", post="https://www.tiktok.com/@me/video/7312345678901234567"), headers=self.k)
+        self.assertEqual(ok.get_json()["post"], "7312345678901234567")              # same cut on another platform: fine
+        self.assertEqual(self.c.post("/api/log", json=dict(base, checkpoint="7d"), headers=self.k).status_code, 200)   # no post id: not checked
+        self.assertIn("post", self.c.get("/api/log.csv", headers=self.k).get_data(as_text=True).splitlines()[0])
+
     def test_brand_logo(self):
         png = b"\x89PNG\r\n\x1a\n" + b"0" * 64
         self.assertEqual(self.c.get("/api/brand/logo", headers=self.k).status_code, 404)

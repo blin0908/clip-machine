@@ -4,6 +4,7 @@
 """
 import json
 import math
+import re
 import os
 import sys
 import secrets
@@ -434,7 +435,44 @@ def files(jid, name):
 LOG = Path(os.environ.get("CLIP_LOG") or HERE / "results_log.json")
 LOG_COLUMNS = ["logged", "platform", "clip", "cut", "title", "posted", "checkpoint", "views",
                "metric1", "metric2", "metric3", "notes", "feed_shown", "feed_share", "avg_view_duration",
-               "score", "signals"]   # signals: the clip's scoring signals as compact JSON, for learning from results
+               "score", "signals",   # signals: the clip's scoring signals as compact JSON, for learning from results
+               "post", "rev"]        # post: the platform's id for the post; rev: which render of the cut was posted
+POST_ID = [re.compile(p) for p in (
+    r"(?:youtube\.com/(?:watch\?(?:.*&)?v=|shorts/|live/)|youtu\.be/)([A-Za-z0-9_-]{11})",
+    r"tiktok\.com/@[\w.-]+/video/(\d+)", r"instagram\.com/(?:reels?|p)/([\w-]+)",
+    r"facebook\.com/(?:reel/|.*[?&]v=|watch/\?v=)(\d+)", r"(?:x|twitter)\.com/\w+/status/(\d+)",
+    r"snapchat\.com/spotlight/([\w-]+)")]
+
+
+def post_id(value):
+    """A post's link or id → the platform's id, so the same post is recognised however it was pasted.
+    Mirrors postId in formula.js."""
+    v = str(value or "").strip()
+    for rx in POST_ID:
+        m = rx.search(v)
+        if m:
+            return m.group(1)
+    return v.split("?")[0].rstrip("/").rsplit("/", 1)[-1][:80] if v.startswith("http") else v[:80]
+
+
+def log_conflict(rows, row):
+    """Why this result can't be logged, or None. One post per cut per platform; a post id belongs to one cut;
+    each checkpoint of a post is logged once. Mirrors logConflict in formula.js."""
+    pid = row.get("post") or ""
+    if not pid:
+        return None
+    same_cut = lambda r: all((r.get(k) or "") == (row.get(k) or "") for k in ("job", "clip", "cut"))
+    for r in rows:
+        if r.get("platform") != row.get("platform"):
+            continue
+        if r.get("post") == pid and not same_cut(r):
+            return f"Post {pid} is already logged for \"{str(r.get('title') or 'another clip')[:60]}\"."
+        if r.get("post") and r.get("post") != pid and same_cut(r):
+            return (f"This cut is already logged on that platform as post {r['post']}. One post per platform: "
+                    "log new numbers against that post, or delete its rows first.")
+        if r.get("post") == pid and r.get("checkpoint") == row.get("checkpoint"):
+            return f"The {row.get('checkpoint')} numbers for post {pid} are already logged. Delete that row to replace them."
+    return None
 LOG_FIELDS = ["job", *LOG_COLUMNS[1:]]
 log_lock = threading.Lock()
 
@@ -464,10 +502,14 @@ def add_log():
     if not isinstance(d, dict):
         return jsonify(error="Enter a result and try saving again."), 400
     row = log_fields(d)
+    row["post"] = post_id(row.get("post"))
     row["id"] = uuid.uuid4().hex[:8]
     row["logged"] = time.strftime("%Y-%m-%d %H:%M")
     with log_lock:
         rows = read_log()
+        why = log_conflict(rows, row)
+        if why:
+            return jsonify(error=why), 409
         rows.append(row)
         write_atomic(LOG, json.dumps(rows, indent=1))
     return jsonify(row)
