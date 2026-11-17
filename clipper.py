@@ -1456,7 +1456,8 @@ def run(source, outdir: Path, n=5, min_len=None, max_len=None, layout="fit", cap
     loud = loudness_curve(wav)
     qmap = quiet_map(wav)
     # silent: no sample above -55 dBFS, or typical level (the 70th percentile, as in quiet_map) under -55 dB: hiss only
-    if audio_peak_db(wav) < -55 or qmap["thr"] + 25 < -55:
+    typical = qmap.get("thr", 0) + 25 if isinstance(qmap, dict) else 0
+    if audio_peak_db(wav) < -55 or typical < -55:
         raise RuntimeError("The audio is silent, so there's nothing to clip. Check the file has sound.")
     (outdir / "quiet.json").write_text(json.dumps(qmap))
     progress("analyze", 100, "Audio analysed")

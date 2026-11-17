@@ -12,7 +12,7 @@ cp docs/fonts/Montserrat-Black.ttf docs/fonts/OFL.txt "dist/stage/Clip Machine/f
 mkdir -p "dist/stage/Clip Machine/models" && cp models/* "dist/stage/Clip Machine/models/"   # face detector for follow speaker / split
 # the browser UI (the desktop app serves the same pages as the website, backed by its native engine)
 mkdir -p "dist/stage/Clip Machine/web"
-cp docs/index.html docs/app.js docs/studio.js docs/zip.js docs/formula.js docs/formula.json docs/asr-worker.js docs/search.js docs/search-worker.js docs/sw.js \
+cp docs/index.html docs/app.js docs/studio.js docs/zip.js docs/nle.js docs/formula.js docs/formula.json docs/asr-worker.js docs/search.js docs/search-worker.js docs/sw.js \
    docs/icon-180.png docs/icon-512.png "dist/stage/Clip Machine/web/"
 cp -R docs/fonts docs/vendor "dist/stage/Clip Machine/web/"
 chmod +x "dist/stage/Clip Machine/"*.command "dist/stage/Clip Machine/"*.sh

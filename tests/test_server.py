@@ -277,6 +277,18 @@ class ServerTest(unittest.TestCase):
         self.assertEqual(self.c.post("/api/log", json=dict(base, checkpoint="7d"), headers=self.k).status_code, 200)   # no post id: not checked
         self.assertIn("post", self.c.get("/api/log.csv", headers=self.k).get_data(as_text=True).splitlines()[0])
 
+    def test_every_module_the_page_imports_is_served(self):
+        import re
+        docs = Path(server.__file__).resolve().parent / "docs"
+        names = {"app.js"}
+        for f in docs.glob("*.js"):
+            names |= set(re.findall(r'from "\./([\w.-]+\.js)"', f.read_text(encoding="utf-8")))
+            names |= set(re.findall(r'new Worker\(new URL\("\./([\w.-]+\.js)"', f.read_text(encoding="utf-8")))
+        sw = (docs / "sw.js").read_text(encoding="utf-8")
+        for n in sorted(names):
+            self.assertEqual(self.c.get("/" + n, headers=self.k).status_code, 200, n)
+            self.assertIn(f'"{n}"', sw, f"{n} missing from the offline cache list in sw.js")
+
     def test_brand_logo(self):
         png = b"\x89PNG\r\n\x1a\n" + b"0" * 64
         self.assertEqual(self.c.get("/api/brand/logo", headers=self.k).status_code, 404)

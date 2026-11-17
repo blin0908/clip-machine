@@ -324,7 +324,26 @@ def transcript(jid):
     except Exception:
         quiet = None
     sess = _session(jid)
-    return jsonify(words=words, quiet=quiet, has_video=sess.get("has_video", True), duration=sess.get("duration"))
+    return jsonify(words=words, quiet=quiet, has_video=sess.get("has_video", True), duration=sess.get("duration"),
+                   source=source_info(jid, sess))
+
+
+_source_cache: dict[str, dict] = {}
+
+
+def source_info(jid, sess):
+    """The source file's name, path, frame rate and size, for handing a clip to Premiere / Resolve (probed once)."""
+    if jid not in _source_cache:
+        path = Path(sess.get("video") or "")
+        info = {"name": path.name, "path": str(path) if path.is_file() else ""}
+        try:
+            p = clipper.probe(path) if path.is_file() else {}
+            fr = clipper._fps(p.get("frame_rate")) or clipper._fps(p.get("fps"))
+            info.update(fps=round(float(fr), 3) if fr else None, width=p.get("width"), height=p.get("height"))
+        except Exception:
+            pass
+        _source_cache[jid] = info
+    return _source_cache[jid]
 
 
 @app.get("/api/jobs/<jid>/reframe")
@@ -614,7 +633,7 @@ def platforms():
     return jsonify(clipper.PLATFORMS)
 
 
-UI_FILES = {"formula.js", "formula.json", "app.js", "studio.js", "zip.js", "asr-worker.js", "search.js", "search-worker.js", "sw.js", "icon-180.png", "icon-512.png"}
+UI_FILES = {"formula.js", "formula.json", "app.js", "studio.js", "zip.js", "nle.js", "asr-worker.js", "search.js", "search-worker.js", "sw.js", "icon-180.png", "icon-512.png"}
 
 
 @app.get("/formula.js")
@@ -622,6 +641,7 @@ UI_FILES = {"formula.js", "formula.json", "app.js", "studio.js", "zip.js", "asr-
 @app.get("/app.js")
 @app.get("/studio.js")
 @app.get("/zip.js")
+@app.get("/nle.js")
 @app.get("/asr-worker.js")
 @app.get("/search.js")
 @app.get("/search-worker.js")

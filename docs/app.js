@@ -2,6 +2,7 @@ import { FFmpeg } from "./vendor/ffmpeg/index.js";
 import { toBlobURL } from "./vendor/util/index.js";
 import * as X from "./formula.js";
 import { zip, slug, fileBase, youtubeUploadCsv } from "./zip.js";
+import * as NLE from "./nle.js";
 import { createStudio } from "./studio.js";
 import { mountFind } from "./search.js";
 
@@ -994,7 +995,9 @@ async function loadRemote(sess, job) {
   const tr = await api(`api/jobs/${encodeURIComponent(sess.jid)}/transcript`);
   sess.words = tr.words || [];
   sess.quiet = tr.quiet?.db?.length ? { step: tr.quiet.step, thr: tr.quiet.thr, db: Float32Array.from(tr.quiet.db) } : null;
-  sess.info = { duration: tr.duration || res.duration || 0, hasVideo: tr.has_video !== false };
+  sess.info = { duration: tr.duration || res.duration || 0, hasVideo: tr.has_video !== false,
+                fps: tr.source?.fps || 30, width: tr.source?.width, height: tr.source?.height };
+  sess.source = tr.source || null;                         // the original file, for "Edit in Premiere / Resolve"
   sess.title = res.title || sess.title;
   if (!sess.file && res.title) sess.name = res.title;     // a link: show the video's real title, not the URL
   sess.version = res.version || "both";
@@ -1235,9 +1238,10 @@ function cardHTML(c) {
         <button class="btn sm keep" data-keep aria-pressed="${!!c.kept}" aria-label="Keep this clip (K)">${icon("star")}Keep</button>
         <button class="btn sm" data-share="${which}" aria-label="Download this cut">${icon("dl")}</button>
       </div>
-      <details class="more"><summary>More: captions, .srt, checklist, log a post</summary><div class="in-more">
+      <details class="more"><summary>More: captions, .srt, Premiere / Resolve, checklist, log a post</summary><div class="in-more">
         <div class="copyrow">${order.filter(k => c.captions?.[k]).map(k => `<button class="btn sm" data-copy="${esc(c.captions[k])}">Copy ${PN[k]} caption</button>`).join("")}</div>
         <a class="btn sm" href="${srtURL(v)}" download="${fileBase(c, which)}.srt">${icon("dl")}Subtitles (.srt)</a>
+        <button class="btn sm" data-nle="${which}" title="An .xml sequence and .edl that rebuild this cut from the original video, for Premiere Pro, DaVinci Resolve or Avid">${icon("dl")}Edit in Premiere / Resolve</button>
         ${(v.checklist || c.checklist)?.length ? `<ul class="check">${(v.checklist || c.checklist).map(x => `<li class="${x.ok ? "ok" : "no"}"><b>${x.ok ? "✓" : "✗"}</b><span>${esc(x.k)} <span class="ev">${esc(x.ev)}</span>${x.tip ? ` ${esc(x.tip)}` : ""}</span></li>`).join("")}</ul>` : ""}
         ${logForm(c)}
       </div></details>
@@ -1307,6 +1311,17 @@ $("#out").addEventListener("click", async e => {
   if (cutBtn) { c.view = cutBtn.dataset.cut; select(c.uid, false); const html = cardHTML(c); art.outerHTML = html; setMetricLabels(document.querySelector(`.clip[data-uid="${c.uid}"] .logf`)); return; }
   if (e.target.closest("[data-edit]")) { select(c.uid, false); studio.open(s, c, c.view === "short" && c.short ? "short" : "long"); return; }
   if (e.target.closest("[data-keep]")) { toggleKeep(c); return; }
+  const nl = e.target.closest("[data-nle]");
+  if (nl) {
+    const which = nl.dataset.nle, v = which === "short" ? c.short : c;
+    try {
+      const files = [...nleFiles(s, c, which), { name: fileBase(c, which) + ".srt", data: await srtOf(v) },
+        { name: "README.txt", data: NLE.readme({ title: v.title || c.title, source: s.source?.name || s.file?.name || s.name, path: s.source?.path }) }];
+      download(await zip(files), fileBase(c, which) + "-edit.zip");
+      toast("Saved: import the .xml in Premiere or Resolve");
+    } catch (err) { console.error(err); toast("Couldn't make the editor files."); }
+    return;
+  }
   const sh = e.target.closest("[data-share]");
   if (sh) {
     const which = sh.dataset.share, v = which === "short" ? c.short : c;
@@ -1315,6 +1330,18 @@ $("#out").addEventListener("click", async e => {
     else download(f, f.name);
   }
 });
+// "Edit in Premiere / Resolve": an XML sequence + EDL that rebuild this cut from the original source file
+function nleFiles(sess, c, which) {
+  const v = which === "short" ? c.short : c, base = fileBase(c, which), look = v.look || lookFrom(sess.o);
+  const words = (sess.words || []).filter(w => w.s >= v.start && w.s <= v.end);
+  const keep = X.keepIntervals({ start: v.start, end: v.end, words }, look.tighten !== false, sess.remote ? null : sess.quiet);
+  const [W, H] = (X.frameSize?.(look.format) || [v.W || 1080, v.H || 1920]);
+  const source = sess.source?.name || sess.file?.name || sess.name || "source.mp4";
+  const o = { title: v.title || c.title, cut: { start: v.start, end: v.end }, keep, fps: sess.info?.fps || 30, source,
+              path: sess.source?.path || "", W, H, srcW: sess.info?.width || 1920, srcH: sess.info?.height || 1080,
+              layout: look.layout || "fit", duration: sess.info?.duration, payoff: c.payoff ?? null };
+  return [{ name: base + ".xml", data: NLE.xmeml(o) }, { name: base + ".edl", data: NLE.edl(o) }];
+}
 $("#zip").onclick = async () => {
   const list = boardList(); if (!list.length) return;
   const btn = $("#zip"); btn.disabled = true; $("#zipLabel").textContent = "Packing…";
@@ -1324,10 +1351,12 @@ $("#zip").onclick = async () => {
       for (const which of c.short ? ["short", "long"] : ["long"]) {
         const v = which === "short" ? c.short : c, base = fileBase(c, which);
         files.push({ name: base + ".mp4", data: await blobOf(v) }, { name: base + ".srt", data: await srtOf(v) });
+        try { files.push(...nleFiles(active, c, which).map(f => ({ ...f, name: "edit-in-premiere-resolve/" + f.name }))); } catch (e) { console.warn(e); }
       }
       const caps = Object.entries(c.captions || {}).map(([k, t]) => `${PN[k] || k}\n${t}\n`).join("\n");
       files.push({ name: `${c.idx}-captions.txt`, data: `${c.title}\n${c.range}${c.score != null ? ` · score ${c.score}` : ""}\n\n${caps}` });
     }
+    files.push({ name: "edit-in-premiere-resolve/README.txt", data: NLE.readme({ title: active.title, source: active.source?.name || active.file?.name || active.name, path: active.source?.path }) });
     download(await zip(files), `${slug(active.title)}-clips.zip`);
     toast(`Packed ${list.length} clip${list.length > 1 ? "s" : ""}`);
   } catch (err) { toast(err.message || "Couldn't make the .zip"); }

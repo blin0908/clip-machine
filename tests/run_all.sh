@@ -12,6 +12,7 @@ step "server tests";             $PY -m unittest tests/test_server.py
 step "engine unit tests";        $PY -m unittest tests/test_engine_units.py
 step "reframe tests";            $PY -m unittest tests/test_reframe.py
 step "web formula tests";        node --test tests/formula.test.mjs
+step "editor hand-off (EDL/XML)"; node --test tests/nle.test.mjs
 step "cross-platform smoke";     $PY tests/ci_smoke.py
 [[ "$1" == "quick" ]] && { print -P "\n%F{green}Quick tests passed.%f"; exit 0; }
 [[ -d tests/media ]] || { step "building test media"; zsh tests/make_media.sh; }
