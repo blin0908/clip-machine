@@ -55,6 +55,7 @@ The desktop app opens the same workspace in your browser, but does the work on y
 - past videos stay on your computer and reopen with their clips (the previous page is still at `/classic`)
 - the results log is shared by browsers connected to the same desktop app
 - faster processing with native ffmpeg and faster-whisper, and 99 speech languages
+- on Apple Silicon Macs, speech runs on the GPU: about 1.5x faster on long videos, with the same transcript (it falls back to the CPU by itself if the GPU backend fails; `CLIP_DEVICE=cpu` forces the CPU)
 - use it from your phone over Wi-Fi with a QR code
 
 **Install:** download `Clip-Machine-desktop.zip` from [Releases](../../releases) and unzip it. It needs Python 3.10+ ([python.org](https://www.python.org/downloads/)); ffmpeg is installed for you.

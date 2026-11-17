@@ -169,5 +169,79 @@ class CaptionFonts(unittest.TestCase):
             self.assertTrue((Path(d) / "Montserrat-Black.ttf").exists())
 
 
+class SpeechDevice(unittest.TestCase):
+    """Whisper on the Apple GPU must fall back to the CPU, whether the backend fails to load or mid-video."""
+
+    def setUp(self):
+        import types
+        self.saved = (clipper._DEVICE, dict(clipper._MODEL_CACHE), clipper._whisper_device, sys.modules.get("faster_whisper"))
+        clipper._DEVICE = None
+        clipper._MODEL_CACHE.clear()
+        clipper._whisper_device = lambda: "mps"
+        self.fail_on = set()
+        test = self
+
+        class Seg:
+            def __init__(self):
+                self.start, self.end, self.text = 0.0, 1.0, " hello there"
+                self.words = [types.SimpleNamespace(word=" hello", start=0.0, end=0.4), types.SimpleNamespace(word=" there", start=0.5, end=1.0)]
+
+        class FakeModel:
+            def __init__(self, size, device, compute_type):
+                if device == "mps" and "load" in test.fail_on:
+                    raise RuntimeError("no Metal device")
+                self.device, self.compute_type = device, compute_type
+
+            def detect_language(self, audio, **kw):
+                return "en", 1.0, None
+
+            def transcribe(self, audio, **kw):
+                dev = self.device
+                def gen():
+                    if dev == "mps" and "run" in test.fail_on:
+                        raise RuntimeError("MPS kernel failed")
+                    yield Seg()
+                return gen(), types.SimpleNamespace(duration=1.0, language="en")
+
+        sys.modules["faster_whisper"] = types.SimpleNamespace(WhisperModel=FakeModel)
+        import tempfile
+        self.tmp = Path(tempfile.mkdtemp())
+        self.wav = self.tmp / "a.raw"
+        self.wav.write_bytes(b"\0\0" * 16000)
+
+    def tearDown(self):
+        clipper._DEVICE, cache, clipper._whisper_device, fw = self.saved
+        clipper._MODEL_CACHE.clear(); clipper._MODEL_CACHE.update(cache)
+        if fw is None: sys.modules.pop("faster_whisper", None)
+        else: sys.modules["faster_whisper"] = fw
+
+    def test_uses_gpu_when_it_works(self):
+        segs = clipper.transcribe(self.wav, "base", language="en")
+        self.assertEqual([w["w"] for w in segs[0]["words"]], ["hello", "there"])
+        self.assertEqual(clipper._DEVICE, "mps")
+        self.assertEqual(clipper._MODEL_CACHE[("base", "mps")].compute_type, "float16")
+
+    def test_falls_back_when_gpu_wont_load(self):
+        self.fail_on = {"load"}
+        segs = clipper.transcribe(self.wav, "base", language="en")
+        self.assertEqual(len(segs), 1)
+        self.assertEqual(clipper._DEVICE, "cpu")
+        self.assertEqual(clipper._MODEL_CACHE[("base", "cpu")].compute_type, "int8")
+
+    def test_falls_back_when_gpu_fails_mid_video(self):
+        self.fail_on = {"run"}
+        segs = clipper.transcribe(self.wav, "base", language="en")
+        self.assertEqual([w["w"] for w in segs[0]["words"]], ["hello", "there"])
+        self.assertEqual(clipper._DEVICE, "cpu")
+
+    def test_cpu_failure_is_not_swallowed(self):
+        clipper._whisper_device = lambda: "cpu"
+        clipper._DEVICE = None
+        def boom(*a, **k): raise RuntimeError("bad file")
+        sys.modules["faster_whisper"].WhisperModel = boom
+        with self.assertRaises(RuntimeError):
+            clipper.transcribe(self.wav, "base", language="en")
+
+
 if __name__ == "__main__":
     unittest.main()
