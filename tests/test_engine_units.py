@@ -359,5 +359,34 @@ class ShortCuts(unittest.TestCase):
         self.assertTrue(any("Length" in c["k"] and c["ok"] for c in sm.checklist))   # judged against the short range
 
 
+class InterestSignal(unittest.TestCase):
+    """The desktop-only interest curve moves the ranking towards what's said; without it, nothing changes."""
+
+    def setUp(self):
+        import numpy as np
+        self.np = np
+        self.segs, t = [], 0.0
+        for i in range(40):   # 40 three-second sentences with the same delivery
+            ws = [{"w": w, "s": t + k * 0.5, "e": t + k * 0.5 + 0.4} for k, w in enumerate(f"sentence {i} says something here.".split())]
+            self.segs.append({"s": t, "e": t + 2.9, "text": " ".join(w["w"] for w in ws), "words": ws})
+            t += 3.0
+        self.loud = np.zeros(int(t / clipper.HOP) + 2)
+
+    def test_none_changes_nothing(self):
+        a = clipper.find_moments(self.segs, self.loud, 120, 2, platform="tiktok", version="long")
+        b = clipper.find_moments(self.segs, self.loud, 120, 2, platform="tiktok", version="long", interest=None)
+        self.assertEqual([(m.start, m.end, m.score) for m in a], [(m.start, m.end, m.score) for m in b])
+        self.assertNotIn("interest", a[0].signals)
+
+    def test_high_interest_stretch_wins(self):
+        curve = self.np.zeros_like(self.loud)
+        curve[int(75 / clipper.HOP): int(100 / clipper.HOP)] = 1.0   # 75-100 s is what's worth posting
+        top = clipper.find_moments(self.segs, self.loud, 120, 1, platform="tiktok", version="long", interest=curve)[0]
+        self.assertGreaterEqual(top.start, 70)
+        self.assertLessEqual(top.start, 90)
+        self.assertGreater(top.signals["interest"], 1)
+        self.assertIn("a standout story or fact", top.reasons)
+
+
 if __name__ == "__main__":
     unittest.main()

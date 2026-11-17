@@ -54,7 +54,7 @@ YTDLP = _tool("yt-dlp")
 # Captions use the bundled Montserrat Black (OFL) so output looks the same on macOS, Windows, Linux and the web app.
 FONT_DIR = str(next((d for d in (HERE / "docs" / "fonts", HERE / "fonts") if (d / "Montserrat-Black.ttf").exists()),
                     HERE / "fonts"))
-VERSION = "1.8.1"            # shown in the app; the desktop app compares it with the latest GitHub release
+VERSION = "1.8.2"            # shown in the app; the desktop app compares it with the latest GitHub release
 CAP_FONT = "Montserrat Black"   # the family name stored inside Montserrat-Black.ttf (libass matches on it)
 # Other scripts use the matching Noto Sans Black (OFL), fetched the first time a clip needs it. The web app reads this
 # table from formula.json, so both engines pick the same font. Montserrat covers Latin (every European accent),
@@ -513,18 +513,22 @@ for _p in PLATFORMS.values():   # back-compat: the "sweet" range = the main (lon
     _p["sweet"] = _p["long"] or _p["short"]
 
 # ---------------------------------------------------------------- scoring
+# Phrases only where a common word would match ordinary speech: "what the" alone hit "what the space shuttle could
+# carry", and "what", "why", "yes", "wait" or "you need to" turn up in almost every sentence of a real interview, so
+# they ranked answers by word count instead of excitement (17 Nov 2026 eval on real interviews). An opening question
+# still counts through HOOK_RX.
 HYPE = {
     # reaction / arousal (high-arousal emotion is the best-supported sharing driver)
-    "oh my god": 3, "omg": 2, "no way": 3, "what the": 3, "let's go": 3, "lets go": 3,
+    "oh my god": 3, "omg": 2, "no way": 3, "what the hell": 3, "what the heck": 3, "what the f": 3, "let's go": 3, "lets go": 3,
     "insane": 2.5, "crazy": 2, "holy": 2.5, "unbelievable": 2.5, "oh no": 2.5, "shut up": 2,
     "are you serious": 3, "i can't believe": 3, "wow": 1.5, "whoa": 2, "bro": 1, "dude": 1,
-    "clutch": 2, "yes": 0.5, "wait": 1.5, "what": 0.4, "damn": 1.5, "hell": 1, "screaming": 2,
+    "clutch": 2, "wait what": 2, "wait wait": 1.5, "damn": 1.5, "hell": 1, "screaming": 2,
     # story / curiosity-gap language
     "here's the thing": 2.5, "the truth": 2, "nobody": 1.2, "secret": 2, "mistake": 1.5,
     "biggest": 1.2, "worst": 1.5, "best": 0.8, "never": 0.8, "million": 1.5, "money": 1,
-    "you need to": 1.5, "stop": 1, "the reason": 1.5, "plot twist": 3, "honestly": 0.8,
+    "you need to see": 1.5, "you need to know": 1.5, "you need to hear": 1.5, "stop": 1, "the reason": 1.5, "plot twist": 3, "honestly": 0.8,
     "i was wrong": 2.5, "changed my life": 2.5, "the craziest": 3, "scared": 1.5, "died": 1.5,
-    "turns out": 2, "the problem": 1.5, "nobody talks about": 3, "why": 0.6, "how to": 1.2,
+    "turns out": 2, "the problem": 1.5, "nobody talks about": 3, "how to": 1.2,
     # the same reactions and story hooks in other languages (lowercase; matched as whole words,
     # or anywhere in the text for Chinese, Japanese, Korean and Thai, which don't separate words)
     # es
@@ -721,6 +725,10 @@ def _features(s, e, text, words, loud, first_text, plat):
 
 
 # Weights encode the formula. Z-scored features compete inside one video; raw ones are absolute.
+# Desktop only: how clip-worthy the words are, from the search model (search.interest_curve). On real interviews
+# (4 NASA videos, 30 moments marked blind) it took picks on a marked moment from 6/20 to 9/20 and right top picks
+# from 0/4 to 2/4; weights 1-3 all helped. Not in WEIGHTS, so formula.js and the short-cut rescoring are unchanged.
+INTEREST_WEIGHT = 2.0
 WEIGHTS = {"energy": 1.0, "peak": 0.5, "swing": 0.3, "hype": 0.8, "laugh": 0.8, "exclaim": 0.3,
            "pace": 0.4, "hook": 1.2, "first1": 0.6, "payoff": 0.5, "ends_clean": 0.5,
            "midstart": -0.9, "deadair": -0.6, "fit": 0.9, "sponsor": -1.5}
@@ -728,7 +736,9 @@ RAW = {"midstart", "fit", "sponsor", "ends_clean"}   # used as-is, not z-scored
 
 
 def find_moments(segs, loud, duration, n=5, min_len=None, max_len=None, platform="all", progress=_noop,
-                 version="both") -> list[Moment]:
+                 version="both", interest=None) -> list[Moment]:
+    """interest: optional per-HOP curve of how clip-worthy the words are (search.interest_curve, desktop only). It adds
+    INTEREST_WEIGHT x its z-score to each candidate; without it the ranking is exactly formula.js's."""
     base = PLATFORMS.get(platform, PLATFORMS["all"])
     rng = base["long"] if (version in ("both", "long") and base["long"]) else base["short"]
     if min_len or max_len:
@@ -771,14 +781,26 @@ def find_moments(segs, loud, duration, n=5, min_len=None, max_len=None, platform
     for k in RAW:
         z[:, keys.index(k)] = mat[:, keys.index(k)]
     scores = z @ np.array([WEIGHTS[k] for k in keys])
+    zi = np.zeros(len(cands))
+    if interest is not None and len(interest):
+        iv = np.array([_curve_mean(interest, c[0], c[1]) for c in cands])
+        if iv.std() > 1e-6:
+            zi = (iv - iv.mean()) / iv.std()
+            scores = scores + INTEREST_WEIGHT * zi
 
     order = np.argsort(-scores, kind="stable")   # ties keep candidate order, like the stable sort in formula.js
     def moment(idx):
         s, e, text, words, f = cands[idx]
         zrow = dict(zip(keys, z[idx]))
+        reasons = _reasons(zrow, f)
+        if zi[idx] >= 1:
+            reasons.insert(0, "a standout story or fact")
+        sig = {k: round(float(v), 2) for k, v in zrow.items()}
+        if interest is not None:
+            sig["interest"] = round(float(zi[idx]), 2)
         return Moment(start=round(s, 2), end=round(e, 2), score=float(scores[idx]), text=text,
-                      words=words, reasons=_reasons(zrow, f), checklist=_checklist(zrow, f, e - s, plat),
-                      signals={k: round(float(v), 2) for k, v in zrow.items()},
+                      words=words, reasons=reasons, checklist=_checklist(zrow, f, e - s, plat),
+                      signals=sig,
                       norm={"mu": mu.tolist(), "sd": sd.tolist(), "flat": flat.tolist(), "plat": plat})
 
     picked: list[Moment] = []
@@ -806,6 +828,12 @@ def find_moments(segs, loud, duration, n=5, min_len=None, max_len=None, platform
             m.hashtags = _tags(m.text, plat["tags"])
     progress("score", 100, f"Found {len(picked)} moments")
     return picked
+
+
+def _curve_mean(curve, s, e):
+    x = curve[int(s / HOP): int(e / HOP) + 1]
+    x = x[~np.isnan(x)]
+    return float(x.mean()) if len(x) else 0.0
 
 
 def _best_set(ranked, n, gap=2.0):
@@ -1509,7 +1537,16 @@ def run(source, outdir: Path, n=5, min_len=None, max_len=None, layout="fit", cap
     progress("analyze", 100, "Audio analysed")
     segs = transcribe(wav, model, progress, info["duration"], language)
     (outdir / "transcript.json").write_text(json.dumps(segs))
-    pool = find_moments(segs, loud, info["duration"], n + 4, min_len, max_len, platform, progress, version)
+    interest = None
+    if os.environ.get("CLIP_INTEREST", "1") != "0":
+        try:   # optional: offline on first use, or no model, just means sound and words decide alone
+            import search
+            progress("score", 0, "Reading the transcript for its strongest moments")
+            search.model(lambda msg: progress("score", 0, msg))   # downloads the search model once (about 120 MB)
+            interest = search.interest_curve(segs, info["duration"], HOP)
+        except Exception as e:  # noqa: BLE001
+            print(f"[score] ranking without the search model ({e})", file=sys.stderr)
+    pool = find_moments(segs, loud, info["duration"], n + 4, min_len, max_len, platform, progress, version, interest)
     clips, dropped = [], 0
     if layout in ("auto", "split") and info["has_video"]:
         progress("render", 0, "Getting face detection ready")

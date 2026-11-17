@@ -702,7 +702,7 @@ export const SIGNAL_LABELS = {
   score: "Clip Machine's own score", energy: "High energy", peak: "Loudest peak", swing: "Changes in volume", hype: "Hype words",
   laugh: "Laughter", exclaim: "Exclamations", pace: "Fast delivery", hook: "Strong opening hook", first1: "Something happens in the first second",
   payoff: "Builds to a payoff", ends_clean: "Ends on a full sentence", midstart: "Starts mid-thought", deadair: "Dead air",
-  fit: "Length fits the platform", sponsor: "Ad read",
+  fit: "Length fits the platform", sponsor: "Ad read", interest: "What's said stands out (desktop)",
 };
 const ranks = xs => {
   const o = xs.map((x, i) => [x, i]).sort((a, b) => a[0] - b[0]), r = new Array(xs.length);
@@ -723,7 +723,7 @@ export function signalReport(matched, metric) {
   if (data.length < MIN_LEARN) return { n: data.length, enough: false, signals: [] };
   const ys = data.map(m => m.studio.values[metric]), order = ys.map((y, i) => [y, i]).sort((a, b) => b[0] - a[0]).map(x => x[1]);
   const third = Math.max(2, Math.floor(data.length / 3)), best = order.slice(0, third), worst = order.slice(-third);
-  const keys = ["score", ...Object.keys(F.weights)];
+  const keys = ["score", ...Object.keys(F.weights), "interest"];   // interest: desktop clips only (skipped when any clip lacks it)
   const signals = keys.map(k => {
     const xs = data.map(m => k === "score" ? m.clip.score : m.clip.signals[k]);
     if (xs.some(x => !Number.isFinite(x))) return null;

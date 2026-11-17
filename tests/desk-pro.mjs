@@ -97,7 +97,7 @@ try {
   const row = await post.json();
   check(post.ok() && row.feed_shown === "2048" && row.job && row.clip, "the desktop saves Shorts metrics with their source clip");
   let sig = {}; try { sig = JSON.parse(row.signals); } catch {}
-  check(Number.isFinite(sig.hook) && Object.keys(sig).length === 15 && +row.score > 0, "the native engine's scoring signals are saved with the result", row.signals);
+  check(Number.isFinite(sig.hook) && Object.keys(sig).filter(k => k !== "interest").length === 15 && Number.isFinite(sig.interest) && +row.score > 0, "the native engine's scoring signals are saved with the result", row.signals);
   const disk = JSON.parse(await readFile(LOG, "utf8"));
   check(disk.length === 2 && disk.some(r => r.id === row.id) && disk.some(r => r.title === "Previously saved in browser"),
     "the results file contains the new result and the imported browser entry");

@@ -190,3 +190,33 @@ def scored_windows(words, duration, query):
         return []
     v = model().embed(["query: " + query] + ["passage: " + w["text"] for w in wins])
     return [{**w, "score": float(s)} for w, s in zip(wins, (v[1:] @ v[0]).tolist())]
+
+
+# ---------------------------------------------------------------- clip-worthiness (desktop clip ranking)
+# General descriptions of what makes a moment worth posting, and of filler. Each transcript segment scores its best
+# match with the first list minus its best match with the second. Written as general rules, not from any test video.
+INTEREST_POS = ["a funny story that makes people laugh", "a surprising fact most people don't know",
+                "something unexpected happened", "a personal story about a mistake, a failure or a fear",
+                "a vivid description of an amazing sight or experience", "a strong opinion or a bold claim",
+                "an emotional moment", "a clear answer explaining how something strange works"]
+INTEREST_NEG = ["thank you everyone for joining us today", "introductions and housekeeping announcements",
+                "the next question comes from a reporter", "schedules, logistics and planning details",
+                "a vague general statement with no details", "small talk and greetings"]
+
+
+def interest_curve(segs, duration, hop):
+    """Per-hop clip-worthiness of what's said (NaN where nobody speaks), for clipper.find_moments."""
+    import numpy as np
+    curve = np.full(int(duration / hop) + 2, np.nan)
+    segs = [s for s in segs if s.get("text", "").strip()]
+    if not segs:
+        return curve
+    m = model()
+    pos = m.embed(["query: " + t for t in INTEREST_POS])
+    neg = m.embed(["query: " + t for t in INTEREST_NEG])
+    v = m.embed(["passage: " + s["text"] for s in segs])
+    val = (v @ pos.T).max(1) - (v @ neg.T).max(1)
+    for s, x in zip(segs, val):
+        curve[int(s["s"] / hop): int(s["e"] / hop) + 1] = x
+    return curve
+

@@ -18,6 +18,7 @@ Works best in **Chrome or Edge** on computers and Android phones. Firefox works 
    - whether it builds to a payoff
    - pace and dead air
    - whether its length fits the platform's test range
+   - in the desktop app, what's said: a small multilingual model rates each sentence against general descriptions of clip-worthy moments (a surprising fact, a funny or vivid story) and of filler (thanks, introductions, logistics). It downloads once with the search model (about 120 MB); `CLIP_INTEREST=0` turns it off
 2. **Cuts two versions per moment with the same opening:** a short demo cut and a longer cut with a second payoff. Lengths depend on the platform, e.g. TikTok 12–18 s / 20–30 s and Reels 12–18 s / 30–45 s.
 3. **Edits lightly for clarity:**
    - cuts dead air and "um/uh"
