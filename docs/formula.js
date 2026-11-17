@@ -192,13 +192,18 @@ export function findMoments(segs, loud, duration, n, platformKey, version) {
   });
   cands.forEach((c, ci) => { c.z = z[ci]; c.score = keys.reduce((a, k) => a + F.weights[k] * z[ci][k], 0); });
   cands.sort((a, b) => b.score - a.score);
-  const picked = [];
+  const moment = c => ({ start: +c.s.toFixed(2), end: +c.e.toFixed(2), raw: c.score, text: c.text, words: c.words,
+    reasons: reasons(c.z, c.f), checklist: checklist(c.z, c.f, c.e - c.s, plat),
+    signals: Object.fromEntries(keys.map(k => [k, Math.round(c.z[k] * 100) / 100])), norm });   // for learning from results
+  let picked = [];
   for (const c of cands) {
     if (picked.some(m => !(c.e + 2 <= m.start || c.s >= m.end + 2))) continue;
-    picked.push({ start: +c.s.toFixed(2), end: +c.e.toFixed(2), raw: c.score, text: c.text, words: c.words,
-                  reasons: reasons(c.z, c.f), checklist: checklist(c.z, c.f, c.e - c.s, plat),
-                  signals: Object.fromEntries(keys.map(k => [k, Math.round(c.z[k] * 100) / 100])), norm });   // for learning from results
+    picked.push(moment(c));
     if (picked.length >= n) break;
+  }
+  if (picked.length && picked.length < n) {   // the greedy pass can strand the gaps (mirrors clipper.find_moments)
+    const best = bestSet(cands.map(c => [c.s, c.e, c.score]), n);
+    if (best.length > picked.length) picked = best.map(j => moment(cands[j]));
   }
   if (picked.length) {
     const hi = picked[0].raw, lo = Math.min(...picked.map(m => m.raw));
@@ -210,6 +215,35 @@ export function findMoments(segs, loud, duration, n, platformKey, version) {
     }
   }
   return picked;
+}
+
+// Positions (into `ranked`: [start, end, score] sorted best first) of the most clips, up to n, that keep the best
+// moment and sit at least `gap` s apart, with the highest total score among sets that size (clipper._best_set).
+export function bestSet(ranked, n, gap = 2) {
+  const [s0, e0] = ranked[0];
+  const ok = [];
+  for (let j = 1; j < ranked.length; j++) if (ranked[j][1] + gap <= s0 || ranked[j][0] >= e0 + gap) ok.push(j);
+  ok.sort((a, b) => ranked[a][1] - ranked[b][1] || ranked[a][0] - ranked[b][0] || a - b);
+  const k = n - 1, L = ok.length, ends = ok.map(j => ranked[j][1]);
+  const dp = [[0, ...Array(k).fill(-Infinity)]], prev = [];
+  ok.forEach((j, t) => {
+    let p = 0, hi = t;
+    while (p < hi) { const mid = (p + hi) >> 1; if (ends[mid] + gap <= ranked[j][0]) p = mid + 1; else hi = mid; }
+    prev.push(p);
+    const row = dp[t].slice();
+    for (let c = 1; c <= k; c++)
+      if (dp[p][c - 1] > -Infinity && dp[p][c - 1] + ranked[j][2] > row[c]) row[c] = dp[p][c - 1] + ranked[j][2];
+    dp.push(row);
+  });
+  let c = 0;
+  for (let i = 0; i <= k; i++) if (dp[L][i] > -Infinity) c = i;
+  const out = [0];
+  let t = L;
+  while (c && t) {
+    if (dp[t][c] === dp[t - 1][c]) t--;
+    else { out.push(ok[t - 1]); [t, c] = [prev[t - 1], c - 1]; }
+  }
+  return out.sort((a, b) => a - b);
 }
 
 // The 0-100 moment score: rank among this video's moments, nudged by how many checks pass (clipper._score).

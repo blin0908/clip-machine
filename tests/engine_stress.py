@@ -126,7 +126,8 @@ def edit_case():
     if (outdir / v2["file"]).stat().st_mtime <= before:
         probs.append("file not replaced")
     ass = (outdir / v2["file"]).with_suffix(".ass").read_text()
-    if "BorderStyle" not in ass or ",3," not in ass.split("Style: Cap", 1)[1].split("\n", 1)[0]:
+    cap = ass.split("Style: Cap", 1)[1].split("\n", 1)[0].split(",")
+    if "BorderStyle" not in ass or cap[15] not in ("3", "4"):   # 4: libass box per line (since 1.5.1), 3: opaque box
         probs.append("boxed style missing from captions")
     if v2["duration"] >= v["duration"] + 0.05:
         probs.append(f"trim didn't shorten: {v['duration']} -> {v2['duration']}")

@@ -496,3 +496,30 @@ print(json.dumps({"ids": [app.post_id(x) for x in a["links"]], "why": [app.log_c
   assert.deepEqual(js.ids.slice(0, 7), ["dQw4w9WgXcQ", "dQw4w9WgXcQ", "dQw4w9WgXcQ", "7312345678901234567", "C0abc123XYZ", "1790000000000000000", "123456789012345"]);
   assert.deepEqual(js.why.map(w => w === null), [true, false, false, false, true, true]);
 });
+
+test("when the greedy pick comes up short, both engines fill the gaps the same way", () => {
+  let seed = 7;
+  const rnd = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
+  const sets = [];
+  for (let k = 0; k < 40; k++) {
+    const r = [];
+    for (let i = 0; i < 25; i++) { const s = Math.round(rnd() * 900) / 10, len = 15 + Math.round(rnd() * 250) / 10; r.push([s, s + len, Math.round((rnd() * 4 - 2) * 1000) / 1000]); }
+    r.sort((a, b) => b[2] - a[2]);
+    sets.push(r);
+  }
+  // the 2-minute talk shape: the greedy second pick (16-54) strands both gaps; three clips fit
+  sets.push([[84.9, 121.4, 3], [16.4, 54.1, 1.5], [39.6, 76.2, 1.2], [0, 31.1, 0.4]]);
+  const js = sets.map(r => X.bestSet(r, 3));
+  const py = JSON.parse(execFileSync(PY, ["-c", `
+import sys, json; sys.path.insert(0, ${JSON.stringify(ROOT)})
+import clipper
+print(json.dumps([clipper._best_set(r, 3) for r in json.loads(sys.stdin.read())]))`],
+    { input: JSON.stringify(sets), encoding: "utf8" }).trim().split("\n").at(-1));
+  assert.deepEqual(js, py);
+  assert.deepEqual(js.at(-1), [0, 2, 3]);
+  for (const [i, b] of js.entries()) {        // always keeps the best moment; picks never overlap
+    assert.equal(b[0], 0);
+    const spans = b.map(j => sets[i][j]).sort((x, y) => x[0] - y[0]);
+    spans.slice(1).forEach((s, t) => assert.ok(s[0] >= spans[t][1] + 2, JSON.stringify(spans)));
+  }
+});

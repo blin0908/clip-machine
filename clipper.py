@@ -54,7 +54,7 @@ YTDLP = _tool("yt-dlp")
 # Captions use the bundled Montserrat Black (OFL) so output looks the same on macOS, Windows, Linux and the web app.
 FONT_DIR = str(next((d for d in (HERE / "docs" / "fonts", HERE / "fonts") if (d / "Montserrat-Black.ttf").exists()),
                     HERE / "fonts"))
-VERSION = "1.7.2"            # shown in the app; the desktop app compares it with the latest GitHub release
+VERSION = "1.8.0"            # shown in the app; the desktop app compares it with the latest GitHub release
 CAP_FONT = "Montserrat Black"   # the family name stored inside Montserrat-Black.ttf (libass matches on it)
 # Other scripts use the matching Noto Sans Black (OFL), fetched the first time a clip needs it. The web app reads this
 # table from formula.json, so both engines pick the same font. Montserrat covers Latin (every European accent),
@@ -773,18 +773,27 @@ def find_moments(segs, loud, duration, n=5, min_len=None, max_len=None, platform
     scores = z @ np.array([WEIGHTS[k] for k in keys])
 
     order = np.argsort(-scores, kind="stable")   # ties keep candidate order, like the stable sort in formula.js
+    def moment(idx):
+        s, e, text, words, f = cands[idx]
+        zrow = dict(zip(keys, z[idx]))
+        return Moment(start=round(s, 2), end=round(e, 2), score=float(scores[idx]), text=text,
+                      words=words, reasons=_reasons(zrow, f), checklist=_checklist(zrow, f, e - s, plat),
+                      signals={k: round(float(v), 2) for k, v in zrow.items()},
+                      norm={"mu": mu.tolist(), "sd": sd.tolist(), "flat": flat.tolist(), "plat": plat})
+
     picked: list[Moment] = []
     for idx in order:
-        s, e, text, words, f = cands[idx]
+        s, e = cands[idx][0], cands[idx][1]
         if any(not (e + 2 <= m.start or s >= m.end + 2) for m in picked):
             continue
-        zrow = dict(zip(keys, z[idx]))
-        picked.append(Moment(start=round(s, 2), end=round(e, 2), score=float(scores[idx]), text=text,
-                             words=words, reasons=_reasons(zrow, f), checklist=_checklist(zrow, f, e - s, plat),
-                             signals={k: round(float(v), 2) for k, v in zrow.items()},
-                             norm={"mu": mu.tolist(), "sd": sd.tolist(), "flat": flat.tolist(), "plat": plat}))
+        picked.append(moment(idx))
         if len(picked) >= n:
             break
+    if 0 < len(picked) < n:   # the greedy pass can strand the gaps (a middle pick leaves no room for another clip)
+        ranked = [(cands[i][0], cands[i][1], float(scores[i])) for i in order]
+        best = _best_set(ranked, n)
+        if len(best) > len(picked):
+            picked = [moment(order[j]) for j in best]
 
     if picked:
         hi, lo = picked[0].score, min(m.score for m in picked)
@@ -797,6 +806,43 @@ def find_moments(segs, loud, duration, n=5, min_len=None, max_len=None, platform
             m.hashtags = _tags(m.text, plat["tags"])
     progress("score", 100, f"Found {len(picked)} moments")
     return picked
+
+
+def _best_set(ranked, n, gap=2.0):
+    """Positions (into `ranked`: (start, end, score) sorted best first) of the most clips, up to n, that keep the best
+    moment and sit at least `gap` s apart, with the highest total score among sets that size. Used when the greedy
+    pick comes up short. Mirrors bestSet in formula.js."""
+    s0, e0, _ = ranked[0]
+    ok = sorted((j for j in range(1, len(ranked)) if ranked[j][1] + gap <= s0 or ranked[j][0] >= e0 + gap),
+                key=lambda j: (ranked[j][1], ranked[j][0], j))
+    k, L = n - 1, len(ok)
+    ends = [ranked[j][1] for j in ok]
+    NEG = float("-inf")
+    dp = [[0.0] + [NEG] * k]
+    prev = []
+    for t, j in enumerate(ok):
+        p, hi = 0, t   # ends are sorted, so the clips that finish in time are a prefix: binary search for its length
+        while p < hi:
+            mid = (p + hi) // 2
+            if ends[mid] + gap <= ranked[j][0]:
+                p = mid + 1
+            else:
+                hi = mid
+        prev.append(p)
+        row = list(dp[t])
+        for c in range(1, k + 1):
+            if dp[p][c - 1] > NEG and dp[p][c - 1] + ranked[j][2] > row[c]:
+                row[c] = dp[p][c - 1] + ranked[j][2]
+        dp.append(row)
+    c = max(c for c in range(k + 1) if dp[L][c] > NEG)
+    out, t = [0], L
+    while c and t:
+        if dp[t][c] == dp[t - 1][c]:
+            t -= 1
+        else:
+            out.append(ok[t - 1])
+            t, c = prev[t - 1], c - 1
+    return sorted(out)
 
 
 def _reasons(z, f):
