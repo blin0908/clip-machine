@@ -66,7 +66,7 @@ class App:
         if k:
             return k
         f = HERE / ".access_key"
-        return f.read_text().strip() if f.exists() else ""
+        return f.read_text(encoding="utf-8").strip() if f.exists() else ""
 
     def _local(self):
         return urllib.parse.urlsplit(self.base).hostname in ("127.0.0.1", "localhost", "::1")
@@ -112,7 +112,7 @@ class App:
 
     def _start(self):
         if not os.environ.get("CLIP_KEY") and not (HERE / ".access_key").exists():
-            (HERE / ".access_key").write_text(secrets.token_urlsafe(8))   # the same file app.py would create
+            (HERE / ".access_key").write_text(secrets.token_urlsafe(8), encoding="utf-8")   # the same file app.py would create
         env = dict(os.environ, CLIP_PORT=str(urllib.parse.urlsplit(self.base).port or 80), PYTHONUNBUFFERED="1")
         jobs = Path(env.get("CLIP_JOBS") or HERE / "jobs")
         jobs.mkdir(parents=True, exist_ok=True)

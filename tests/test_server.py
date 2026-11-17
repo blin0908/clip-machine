@@ -218,7 +218,7 @@ class ServerTest(unittest.TestCase):
         self.assertRegex(self.c.get("/api/info", headers=self.k).get_json()["version"], r"^\d+\.\d+\.\d+$")
         # every page module and worker the UI loads (import "./x.js", new URL("./x.js")) must be served, or the page breaks
         import re
-        local = {m for f in (HERE.parent / "docs").glob("*.js") for m in re.findall(r'(?:from |import\(|new URL\()"\./([\w-]+\.js)"', f.read_text())}
+        local = {m for f in (HERE.parent / "docs").glob("*.js") for m in re.findall(r'(?:from |import\(|new URL\()"\./([\w-]+\.js)"', f.read_text(encoding="utf-8"))}
         self.assertTrue({"search.js", "search-worker.js", "studio.js"} <= local, local)
         for path in ("/", "/classic", "/fonts/ui/archivo-400-800.woff2", "/vendor/ffmpeg/index.js", *sorted("/" + m for m in local)):
             r = self.c.get(path, headers=self.k)

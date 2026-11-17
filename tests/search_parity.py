@@ -36,8 +36,8 @@ TALK = {"the biggest mistake I ever made": 0.0, "how to make a video": None, "a 
 
 
 def cases():
-    multi = json.loads((FX / "search-multilingual.json").read_text())
-    talk = json.loads((FX / "talk_40s.words.json").read_text())
+    multi = json.loads((FX / "search-multilingual.json").read_text(encoding="utf-8"))
+    talk = json.loads((FX / "talk_40s.words.json").read_text(encoding="utf-8"))
     out = [("talk_40s", talk, 40.0, q) for q in TALK]
     for lang, d in multi.items():
         out += [(lang, d["words"], d["duration"], q) for qs, _ in TOPICS.values() for q in qs]
