@@ -59,14 +59,15 @@ test("both files parse in OpenTimelineIO and agree", { skip: !process.env.OTIO_P
     writeFileSync(join(dir, `c${fps}.edl`), N.edl({ ...base, fps }));
   }
   const out = JSON.parse(execFileSync(process.env.OTIO_PY, ["-c", `
-import sys, glob, json, opentimelineio as otio
+import sys, glob, json, os, opentimelineio as otio
 res = {}
 for f in sorted(glob.glob(sys.argv[1] + "/c*.*")):
-    fps = float(f.rsplit("/c", 1)[1].rsplit(".", 1)[0])
+    name = os.path.basename(f)          # not split on "/": Windows paths use backslashes
+    fps = float(name[1:].rsplit(".", 1)[0])
     exact = {29.97: 30000/1001, 59.94: 60000/1001, 23.976: 24000/1001}.get(fps, fps)
     tl = otio.adapters.read_from_file(f, **({"rate": exact} if f.endswith(".edl") else {}))
     v = [c for c in [t for t in tl.tracks if t.kind == "Video"][0] if isinstance(c, otio.schema.Clip)]
-    res[f.rsplit("/", 1)[1]] = {"src": [[round(c.source_range.start_time.to_seconds(), 2), round(c.source_range.end_time_exclusive().to_seconds(), 2)] for c in v],
+    res[name] = {"src": [[round(c.source_range.start_time.to_seconds(), 2), round(c.source_range.end_time_exclusive().to_seconds(), 2)] for c in v],
         "audio": len([t for t in tl.tracks if t.kind == "Audio"]),
         "markers": [[m.name, round(m.marked_range.start_time.to_seconds(), 1)] for m in tl.tracks.markers]}
 print(json.dumps(res))`, dir], { encoding: "utf8" }));
