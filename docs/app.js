@@ -1023,7 +1023,7 @@ async function remoteEdit(job) {
   const d = job.d, sess = job.sess, id = encodeURIComponent(sess.jid);
   const rev0 = (await api(`api/jobs/${id}`)).edit_rev || 0;
   await api(`api/jobs/${id}/edit`, { clip: job.c ? job.c.jidx : -1, cut: job.cut, start: d.start, end: d.end, title: d.title, style: d.look.style,
-    look: d.look, cta: d.cta ?? "", reason: job.reason, words: sess.words.filter(w => w.s >= d.start - 0.5 && w.s <= d.end + 0.5) });
+    look: d.look, cta: d.cta ?? "", reason: job.reason, payoff: d.payoff ?? null, words: sess.words.filter(w => w.s >= d.start - 0.5 && w.s <= d.end + 0.5) });
   for (;;) {
     await sleep(700);
     const j = await api(`api/jobs/${id}`);
@@ -1135,9 +1135,10 @@ async function pump() {
       result = { ok: false, msg: `That edit failed the quality gate: ${why}. Your previous version is kept.` };
     } else {
       const fields = { start: d.start, end: d.end, title: d.title, cta: d.cta, range: `${X.fmtT(d.start)}–${X.fmtT(d.end)}`, edited: true };
+      const payoff = d.payoff ?? null;
       let c = job.c;
       if (!c) {                                   // a new clip made from the transcript
-        c = { ...m, ...r, ...fields, score: null, custom: true, reasons: [job.reason || "Picked from the transcript"], checklist: [], hashtags: [], short: null, view: "long" };
+        c = { ...m, ...r, ...fields, payoff, score: null, custom: true, reasons: [job.reason || "Picked from the transcript"], checklist: [], hashtags: [], short: null, view: "long" };
         c.captions = X.postCopy({ ...c, hashtags: [] }, job.sess.title);
         addClip(job.sess, c);
       } else {
@@ -1146,6 +1147,7 @@ async function pump() {
         target.srtURL = null;
         Object.assign(target, r, fields);
         if (job.cut === "long") c.title = d.title;
+        c.payoff = payoff;                        // shared by the long and short cut
         c.captions = X.postCopy({ ...c, title: c.title, hashtags: c.hashtags || [] }, job.sess.title);
         c.view = job.cut === "short" ? "short" : "long";
       }
@@ -1190,6 +1192,7 @@ const cutOf = c => c.view === "short" && c.short ? c.short : c;
 // What still needs a look before this cut is posted: failed quality checks, then a headline the speech model was unsure of.
 function readiness(c, v) {
   const issues = (v.quality || []).filter(x => !x.ok).map(x => x.k);
+  if (c.payoff != null && (v.end < c.payoff + 1 || v.start > c.payoff)) issues.unshift("Ends before the payoff you marked");
   if (c.title_sure === false && !v.edited) issues.push("Headline may be misheard: check it against the audio");
   return issues;
 }
@@ -1198,7 +1201,7 @@ function readyHTML(c, v) {
   const issues = readiness(c, v);
   return issues.length
     ? `<span class="ready warn" title="${esc(issues.join("\n"))}">Check: ${esc(issues[0])}${issues.length > 1 ? ` +${issues.length - 1}` : ""}</span>`
-    : `<span class="ready">Ready to post</span>`;
+    : `<span class="ready" title="Every quality check passed. Watch it once at 1× with sound before posting.">All checks passed</span>`;
 }
 function qualityHTML(v) {
   const q = v.quality || [], ok = q.filter(x => x.ok).length, warn = q.length - ok;

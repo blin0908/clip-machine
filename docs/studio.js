@@ -9,8 +9,10 @@ export function createStudio(api) {
   const tl = $("stTl"), tctx = tl.getContext("2d"), bctx = bg.getContext("2d");
   const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
   const drafts = new WeakMap();                 // clip → { long, short }: unsaved edits survive switching clips
+  const payoffs = new WeakMap();                // clip → unsaved payoff mark, shared by its long and short cut
   let ST = null, raf = 0, drag = null, srcId = null;
   const MIN = 3;
+  const HOLD = 1.0;                             // seconds a cut must run past the payoff so it actually lands on screen
 
   // ------------------------------------------------------------ model
   const cutObj = () => ST.c ? (ST.cut === "short" ? ST.c.short : ST.c) : null;
@@ -19,9 +21,10 @@ export function createStudio(api) {
   const fresh = (sess, c, cut) => {
     const v = cut === "short" ? c.short : c;
     return { start: v.start, end: v.end, title: v.title ?? c.title ?? "", look: { ...(v.look || api.lookFrom(sess.o)) },
-             cta: v.cta ?? (cut === "long" ? c.cta || "" : "") };
+             cta: v.cta ?? (cut === "long" ? c.cta || "" : ""), payoff: payoffs.has(c) ? payoffs.get(c) : c.payoff ?? null };
   };
   const key = d => JSON.stringify(d);
+  const savedKey = (sess, c, cut) => key({ ...fresh(sess, c, cut), payoff: c.payoff ?? null });   // what's on disk: an unsaved payoff mark is a change
   const spoken = (sess = ST.sess) => sess === ST?.sess ? (ST._sp ||= X.spoken(sess.words)) : X.spoken(sess.words);
   function nearest(ws, t, by) {                // index of the word whose `by` time is closest to t (ws sorted by s)
     let lo = 0, hi = ws.length - 1;
@@ -57,7 +60,7 @@ export function createStudio(api) {
     if (!sess?.words) return toast("This video isn't transcribed yet.");
     if (cut === "short" && !c.short) cut = "long";
     const d = drafts.get(c)?.[cut] || fresh(sess, c, cut);
-    start({ sess, c, cut, d, orig: key(fresh(sess, c, cut)) }, seekT ?? d.start);
+    start({ sess, c, cut, d, orig: savedKey(sess, c, cut) }, seekT ?? d.start);
   }
   function openNew(sess, a, b, text = "") {
     if (!sess?.words) return toast("This video isn't transcribed yet.");
@@ -128,8 +131,40 @@ export function createStudio(api) {
     const d = ST.d, [lo, hi] = target();
     $("stIn").textContent = fmtTC(d.start); $("stOutTC").textContent = fmtTC(d.end);
     const fits = ST.after >= lo - 1 && ST.after <= hi + 1;
+    paintPayoff(lo, hi);
     $("stLen").innerHTML = `<b>${(d.end - d.start).toFixed(1)}s</b>${ST.gaps.length ? ` → <b>${ST.after.toFixed(1)}s</b> after ${ST.gaps.length} cut${ST.gaps.length > 1 ? "s" : ""}` : ""} · <span class="${fits ? "fit" : "off"}">target ${lo}–${hi}s${fits ? " ✓" : ""}</span>`;
   }
+  // the payoff (reveal, punchline, answer): every cut of this clip has to reach it and hold it for HOLD seconds
+  function paintPayoff(lo, hi) {
+    const d = ST.d, p = d.payoff, msg = $("stPayMsg");
+    $("stPayTC").textContent = p == null ? "" : fmtTC(p);
+    $("stPayClear").hidden = p == null;
+    ST.payIssue = null;
+    if (p == null) { msg.textContent = ""; return; }
+    if (p < d.start) ST.payIssue = "The payoff is before this cut starts.";
+    else if (d.end < p + HOLD) {
+      const need = snapOut(p + HOLD + 0.2) - d.start;
+      ST.payIssue = need > hi + 1
+        ? `Ends before the payoff. Reaching it: ${need.toFixed(0)}s, over the ${hi}s target${ST.cut === "short" ? ". Use the long cut, or start later" : ""}.`
+        : "Ends before the payoff.";
+    }
+    msg.innerHTML = ST.payIssue ? `${esc(ST.payIssue)}${p >= d.start ?  ' <button type="button" id="stPayFix">Extend to it</button>' : ""}` : "";
+  }
+  function setPayoff(t) {
+    hist(); ST.d.payoff = t == null ? null : +Math.max(0, Math.min(dur(), t)).toFixed(2);
+    if (ST.c) {                                 // one payoff per clip: the other cut's draft follows
+      payoffs.set(ST.c, ST.d.payoff);
+      const all = drafts.get(ST.c) || {};
+      for (const k of ["long", "short"]) if (k !== ST.cut && all[k]) all[k].payoff = ST.d.payoff;
+    }
+    changed(false);
+  }
+  $("stPayoff").onclick = () => ST && setPayoff(vid.currentTime);
+  $("stPayClear").onclick = () => ST && setPayoff(null);
+  $("stPayMsg").addEventListener("click", e => {
+    if (!ST || !e.target.closest("#stPayFix")) return;
+    hist(); ST.d.end = Math.min(dur(), snapOut(ST.d.payoff + HOLD + 0.2)); changed(false); paintLines();
+  });
   const B = v => v ? "1" : "0";
   function paintLook() {
     const L = ST.d.look;
@@ -216,14 +251,14 @@ export function createStudio(api) {
       if (res.superseded) return;                            // a newer edit of the same cut replaced this one
       const here = ST && ST.c === at.c && ST.cut === at.cut;
       if (!res.ok) { if (here || (ST && at.c === null && ST.c === null)) $("stStatus").textContent = "⚠ " + res.msg; else toast("⚠ An edit failed. Open the clip to see why."); return; }
-      if (at.c) drafts.delete(at.c);
+      if (at.c) { drafts.delete(at.c); payoffs.delete(at.c); }
       if (ST && ST === at.holder && at.c === null) {          // the new clip now exists: keep editing it as a normal clip
         drafts.delete(ST);
-        ST.c = res.clip; ST.cut = "long"; ST.orig = key(fresh(ST.sess, ST.c, "long"));
+        ST.c = res.clip; ST.cut = "long"; ST.orig = savedKey(ST.sess, ST.c, "long");
         if (key(ST.d) === key(job.d)) ST.d = fresh(ST.sess, ST.c, "long");
         derive(); paintHead();
       } else if (here) {
-        ST.orig = key(fresh(ST.sess, ST.c, ST.cut));
+        ST.orig = savedKey(ST.sess, ST.c, ST.cut);
         if (key(ST.d) === key(job.d)) ST.d = fresh(ST.sess, ST.c, ST.cut);
         derive(); paintHead();
         if (ST.mode === "rendered") setMode("rendered");
@@ -555,6 +590,15 @@ export function createStudio(api) {
       c.fill();
       c.fillStyle = "#16130a"; c.fillRect(dir > 0 ? gx + 3 : gx - 6, mid - 7, 1, 14); c.fillRect(dir > 0 ? gx + 5 : gx - 4, mid - 7, 1, 14);
     }
+    // payoff marker
+    if (d.payoff != null) {
+      const xq = X_(d.payoff);
+      if (xq >= -6 && xq <= w + 6) {
+        c.fillStyle = "#5fd38d"; c.fillRect(Math.round(xq) - 1, RULER, 2, h - RULER);
+        c.beginPath(); c.moveTo(xq - 6, RULER); c.lineTo(xq + 6, RULER); c.lineTo(xq, RULER + 9); c.closePath(); c.fill();
+        c.font = "700 10px 'Plex Mono', ui-monospace, monospace"; c.textBaseline = "top"; c.fillText("PAYOFF", xq + 5, RULER + 2);
+      }
+    }
     // playhead
     const xp = X_(t);
     if (xp >= -2 && xp <= w + 2) {
@@ -636,6 +680,7 @@ export function createStudio(api) {
       case "j": case "J": e.preventDefault(); seek(vid.currentTime - big); break;
       case "l": case "L": e.preventDefault(); seek(vid.currentTime + big); break;
       case "i": case "I": e.preventDefault(); if (e.shiftKey) seek(ST.d.start); else { hist(); setIn(vid.currentTime, e.altKey); changed(false); paintLines(); } break;
+      case "p": case "P": if (e.metaKey || e.ctrlKey) return; e.preventDefault(); setPayoff(vid.currentTime); break;
       case "o": case "O": e.preventDefault(); if (e.shiftKey) seek(ST.d.end); else { hist(); setOut(vid.currentTime, e.altKey); changed(false); paintLines(); } break;
       case "ArrowLeft": e.preventDefault(); e.shiftKey ? seek(vid.currentTime - 5) : wordStep(-1); break;
       case "ArrowRight": e.preventDefault(); e.shiftKey ? seek(vid.currentTime + 5) : wordStep(1); break;

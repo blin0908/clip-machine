@@ -1575,7 +1575,7 @@ def run(source, outdir: Path, n=5, min_len=None, max_len=None, layout="fit", cap
 
 
 def edit_cut(outdir: Path, idx: int, cut: str, start: float, end: float, title: str, words: list,
-             style: str | None = None, progress=_noop, look=None, cta=None, logo=None, reason=None) -> dict:
+             style: str | None = None, progress=_noop, look=None, cta=None, logo=None, reason=None, payoff="keep") -> dict:
     """Re-render one cut after a manual edit (trim, caption fixes, headline, style) and re-run the quality gate.
     The previous file is only replaced if the new render passes every hard check."""
     sess = json.loads((outdir / "session.json").read_text())
@@ -1648,6 +1648,8 @@ def edit_cut(outdir: Path, idx: int, cut: str, start: float, end: float, title: 
                   range=f"{fmt_t(start)}–{fmt_t(end)}", style=style, edited=True, rev=target.get("rev", 0) + 1, cta=use_cta,
                   look=dict(lk, style=style, layout=layout, captions=captions, hook=hook, tighten=tighten))
     target["title"] = m.title
+    if payoff != "keep":                  # the payoff belongs to the clip: its long and short cuts both have to reach it
+        (target if cut == "new" else clip)["payoff"] = None if payoff is None else round(float(payoff), 2)
     if cut == "new":
         m.hashtags = []
         target.update(score=None, custom=True, reasons=[reason or "Picked from the transcript"], checklist=[], short=None,

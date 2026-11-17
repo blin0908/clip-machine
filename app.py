@@ -139,7 +139,7 @@ def run_edit(jid, p):
     try:
         res = clipper.edit_cut(JOBS / jid, p["clip"], p["cut"], p["start"], p["end"], p["title"], p["words"],
                                p.get("style"), progress, look=p.get("look"), cta=p.get("cta"), logo=logo_file(),
-                               reason=p.get("reason"))
+                               reason=p.get("reason"), payoff=p.get("payoff", "keep"))
         job.update(status="done", pct=100, msg="Edit saved", result=res, edit_error=None, edit_rev=job.get("edit_rev", 0) + 1)
     except Exception as e:
         traceback.print_exc()
@@ -251,6 +251,9 @@ def edit(jid):
                    "style": d.get("style"), "look": clipper.clean_look(d.get("look")) if isinstance(d.get("look"), dict) else None,
                    "cta": str(d["cta"])[:80] if isinstance(d.get("cta"), str) else None,
                    "reason": str(d["reason"])[:120] if isinstance(d.get("reason"), str) else None}
+        if "payoff" in d:                 # the moment the clip has to reach (source seconds), or null to clear it
+            payload["payoff"] = None if d["payoff"] is None else float(d["payoff"])
+            assert payload["payoff"] is None or math.isfinite(payload["payoff"]) and payload["payoff"] >= 0
     except Exception:
         return jsonify(error="Bad edit request."), 400
     job.update(status="queued", msg="Edit waiting in line", edit_error=None)
