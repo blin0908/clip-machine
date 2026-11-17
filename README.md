@@ -102,7 +102,13 @@ command = "/path/to/Clip Machine/.venv/bin/python"
 args = ["/path/to/Clip Machine/mcp_server.py"]
 ```
 
-Then ask, for example: *"Clip ~/Videos/podcast.mp4 into 5 TikToks, re-render the best one with clean captions, and give me the zip."* To use an app on another computer, set `CLIP_MCP_URL` (e.g. `http://192.168.1.20:8765`) and `CLIP_KEY` in the server's environment.
+Then ask, for example: *"Clip ~/Videos/podcast.mp4 into 5 TikToks, re-render the best one with clean captions, and give me the zip."* To use an app on another computer, set `CLIP_MCP_URL` (e.g. `http://192.168.1.20:8765`) and `CLIP_KEY` in the server's environment. In Claude Code the `-e` flags go after the name:
+
+```
+claude mcp add clip-machine -e CLIP_MCP_URL=http://192.168.1.20:8765 -e CLIP_KEY=yourkey -- "/path/to/Clip Machine/.venv/bin/python" "/path/to/Clip Machine/mcp_server.py"
+```
+
+Check it with `claude mcp list` (it should say Connected).
 
 ## The workspace
 
