@@ -110,6 +110,8 @@ export function mountFind(deps) {
     const q = cleanQuery(input.value), sess = deps.active();
     if (!q) { say("Describe the moment you want, for example: the part about pricing."); input.focus(); return; }
     if (!sess?.words?.length) { say("This video has no transcript yet. Run it first, then search it.", "warn"); return; }
+    const blocked = deps.unavailable?.();
+    if (blocked) { say(blocked, "warn"); return; }
     busy = true; btn.disabled = true; form.setAttribute("aria-busy", "true");
     say("Searching the transcript…");
     if (deps.desk()) fetch("api/search", { cache: "no-store" }).then(r => r.json()).then(j => {

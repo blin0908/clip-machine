@@ -1646,6 +1646,10 @@ const studio = createStudio({
 // find clips by description (search.js): matches render as new clips through the same queue as the studio
 mountFind({
   active: () => active, desk: () => !!DESK, lowMemory: () => IS_WEBKIT, select,
+  // Safari / iOS: once the speech model has run, WebKit never loads a second model in the same tab (it keeps the
+  // tab's WebAssembly memory; measured: the search model's load hangs). Say so instead of spinning. The desktop app
+  // runs the search natively, so Safari is fine there.
+  unavailable: () => IS_WEBKIT && !DESK ? "Find by description doesn't work in Safari or on iPhone yet: Safari can't load the search model after the speech model in the same tab. Use Chrome, Firefox or the desktop app." : null,
   busyKeys: e => studio.isOpen() || typing(e) || $("#keys").open || $("#pClips").hidden,
   render: (sess, m, segs, reason) => queueRender({ sess, c: null, cut: "new", reason,
     d: { start: m.start, end: m.end, title: X.title(m, segs).slice(0, 80), look: lookFrom(sess.o), cta: "" } }),

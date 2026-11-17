@@ -1,4 +1,5 @@
-// Find clips by description on the website (docs/search.js + search-worker.js), in Chrome:
+// Find clips by description on the website (docs/search.js + search-worker.js). Chrome by default; also
+//   BROWSER=firefox-desktop node web-find.mjs   /   BROWSER=webkit-desktop node web-find.mjs
 //  1. parity: the browser engine cuts the same windows as the desktop engine (search.py) for fixed transcripts in
 //     English, Spanish and Japanese, scores them within SCORE_TOL, and offers the same clips. Both run the same 8-bit
 //     ONNX file on the same token ids, one text at a time, but onnxruntime's int8 kernels round differently in
@@ -11,7 +12,7 @@
 // The first run downloads the search model (about 135 MB) into this test's browser profile, as the site does.
 //
 //   node web-find.mjs
-import { chromium } from "playwright";
+import { chromium, webkit, firefox } from "playwright";
 import { createServer } from "node:http";
 import { readFile, mkdir, mkdtemp, rm } from "node:fs/promises";
 import { existsSync } from "node:fs";
@@ -48,7 +49,14 @@ catch { check(false, "desktop engine ranking checks (search_parity.py)", "run it
 const desk = existsSync(dumpFile) ? JSON.parse(await readFile(dumpFile, "utf8")) : [];
 
 await mkdir(PROFILES, { recursive: true });
-const ctx = await chromium.launchPersistentContext(join(PROFILES, "find-chrome"), { headless: true, channel: "chrome", viewport: { width: 1360, height: 900 } });
+const TYPES = { "chrome-desktop": [chromium, { channel: "chrome" }], "webkit-desktop": [webkit, {}], "firefox-desktop": [firefox, {}] };
+const BROWSER = process.env.BROWSER || "chrome-desktop";
+if (!TYPES[BROWSER]) throw new Error(`BROWSER must be one of ${Object.keys(TYPES).join(", ")}`);
+const [btype, bopts] = TYPES[BROWSER];
+// WebKit on macOS can't open a persistent profile in Playwright, so it gets a fresh context (and downloads the model each run)
+const ctx = btype === webkit
+  ? await (await webkit.launch({ headless: true })).newContext({ viewport: { width: 1360, height: 900 } })
+  : await btype.launchPersistentContext(join(PROFILES, `find-${BROWSER}`), { headless: true, ...bopts, viewport: { width: 1360, height: 900 } });
 ctx.setDefaultTimeout(30000);
 try {
   // ---- 1. parity
@@ -111,6 +119,15 @@ try {
   await app.keyboard.press("/");
   check(await app.evaluate(() => document.activeElement?.id === "findq"), "/ jumps to the search box");
 
+  if (BROWSER === "webkit-desktop") {
+    // Safari can't load the search model after the speech model in one tab, so the box says so (and adds nothing)
+    await app.keyboard.type("the biggest mistake I ever made");
+    await app.keyboard.press("Enter");
+    await app.waitForFunction(() => document.querySelector("#findMsg").dataset.kind === "warn", null, { timeout: 10000, polling: 100 });
+    const said = await app.locator("#findMsg").textContent();
+    check(/Safari/.test(said) && /Chrome, Firefox or the desktop app/.test(said) && await app.locator("#out .clip").count() === n0,
+      "Safari: says search needs Chrome, Firefox or the desktop app, adds no clip", said);
+  } else {
   // an unrelated query: a clear message, no clip
   await app.keyboard.type("a recipe for chocolate cake");
   await app.keyboard.press("Enter");
@@ -140,11 +157,12 @@ try {
     await app.waitForFunction(() => /already on the board/.test(document.querySelector("#findMsg").textContent), null, { timeout: 120000, polling: 250 });
     check(await app.locator("#out .clip").count() === n0 + 1, "the same search again doesn't duplicate the clip");
   }
+  }
   check(!errs.length, "no page errors (workflow)", errs.join(" | "));
 } catch (err) {
   console.error(err); fails++;
 } finally {
-  await ctx.close(); server.close(); await rm(tmp, { recursive: true, force: true });
+  const br = ctx.browser(); await ctx.close(); if (br) await br.close(); server.close(); await rm(tmp, { recursive: true, force: true });
 }
 console.log(`\n${fails ? fails + " failed" : "all checks passed"}`);
 process.exit(fails ? 1 : 0);
