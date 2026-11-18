@@ -226,6 +226,18 @@ const DESKTOP_URL = "https://github.com/blin0908/clip-machine/releases/latest";
 const linkDesktop = html => html.replace(/(the (?:free )?desktop app)/, `<a href="${DESKTOP_URL}" target="_blank" rel="noopener">$1</a>`);
 // A tab opened with noopener gets a fresh WebKit process; a reload keeps the old one, with the memory it holds.
 const linkTab = html => html.replace(/(open Clip Machine in a new tab)/, `<a href="${esc(location.href)}" target="_blank" rel="noopener">$1</a>`);
+// Errors read "Headline\n\nWhat it means and what to do\n\nDetails: raw tool output". Older one-line messages still work.
+function errHTML(msg) {
+  const raw = String(msg || "Something went wrong.");
+  const [main, details] = raw.split(/\n\nDetails:\s*/);
+  const [head, ...rest] = main.split(/\n\n/);
+  const body = rest.join("\n\n");
+  const fix = t => linkTab(linkDesktop(esc(t)));
+  return `<div class="err-head"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7.5v5.5M12 16.5v.01"/></svg><b>${fix(head)}</b></div>`
+    + (body ? `<p class="err-body">${fix(body)}</p>` : "")
+    + (details ? `<details class="err-more"><summary>Technical details</summary><pre>${esc(details)}</pre></details>` : "");
+}
+const errHead = msg => String(msg || "").split(/\n/)[0];
 // Safari: remember (for this tab only) that it has loaded the engines, so a reload can offer a fresh tab first.
 const USED = "clipmachine.tabUsed";
 const markUsed = () => { if (IS_WEBKIT && !DESK) try { sessionStorage.setItem(USED, "1"); } catch {} };
@@ -348,7 +360,11 @@ $("#linkForm").onsubmit = async e => {
     if (/\s/.test($("#link").value.trim()) || !/^https?:$/.test(u.protocol) || !/\.|^localhost$|^\[/.test(u.hostname)) throw 0;
   } catch { linkNote("That doesn't look like a link.", "Copy the full address from your browser or the app's Share button, then paste it here."); return; }
   $("#link").value = raw;
-  if (DESK) { addSources([{ link: u.href }]); $("#link").value = ""; setTab(false); toast("Link added. The desktop app downloads it when you press Find the moments."); return; }
+  if (DESK) {                // the desktop app downloads links itself, so a pasted link starts right away with the current settings
+    addSources([{ link: u.href }]); $("#link").value = ""; setTab(false);
+    if (!running) { toast("Link added. Downloading and finding the moments…"); go(); }
+    return;
+  }
   const site = siteOf(u.hostname);
   if (site) { linkNote(`${site} links need the free desktop app.`, `${site} doesn't let websites download its videos. The desktop app downloads it on your own computer and makes the clips. It's free too, and works on Mac, Windows and Linux.`); return; }
   $("#lnote").classList.add("hide"); $("#lbar").style.width = "0%"; $("#lprog").classList.remove("hide");
@@ -400,7 +416,7 @@ function setActive(s) {
 function qStatus(s) {
   if (s.status === "running") return s.msg || "Working";
   if (s.status === "queued") return s.prep?.words ? "Transcribed · renders next" : s.prep ? "Audio read · transcribes next" : "Queued";
-  if (s.status === "error") return "Error: " + (s.err || "").slice(0, 60);
+  if (s.status === "error") return "Error: " + errHead(s.err).slice(0, 70);
   if (s.remote && !s.loaded) return s.loading ? "Loading…" : "Saved on this computer";
   if (s.status === "done") return `${s.clips.length} clip${s.clips.length === 1 ? "" : "s"}${s.info ? " · " + X.fmtT(s.capped || s.info.duration) : ""}`;
   return s.file ? `Ready · ${mb(s.file.size)} MB` : "Ready · link";
@@ -1070,6 +1086,8 @@ async function enterDesktop(info) {
   if (["auto", "split"].includes(lastLayout) && !new URLSearchParams(location.search).has("layout")) setChip("layout", lastLayout, false);
   $(".lhint").textContent = "Paste a YouTube, TikTok, Twitch, X or any video link. The desktop app downloads it on this computer.";
   $("#link").placeholder = "Paste a YouTube, TikTok or video link";
+  $("#linkGo").textContent = "Clip it";
+  $(".lhint").textContent = "Paste a YouTube, TikTok, Twitch, X or any video link. It downloads on this computer and starts right away with the settings below.";
   $(".tag").textContent = "Desktop app · runs on this computer";
   $("#logStorage").textContent = "Saved on the computer running Clip Machine.";
   $(".foot.private").firstChild.textContent = "Your videos stay on the computer running Clip Machine: nothing goes to a cloud service. ";
@@ -1257,7 +1275,7 @@ function renderBoard() {
   if (!s.clips.length) {
     if (s.remote && !s.loaded && s.status === "done") { out.innerHTML = `<div class="card note" style="color:var(--mute);padding:24px;text-align:center">Loading "${esc(s.name)}"…</div>`; return; }
     const note = t => `<div class="card note msg-note" style="color:var(--mute);font-size:14px;padding:24px;border:1px dashed var(--line2);border-radius:12px;text-align:center">${t}</div>`;
-    out.innerHTML = s.status === "error" ? `<div class="card err">${linkTab(linkDesktop(esc(s.err)))}</div>`
+    out.innerHTML = s.status === "error" ? `<div class="card err" role="alert">${errHTML(s.err)}</div>`
       : s.status === "done" ? `<div class="card msg">No moment in "${esc(s.title)}" passed the quality gate. Try a different video, or turn off "Cut dead air" under Edits.</div>`
       : s.status === "running" ? note(s.remote ? `Working on it on this computer (${esc(s.msg || "starting")}). The clips appear here when it finishes.` : "Working on it. Clips appear here as each one passes the quality gate.")
       : s.status === "queued" ? note(`"${esc(s.title)}" is in the queue.`)
@@ -1740,11 +1758,11 @@ mountFind({
     const bw = 4, n = Math.ceil(w / bw) + 1, a = w * 0.36, b = w * 0.64;
     for (let k = 0; k < n; k++) {
       const x = k * bw - (off % bw), v = bars[(Math.floor(off / bw) + k) % bars.length], bh = v * (h - 30);
-      ctx.fillStyle = x > a && x < b ? "#f2c230" : "#3a3e47";
+      ctx.fillStyle = x > a && x < b ? "#7aa7ff" : "#26344f";
       ctx.fillRect(x, (h - bh) / 2, bw - 1.5, bh);
     }
-    ctx.fillStyle = "rgba(242,194,48,.10)"; ctx.fillRect(a, 0, b - a, h);
-    ctx.fillStyle = "#f2c230"; ctx.fillRect(a - 2, 0, 3, h); ctx.fillRect(b, 0, 3, h);
+    ctx.fillStyle = "rgba(122,167,255,.10)"; ctx.fillRect(a, 0, b - a, h);
+    ctx.fillStyle = "#7aa7ff"; ctx.fillRect(a - 2, 0, 3, h); ctx.fillRect(b, 0, 3, h);
     ctx.fillRect(a - 2, 0, 10, 3); ctx.fillRect(b - 7, 0, 10, 3); ctx.fillRect(a - 2, h - 3, 10, 3); ctx.fillRect(b - 7, h - 3, 10, 3);
     ctx.fillStyle = "#ff5a4e"; ctx.fillRect(a + (b - a) * ((off / 3) % 100) / 100, 0, 2, h);
     if (!still) { off += 0.6; requestAnimationFrame(draw); }

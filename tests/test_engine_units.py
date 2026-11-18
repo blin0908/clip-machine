@@ -390,3 +390,34 @@ class InterestSignal(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LinkDownloads(unittest.TestCase):
+    """Links must survive a moved/renamed app folder, and failures must say what to do."""
+
+    def test_ytdlp_runs_as_module(self):
+        cmd = clipper._ytdlp_cmd()
+        self.assertEqual(cmd[1:], ["-m", "yt_dlp"])
+        self.assertEqual(cmd[0], sys.executable)
+
+    def test_download_errors_are_explained(self):
+        cases = {
+            "ERROR: [youtube] x: Sign in to confirm you're not a bot.": "signed-in",
+            "ERROR: [youtube] x: Private video.": "isn't public",
+            "ERROR: [generic] Unsupported URL: https://example.com/": "can't find a video",
+            "ERROR: [youtube] x: Video unavailable": "can't be found",
+            "ERROR: [youtube] x: This video is unavailable": "can't be found",
+            "ERROR: Unable to download webpage: timed out": "couldn't reach",
+            "ERROR: HTTP Error 429: Too Many Requests": "limiting downloads",
+            "garbage": "didn't work",
+        }
+        for log, want in cases.items():
+            out = clipper.explain_download(log)
+            self.assertIn(want, out, log)
+            self.assertIn("\n\nDetails: ", out)
+
+    def test_missing_tool_is_explained(self):
+        e = FileNotFoundError(2, "No such file or directory", "/gone/.venv/bin/yt-dlp")
+        self.assertTrue(clipper.explain_error(e).startswith("The link downloader couldn't start."))
+        self.assertEqual(clipper.explain_error(RuntimeError("Head\n\nBody")), "Head\n\nBody")
+        self.assertEqual(clipper.explain_error(RuntimeError("plain")), "plain")

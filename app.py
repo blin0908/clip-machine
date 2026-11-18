@@ -124,7 +124,7 @@ def worker():
             # the source is kept so clips can be edited and re-rendered; deleting the job frees the space
         except Exception as e:
             traceback.print_exc()
-            job.update(status="error", msg=str(e)[:600])
+            job.update(status="error", msg=clipper.explain_error(e)[:1500])
         finally:
             save(jid)
             queue.task_done()
@@ -144,7 +144,7 @@ def run_edit(jid, p):
         job.update(status="done", pct=100, msg="Edit saved", result=res, edit_error=None, edit_rev=job.get("edit_rev", 0) + 1)
     except Exception as e:
         traceback.print_exc()
-        job.update(status="done", pct=100, msg="Done", edit_error=str(e)[:400])
+        job.update(status="done", pct=100, msg="Done", edit_error=clipper.explain_error(e)[:1200])
     finally:
         save(jid)
 
@@ -680,7 +680,7 @@ def manifest():
     # (a home-screen app on iOS keeps its own cookies, so it needs the key once on launch)
     start = f"/?key={KEY}" if authed() else "/"
     resp = jsonify(name="Clip Machine", short_name="Clips", start_url=start, display="standalone",
-                   background_color="#0b0b0f", theme_color="#0b0b0f",
+                   background_color="#05070c", theme_color="#05070c",
                    icons=[{"src": "/icon.svg", "sizes": "any", "type": "image/svg+xml"}])
     resp.headers["Cache-Control"] = "no-store"
     resp.headers["Vary"] = "Cookie"
@@ -689,7 +689,7 @@ def manifest():
 
 @app.get("/icon.svg")
 def icon():
-    svg = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" rx="22" fill="#0b0b0f"/>'
+    svg = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" rx="22" fill="#05070c"/>'
            '<path d="M30 25h40v50H30z" fill="none" stroke="#ffe600" stroke-width="7" rx="6"/><path d="M45 40l15 10-15 10z" fill="#ffe600"/></svg>')
     return app.response_class(svg, mimetype="image/svg+xml")
 

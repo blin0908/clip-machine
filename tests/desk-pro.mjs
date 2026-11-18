@@ -73,7 +73,9 @@ try {
   await page.setInputFiles("#file", join(MEDIA, "tiny.mp4"));
   check(await page.locator(".qi").count() === 2, "link + file queued");
   const t0 = Date.now();
-  await page.click("#go");
+  check(await page.$$eval(".qi", q => q.some(x => /running|queued/.test(x.dataset.st))), "a pasted link starts at once (no second button)");
+  const go = page.locator("#go");
+  if (await go.isVisible() && await go.isEnabled()) await go.click();   // the file joins the run already going
   await idle();
   const states = await page.$$eval(".qi", q => q.map(x => x.dataset.st + ":" + x.querySelector(".qs").textContent));
   check(states.every(s => s.startsWith("done")), "native engine finished both", `${states.join(", ")} in ${((Date.now() - t0) / 1000).toFixed(0)}s`);

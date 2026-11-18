@@ -50,7 +50,22 @@ def _tool(name: str) -> str:
 
 FFMPEG = _tool("ffmpeg")
 FFPROBE = _tool("ffprobe")
-YTDLP = _tool("yt-dlp")
+
+
+def _ytdlp_cmd() -> list[str]:
+    """How to run yt-dlp. Prefer `python -m yt_dlp` from this interpreter: the venv's yt-dlp launcher script has the
+    venv's absolute path baked into its first line, so it breaks ("No such file or directory") when the app folder is
+    moved or renamed. The module form works wherever the folder lives."""
+    try:
+        import importlib.util
+        if importlib.util.find_spec("yt_dlp"):
+            return [sys.executable, "-m", "yt_dlp"]
+    except Exception:
+        pass
+    return [_tool("yt-dlp")]
+
+
+YTDLP = None   # resolved on first download (kept for anything that imported the name)
 # Captions use the bundled Montserrat Black (OFL) so output looks the same on macOS, Windows, Linux and the web app.
 FONT_DIR = str(next((d for d in (HERE / "docs" / "fonts", HERE / "fonts") if (d / "Montserrat-Black.ttf").exists()),
                     HERE / "fonts"))
@@ -170,6 +185,100 @@ def _noop(stage, pct, msg=""):
 
 
 # ---------------------------------------------------------------- download
+class DownloadError:
+    TOOL = ("The link downloader couldn't start.\n\n"
+            "Clip Machine uses a helper called yt-dlp to fetch videos from links, and it's missing or broken. This "
+            "usually happens after the app folder is moved or renamed. Run the installer in the app folder again "
+            "(Install.command on Mac, Install (Windows).bat on Windows), then restart the app. Uploading the file "
+            "itself still works in the meantime.")
+
+
+# (pattern in yt-dlp's output, headline, what it means and what to do). First match wins.
+_DL_REASONS = [
+    (r"Sign in to confirm you.re not a bot|confirm your age|age.restricted|inappropriate for some users",
+     "YouTube wants a signed-in viewer for this video.",
+     "It's either age-restricted or YouTube is asking this computer to prove it isn't a bot. Clip Machine can't sign "
+     "in for you. Download the video yourself (or wait an hour and try again), then upload the file."),
+    (r"Private video|This video is private|members.only|Join this channel|requires payment|premium",
+     "That video isn't public.",
+     "It's private, members-only or paid, so it can only be watched while signed in. Use a public link, or upload "
+     "your own copy of the file."),
+    (r"video (is )?(currently )?unavailable|no longer available|has been removed|does not exist|HTTP Error 404|404: Not Found|account.*terminated",
+     "That video can't be found.",
+     "It may have been deleted, or the link is incomplete. Open the link in your browser to check it plays, then "
+     "copy it again from the address bar."),
+    (r"not available in your country|geo.?restrict|blocked it in your country",
+     "That video is blocked in your region.",
+     "The uploader limited where it can be watched. Use a different video, or upload a copy you're allowed to use."),
+    (r"is live|live event|Premieres in|will begin in|This live stream",
+     "That's a live stream or a premiere that hasn't finished.",
+     "Wait until the stream has ended and the replay is up, then paste the link again."),
+    (r"Unsupported URL|is not a valid URL|No video formats found|no suitable formats",
+     "Clip Machine can't find a video at that link.",
+     "Paste the link to the video page itself (for example youtube.com/watch?v=… or a TikTok video link), not a "
+     "channel, playlist, search page or profile."),
+    (r"HTTP Error 429|Too Many Requests|rate.limit",
+     "The site is limiting downloads right now.",
+     "Too many requests came from this network in a short time. Wait 10–30 minutes and try again, or upload the file."),
+    (r"Unable to download webpage|Failed to resolve|getaddrinfo|Name or service not known|timed out|"
+     r"Connection (refused|reset)|Network is unreachable|SSL|CERTIFICATE",
+     "Clip Machine couldn't reach the site.",
+     "Check that this computer is online (open the link in a browser). A VPN, school or work network can also block "
+     "video sites. Try again once the page loads in your browser."),
+    (r"HTTP Error 403|Forbidden|nsig|signature extraction|Requested format is not available|player response",
+     "The site changed how it serves videos.",
+     "This normally needs a newer yt-dlp. Restart Clip Machine — it updates yt-dlp each time it starts — and try "
+     "the link again. If it still fails, upload the file."),
+    (r"ffmpeg.*not found|merging.*failed|Postprocessing",
+     "The video downloaded but couldn't be put together.",
+     "The audio and video arrived separately and joining them failed. Try again; if it repeats, upload the file."),
+]
+
+
+def explain_download(log: str, source: str = "") -> str:
+    """Turn yt-dlp's output into what happened and what to do, with the raw lines kept as details."""
+    errs = [l for l in log.splitlines() if "ERROR" in l] or log.splitlines()[-4:]
+    details = "\n".join(l.replace("ERROR: ", "") for l in errs[-3:]).strip()
+    for pat, head, body in _DL_REASONS:
+        if re.search(pat, log, re.I):
+            return f"{head}\n\n{body}\n\nDetails: {details}"
+    return ("The download didn't work.\n\nThe site refused or the link isn't a video page Clip Machine recognises. "
+            "Check the link plays in your browser, restart Clip Machine (it updates its downloader on start), or "
+            f"upload the file instead.\n\nDetails: {details}")
+
+
+def explain_error(e: BaseException) -> str:
+    """A job error a person can act on. Messages already written for people pass through unchanged."""
+    msg = str(e).strip() or e.__class__.__name__
+    if "\n\n" in msg:                       # already explained (download errors, etc.)
+        return msg
+    low = msg.lower()
+    if isinstance(e, FileNotFoundError) or "no such file or directory" in low:
+        if "yt-dlp" in low:
+            return DownloadError.TOOL + f"\n\nDetails: {msg}"
+        if "ffmpeg" in low or "ffprobe" in low:
+            return ("The video tool (ffmpeg) is missing.\n\nClip Machine needs ffmpeg to read and cut video. Run the "
+                    f"installer in the app folder again, then restart the app.\n\nDetails: {msg}")
+        return ("A file Clip Machine needed has gone missing.\n\nIt may have been moved or deleted while the job ran. "
+                f"Add the video again.\n\nDetails: {msg}")
+    if isinstance(e, MemoryError) or "out of memory" in low or "cannot allocate" in low:
+        return ("This computer ran out of memory.\n\nClose other apps, or use a shorter video or a smaller speech model "
+                f"(Settings → Speech model: base).\n\nDetails: {msg}")
+    if "no space left" in low:
+        return ("The disk is full.\n\nDelete old jobs in Clip Machine (or other files) to free space, then try again."
+                f"\n\nDetails: {msg}")
+    if isinstance(e, PermissionError) or "permission denied" in low:
+        return ("Clip Machine wasn't allowed to read or write a file.\n\nMove the video somewhere you own (like "
+                f"Downloads or Desktop) and try again.\n\nDetails: {msg}")
+    if "huggingface" in low or "hf.co" in low or ("model" in low and ("connection" in low or "resolve" in low)):
+        return ("The speech model couldn't download.\n\nThe first run fetches it from the internet (once). Check this "
+                f"computer is online and try again.\n\nDetails: {msg}")
+    if "calledprocesserror" in e.__class__.__name__.lower() or "returned non-zero exit status" in low:
+        return ("The video tool stopped partway.\n\nThe file may be damaged or in an unusual format. Try converting it "
+                f"to MP4, or use another copy.\n\nDetails: {msg}")
+    return msg
+
+
 def fetch(source: str, workdir: Path, progress=_noop) -> tuple[Path, str]:
     """Return (video_path, title). `source` is a URL or a local file path."""
     workdir.mkdir(parents=True, exist_ok=True)
@@ -181,7 +290,7 @@ def fetch(source: str, workdir: Path, progress=_noop) -> tuple[Path, str]:
     progress("download", 0, "Starting download")
     out_tmpl = str(workdir / "source.%(ext)s")
     cmd = [
-        YTDLP, "--no-playlist", "--newline", "--no-warnings",
+        *_ytdlp_cmd(), "--no-playlist", "--newline", "--no-warnings",
         "--js-runtimes", "node",
         "-f", "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/bv*[height<=1080]+ba/b[height<=1080]/b",
         "--merge-output-format", "mp4",
@@ -190,7 +299,11 @@ def fetch(source: str, workdir: Path, progress=_noop) -> tuple[Path, str]:
         "-o", out_tmpl, source,
     ]
     title = "video"
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    try:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                                encoding="utf-8", errors="replace")
+    except OSError as e:
+        raise RuntimeError(DownloadError.TOOL + f"\n\nDetails: {e}") from None
     tail = []
     for line in proc.stdout:
         line = line.strip()
@@ -201,7 +314,7 @@ def fetch(source: str, workdir: Path, progress=_noop) -> tuple[Path, str]:
         if m:
             progress("download", float(m.group(1)), "Downloading")
     if proc.wait() != 0:
-        raise RuntimeError("Download failed:\n" + "\n".join(tail[-6:]))
+        raise RuntimeError(explain_download("\n".join(tail), source))
     vids = sorted(workdir.glob("source.*"), key=lambda f: f.stat().st_size, reverse=True)
     vids = [v for v in vids if v.suffix in (".mp4", ".mkv", ".webm", ".mov")]
     if not vids:

@@ -105,10 +105,10 @@ try {
   const box = await page.locator("#stTl").boundingBox();
   const outX = await page.evaluate(() => {
     const cv = document.querySelector("#stTl"); const r = cv.getBoundingClientRect();
-    // find the out bracket by scanning for the brightest yellow column in the top band
+    // find the out bracket by scanning for the brightest accent-blue column in the top band
     const g = cv.getContext("2d"), d = g.getImageData(0, 0, cv.width, cv.height).data, sx = cv.width / r.width;
     let best = -1;
-    for (let x = cv.width - 1; x >= 0; x--) { let n = 0; for (let y = 0; y < cv.height; y += 2) { const i = (y * cv.width + x) * 4; if (d[i] > 220 && d[i + 1] > 170 && d[i + 2] < 90) n++; } if (n > cv.height * 0.36) { best = x; break; } }   // the bracket runs the full height (n counts every other row); waveform bars don't
+    for (let x = cv.width - 1; x >= 0; x--) { let n = 0; for (let y = 0; y < cv.height; y += 2) { const i = (y * cv.width + x) * 4; if (d[i] > 100 && d[i] < 150 && d[i + 1] > 150 && d[i + 1] < 190 && d[i + 2] > 235) n++; } if (n > cv.height * 0.36) { best = x; break; } }   // the bracket runs the full height (n counts every other row); waveform bars don't
     return best < 0 ? null : best / sx;
   });
   if (outX != null) {

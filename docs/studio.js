@@ -250,7 +250,7 @@ export function createStudio(api) {
     api.queueRender(job).then(res => {
       if (res.superseded) return;                            // a newer edit of the same cut replaced this one
       const here = ST && ST.c === at.c && ST.cut === at.cut;
-      if (!res.ok) { if (here || (ST && at.c === null && ST.c === null)) $("stStatus").textContent = "⚠ " + res.msg; else toast("⚠ An edit failed. Open the clip to see why."); return; }
+      if (!res.ok) { if (here || (ST && at.c === null && ST.c === null)) $("stStatus").textContent = "⚠ " + String(res.msg || "The edit failed.").split(/\n\nDetails:/)[0].replace(/\n\n/g, " "); else toast("⚠ An edit failed. Open the clip to see why."); return; }
       if (at.c) { drafts.delete(at.c); payoffs.delete(at.c); }
       if (ST && ST === at.holder && at.c === null) {          // the new clip now exists: keep editing it as a normal clip
         drafts.delete(ST);
@@ -536,16 +536,16 @@ export function createStudio(api) {
     const waveTop = RULER + 4, waveH = h - RULER - LANE - 10, mid = waveTop + waveH / 2, laneY = h - LANE - 3;
     const xs = X_(d.start), xe = X_(d.end);
     // selection band
-    c.fillStyle = "rgba(242,194,48,.07)"; c.fillRect(xs, 0, xe - xs, h);
+    c.fillStyle = "rgba(122,167,255,.07)"; c.fillRect(xs, 0, xe - xs, h);
     // ruler
     const st = niceStep(pps), minor = st >= 5 ? st / 5 : st / 2;
-    c.fillStyle = "#8a8d94"; c.font = "500 10px 'Plex Mono', ui-monospace, monospace"; c.textBaseline = "middle";
+    c.fillStyle = "#7e8aa2"; c.font = "500 10px 'Plex Mono', ui-monospace, monospace"; c.textBaseline = "middle";
     for (let t = Math.floor(v.a / minor) * minor; t <= v.b; t += minor) {
       const x = Math.round(X_(t)) + 0.5, major = Math.abs(t / st - Math.round(t / st)) < 1e-6;
       c.fillRect(x, major ? 4 : 12, 1, major ? RULER - 6 : RULER - 14);
       if (major) c.fillText(st < 1 ? fmtTC(t) : X.fmtT(t), x + 4, 9);
     }
-    c.fillStyle = "#2a2d33"; c.fillRect(0, RULER, w, 1);
+    c.fillStyle = "#18233a"; c.fillRect(0, RULER, w, 1);
     // waveform from the quiet map (50 ms steps)
     const q = ST.sess.quiet;
     if (q) {
@@ -557,7 +557,7 @@ export function createStudio(api) {
         const lv = Math.max(0.03, Math.min(1, (m - bot) / (top - bot))), bh = lv * waveH;
         const tm = (t0 + t1) / 2, inSel = tm >= d.start && tm <= d.end;
         const inGap = inSel && rel.some(([a, b]) => tm - d.start >= a && tm - d.start < b);
-        c.fillStyle = !inSel ? "#3d414a" : inGap ? "rgba(255,90,78,.45)" : "#f2c230";
+        c.fillStyle = !inSel ? "#2b3a5a" : inGap ? "rgba(255,90,78,.45)" : "#7aa7ff";
         c.fillRect(x, mid - bh / 2, 1.4, bh);
       }
     }
@@ -570,25 +570,25 @@ export function createStudio(api) {
       if (x1 < 0) continue;
       const inSel = wd.s >= d.start - 0.05 && wd.s <= d.end, filler = X.F.fillerSet.has(wd.w.toLowerCase().replace(/[^a-z]/g, ""));
       const now = t >= wd.s && t < wd.e;
-      c.fillStyle = now ? "#ecebe6" : filler ? "rgba(255,90,78,.18)" : inSel ? "#383c44" : "#24272d";
+      c.fillStyle = now ? "#e8edf6" : filler ? "rgba(255,90,78,.18)" : inSel ? "#22304e" : "#131d33";
       c.fillRect(x0, laneY, x1 - x0, LANE - 4);
       if (x1 - x0 > 16) {
         c.save(); c.beginPath(); c.rect(x0 + 3, laneY, x1 - x0 - 5, LANE - 4); c.clip();
-        c.fillStyle = now ? "#121316" : filler ? "#a2a3a8" : inSel ? "#ecebe6" : "#8a8d94";
+        c.fillStyle = now ? "#05070c" : filler ? "#9aa6bd" : inSel ? "#e8edf6" : "#7e8aa2";
         c.fillText(wd.w, x0 + 4, laneY + (LANE - 4) / 2 + 0.5); c.restore();
       }
     }
     // in/out brackets
     for (const [x, dir] of [[xs, 1], [xe, -1]]) {
       if (x < -12 || x > w + 12) continue;
-      c.fillStyle = "#f2c230";
+      c.fillStyle = "#7aa7ff";
       c.fillRect(x - (dir > 0 ? 0 : 3), 0, 3, h);
       c.fillRect(dir > 0 ? x : x - 12, 0, 12, 4); c.fillRect(dir > 0 ? x : x - 12, h - 4, 12, 4);
       c.beginPath();                                       // grip tab
       const gx = dir > 0 ? x + 3 : x - 3;
       c.roundRect ? c.roundRect(dir > 0 ? gx : gx - 9, mid - 14, 9, 28, 3) : c.rect(dir > 0 ? gx : gx - 9, mid - 14, 9, 28);
       c.fill();
-      c.fillStyle = "#16130a"; c.fillRect(dir > 0 ? gx + 3 : gx - 6, mid - 7, 1, 14); c.fillRect(dir > 0 ? gx + 5 : gx - 4, mid - 7, 1, 14);
+      c.fillStyle = "#04102a"; c.fillRect(dir > 0 ? gx + 3 : gx - 6, mid - 7, 1, 14); c.fillRect(dir > 0 ? gx + 5 : gx - 4, mid - 7, 1, 14);
     }
     // payoff marker
     if (d.payoff != null) {

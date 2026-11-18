@@ -1,7 +1,7 @@
 // Offline support. App files: network first (updates show up at once), cache as fallback.
 // Pinned CDN files (ffmpeg core, transformers.js): cache first, since a pinned version never changes.
 // Whisper model files are cached by transformers.js itself, so they're left alone here.
-const SHELL = "cm-shell-v10", CDN = "cm-cdn-v1";
+const SHELL = "cm-shell-v11", CDN = "cm-cdn-v1";
 const FILES = ["./", "index.html", "app.js", "formula.js", "nle.js", "formula.json", "asr-worker.js", "manifest.json", "icon.svg",
   "icon-180.png", "icon-512.png", "fonts/Montserrat-Black.ttf", "studio.js", "zip.js", "search.js", "search-worker.js",
   "fonts/ui/archivo-400-800.woff2", "fonts/ui/instrumentsans-400-700.woff2", "fonts/ui/ibmplexmono-400.woff2", "fonts/ui/ibmplexmono-500.woff2",
