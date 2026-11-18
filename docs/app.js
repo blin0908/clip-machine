@@ -421,13 +421,18 @@ function qStatus(s) {
   if (s.status === "done") return `${s.clips.length} clip${s.clips.length === 1 ? "" : "s"}${s.info ? " · " + X.fmtT(s.capped || s.info.duration) : ""}`;
   return s.file ? `Ready · ${mb(s.file.size)} MB` : "Ready · link";
 }
+const seenQ = new Set(); let qPainted = false;   // the first paint (past jobs on load) appears without animation
 function paintQueue() {
   const q = $("#queue");
-  q.innerHTML = sessions.map(s => `<div class="qi" role="button" tabindex="0" data-sid="${s.id}" data-st="${s.status}" aria-current="${s === active}">
+  q.closest(".rail")?.classList.toggle("has-q", sessions.length > 0);
+  const fresh = id => !seenQ.has(id) && seenQ.add(id);          // only newly added videos animate in; repaints stay still
+  const rows = sessions.map(s => `<div class="qi${fresh(s.id) && qPainted ? " new" : ""}" role="button" tabindex="0" data-sid="${s.id}" data-st="${s.status}" aria-current="${s === active}">
       <span class="n" title="${esc(s.name)}">${esc(s.name)}</span>
       <span class="s"><span class="dot"></span><span class="qs">${esc(qStatus(s))}</span></span>
       ${s.status === "running" || s.status === "queued" ? "" : `<button class="x" data-rm="${s.id}" aria-label="Remove ${esc(s.name)}">${icon("x")}</button>`}
       ${s.status === "running" ? `<span class="qb"><i style="width:${s.pct || 0}%"></i></span>` : ""}</div>`).join("");
+  q.innerHTML = sessions.length ? `<div class="qh"><span class="eyebrow">Videos</span><span class="ct">${sessions.length}</span></div><div class="ql">${rows}</div>` : "";
+  qPainted = true;
   $("#fname").textContent = sessions.length ? "Add more videos" : "Add videos";
 }
 function paintQueueItem(s) {
@@ -1008,7 +1013,8 @@ async function processRemote(sess) {
 }
 async function loadRemote(sess, job) {
   const res = job.result || { clips: [] };
-  const tr = await api(`api/jobs/${encodeURIComponent(sess.jid)}/transcript`);
+  // jobs from before transcripts were saved (1.1 and earlier) have none: open their clips anyway, without the transcript
+  const tr = await api(`api/jobs/${encodeURIComponent(sess.jid)}/transcript`).catch(e => { if (e.status === 404) return {}; throw e; });
   sess.words = tr.words || [];
   sess.quiet = tr.quiet?.db?.length ? { step: tr.quiet.step, thr: tr.quiet.thr, db: Float32Array.from(tr.quiet.db) } : null;
   sess.info = { duration: tr.duration || res.duration || 0, hasVideo: tr.has_video !== false,
@@ -1265,6 +1271,7 @@ function cardHTML(c) {
       </div></details>
     </div></article>`;
 }
+let boardSid = null, boardN = 0, enterUntil = 0;
 function renderBoard() {
   const s = active;
   $("#empty").classList.toggle("hide", !!s);
@@ -1297,7 +1304,10 @@ function renderBoard() {
     `For the whole video, use Chrome, Edge or Firefox on a computer, or ${linkDesktop("the free desktop app")}.</p>` : "";
   $("#bNotes").innerHTML = cap + `<details class="tips"><summary>Before you post: platform checklist</summary><div class="cols">${order.map(k => X.F.platforms[k]?.publish?.length ?
     `<div><h3>${esc(X.F.platforms[k].name)}</h3><ul>${X.F.platforms[k].publish.map(x => `<li>${esc(x)}</li>`).join("")}</ul><p class="st">Judge it by: ${X.F.platforms[k].judge.map(esc).join(" · ")}</p></div>` : "").join("")}</div></details>`;
-  out.innerHTML = list.length ? `<div class="clips">${list.map(cardHTML).join("")}</div>`
+  if (boardSid !== s.id || (boardN === 0 && list.length)) enterUntil = performance.now() + 120;   // stagger in on a new video, not on every repaint
+  boardSid = s.id; boardN = list.length;
+  const enter = performance.now() < enterUntil;          // back-to-back renders in the same moment keep the entrance
+  out.innerHTML = list.length ? `<div class="clips${enter ? " enter" : ""}">${list.map(cardHTML).join("")}</div>`
     : `<div class="card note" style="color:var(--mute);padding:24px;text-align:center;border:1px dashed var(--line2);border-radius:12px">No kept clips yet. Press <kbd>K</kbd> or the Keep button on a clip.</div>`;
   out.querySelectorAll(".logf").forEach(setMetricLabels);
 }
