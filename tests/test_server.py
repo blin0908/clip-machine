@@ -321,6 +321,35 @@ class ServerTest(unittest.TestCase):
             r.close()
         self.assertEqual(self.c.get("/studio.js").status_code, 403)               # the key still guards everything
 
+    def test_homepage_workspace_and_identity_routes(self):
+        for route in ("/", "/workspace.html"):
+            r = self.c.get(route, headers=self.k)
+            self.assertIn(b'id="file"', r.data, route)
+            self.assertIn(b'M5 5h6v3', r.data, route)
+            r.close()
+        r = self.c.get("/index.html", headers=self.k)
+        self.assertIn(b'home.js', r.data)
+        self.assertIn(b'href="workspace.html"', r.data)
+        self.assertNotIn(b'id="file"', r.data)
+        r.close()
+        for route in ("/icon.svg", "/icon-180.png", "/icon-512.png", "/brand/favicon.svg",
+                      "/brand/favicon-32.png", "/brand/favicon.ico", "/brand/logo-mark.svg", "/brand/lockup-horizontal.svg"):
+            r = self.c.get(route)
+            self.assertEqual(r.status_code, 200, route)
+            self.assertEqual(r.data, (HERE.parent / "docs" / route.lstrip("/")).read_bytes())
+            r.close()
+        for route in ("/workspace.html", "/index.html", "/home.js", "/privacy.html"):
+            self.assertEqual(self.c.get(route).status_code, 403, route)
+        for route in ("/brand/identity.json", "/brand/../app.py", "/brand/%2e%2e/app.py"):
+            r = self.c.get(route, headers=self.k, follow_redirects=True)
+            self.assertIn(r.status_code, (400, 404), route)
+            r.close()
+        for route in ("/workspace.html", "/index.html"):
+            r = self.c.get(route + "?key=" + server.KEY + "&platform=shorts")
+            self.assertEqual(r.status_code, 302)
+            self.assertEqual(r.headers["Location"], route + "?platform=shorts")
+        self.assertEqual(self.c.get("/manifest.json").json["icons"][1]["purpose"], "any maskable")
+
     def test_unfinished_job_cannot_be_edited_or_deleted(self):
         jid = self._done_job()
         server.jobs[jid]["status"] = "running"

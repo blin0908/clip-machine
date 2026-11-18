@@ -36,7 +36,7 @@ const SAMPLES = {
 const browser = await type.launch({ headless: true, ...launch });
 const page = await (await browser.newContext()).newPage();
 page.setDefaultTimeout(180000);
-await page.goto(BASE + "index.html");
+await page.goto(BASE + "workspace.html");
 const results = await page.evaluate(async ([samples, FULL]) => {
   const { FFmpeg } = await import("./vendor/ffmpeg/index.js");
   const { toBlobURL } = await import("./vendor/util/index.js");

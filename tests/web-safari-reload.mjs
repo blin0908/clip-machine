@@ -36,7 +36,7 @@ async function clip(file) {
   return { st: "timeout" };
 }
 
-await page.goto(BASE);
+await page.goto(BASE + "workspace.html");
 check(await page.locator("#freshTab").count() === 0, "a first visit shows no fresh-tab notice");
 const a = await clip("talk_40s.mp4");
 check(a.st === "done", "first video clips", `${a.s?.toFixed(0)} s`);

@@ -1,0 +1,814 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#05070c">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://cdn.jsdelivr.net blob: 'wasm-unsafe-eval'; worker-src 'self' blob: https://cdn.jsdelivr.net; connect-src 'self' https: blob: data: http://localhost:* http://127.0.0.1:*; img-src 'self' blob: data:; media-src 'self' blob: https:; font-src 'self' https://cdn.jsdelivr.net blob: data:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'self'; form-action 'self'">
+<meta name="referrer" content="strict-origin-when-cross-origin">
+<!-- Optional accounts (settings sync). Empty = no account button. Set to the deployed Worker, e.g. https://clip-machine-accounts.<you>.workers.dev -->
+<meta name="cm-api" content="">
+<meta name="description" content="Free AI clipper. Finds the best moments in a long video and cuts captioned clips for TikTok, Reels and Shorts, with a trim-and-caption studio, entirely in your browser.">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Clips">
+<link rel="manifest" href="manifest.json" crossorigin="use-credentials">
+<link rel="icon" href="brand/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="brand/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="alternate icon" href="brand/favicon.ico">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="preload" href="fonts/ui/instrumentsans-400-700.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="fonts/ui/archivo-400-800.woff2" as="font" type="font/woff2" crossorigin>
+<meta property="og:type" content="website">
+<meta property="og:title" content="Clip Machine — find the clips worth posting">
+<meta property="og:description" content="Free. No watermark. On your device.">
+<meta property="og:image" content="https://blin0908.github.io/clip-machine/og-image.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://blin0908.github.io/clip-machine/og-image.png">
+<title>Workspace · Clip Machine</title>
+<style>
+@font-face{font-family:"Archivo";src:url(fonts/ui/archivo-400-800.woff2) format("woff2");font-weight:400 800;font-stretch:62% 125%;font-display:swap}
+@font-face{font-family:"Instrument Sans";src:url(fonts/ui/instrumentsans-400-700.woff2) format("woff2");font-weight:400 700;font-display:swap}
+@font-face{font-family:"Plex Mono";src:url(fonts/ui/ibmplexmono-400.woff2) format("woff2");font-weight:400;font-display:swap}
+@font-face{font-family:"Plex Mono";src:url(fonts/ui/ibmplexmono-500.woff2) format("woff2");font-weight:500;font-display:swap}
+@font-face{font-family:"Cap Black";src:url(fonts/Montserrat-Black.ttf) format("truetype");font-weight:900;font-display:block}
+:root{
+  --ink:#05070c;--panel:#0a1120;--panel2:#111b30;--well:#03050a;--line:#18233a;--line2:#26344f;
+  --text:#e8edf6;--mute:#9aa6bd;--faint:#7e8aa2;
+  --slate:#7aa7ff;--slate-ink:#04102a;--slate-hi:#9cbeff;--rec:#ff5a4e;--good:#4cc38a;--warn:#f2a530;
+  --r:10px;--rail:356px;
+  --ease-out:cubic-bezier(.23,1,.32,1);--ease-io:cubic-bezier(.77,0,.175,1);--t-fast:140ms;--t-med:220ms;
+  --f-ui:"Instrument Sans",ui-sans-serif,system-ui,sans-serif;--f-disp:"Archivo","Instrument Sans",sans-serif;--f-mono:"Plex Mono",ui-monospace,Menlo,monospace;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{height:100%}
+body{margin:0;background:var(--ink);color:var(--text);font:15px/1.45 var(--f-ui);-webkit-font-smoothing:antialiased}
+button,input,select,textarea{font:inherit;color:inherit}
+button{border:0;background:none;cursor:pointer;border-radius:8px}
+button:disabled{cursor:not-allowed;opacity:.4}
+a{color:var(--text)}
+:focus-visible{outline:2px solid var(--slate);outline-offset:2px}
+.hide,[hidden]{display:none!important}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+svg.i{width:18px;height:18px;flex:none;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+kbd{font:500 11px var(--f-mono);border:1px solid var(--line2);border-bottom-width:2px;border-radius:5px;padding:1px 5px;color:var(--mute);background:var(--well)}
+.mono,.tc{font-family:var(--f-mono);font-variant-numeric:tabular-nums}
+.eyebrow{font:700 11px/1 var(--f-disp);font-stretch:125%;letter-spacing:.14em;text-transform:uppercase;color:var(--mute)}
+
+/* ---------- top bar */
+.top{display:flex;align-items:center;gap:14px;height:52px;padding:0 16px;border-bottom:1px solid var(--line);background:var(--ink);position:sticky;top:0;z-index:5}
+.brand{display:flex;align-items:center;gap:10px;text-decoration:none}
+.mark{display:block;width:26px;height:26px;flex:0 0 26px;color:var(--slate)}
+.word{font:800 15px/1 var(--f-disp);font-stretch:125%;letter-spacing:-.035em;text-transform:uppercase}
+.word b{color:var(--slate);font-weight:800}
+.tag{color:var(--mute);font-size:13px;margin-left:4px}
+.top .sp{flex:1}
+.ib{display:inline-grid;place-items:center;min-width:40px;height:40px;border-radius:8px;color:var(--mute)}
+.ib:hover{background:var(--panel2);color:var(--text)}
+.toplink{font-size:13px;color:var(--mute);text-decoration:none;padding:8px 10px;border-radius:8px;display:inline-flex;gap:6px;align-items:center;min-height:40px}
+.toplink:hover{color:var(--text);background:var(--panel2)}
+
+/* ---------- workspace */
+.app{display:grid;grid-template-columns:var(--rail) 1fr;min-height:calc(100% - 52px)}
+.rail{border-right:1px solid var(--line);padding:20px 20px 24px;display:flex;flex-direction:column;gap:20px;background:var(--panel)}
+.work{min-width:0;display:flex;flex-direction:column}
+@media(min-width:1000px){.rail{position:sticky;top:52px;height:calc(100vh - 52px);overflow-y:auto;scrollbar-width:thin}}
+@media(max-width:999px){.app{grid-template-columns:minmax(0,1fr)}.rail{border-right:0;border-bottom:1px solid var(--line)}.tag{display:none}}
+
+/* ---------- source */
+.seg{display:flex;gap:2px;background:var(--well);border:1px solid var(--line);border-radius:9px;padding:3px}
+.seg button{flex:1;display:inline-flex;gap:7px;align-items:center;justify-content:center;min-height:38px;padding:6px 8px;color:var(--mute);font-weight:600;font-size:14px;border-radius:7px;transition:background-color var(--t-med) var(--ease-out),color var(--t-fast),box-shadow var(--t-med)}
+.seg button:hover{color:var(--text)}
+.seg button[aria-selected=true],.seg button[aria-pressed=true]{background:var(--panel2);color:var(--text);box-shadow:inset 0 0 0 1px var(--line2)}
+.file{display:flex;flex-direction:column;align-items:center;gap:4px;text-align:center;border:1.5px dashed var(--line2);border-radius:12px;padding:22px 14px;cursor:pointer;font-weight:600;margin-top:12px;transition:border-color var(--t-fast) var(--ease-out),background-color var(--t-fast) var(--ease-out),transform var(--t-fast) var(--ease-out)}
+.file:active{transform:scale(.99)}
+.rail.has-q .file{flex-direction:row;justify-content:center;gap:10px;padding:12px 14px}
+.rail.has-q .file small{display:none}
+.file:hover svg.i{transform:translateY(-2px)}
+.file svg.i{transition:transform var(--t-med) var(--ease-out)}
+.file:hover,.file:focus-within{border-color:var(--slate);background:rgba(122,167,255,.04)}
+.file small{color:var(--mute);font-weight:400;font-size:13px}
+.file input{position:absolute;opacity:0;width:1px;height:1px}
+.file svg.i{width:22px;height:22px;color:var(--slate)}
+.linkrow{display:flex;gap:6px;margin-top:10px}
+.in,.linkrow input,.txt,select{background:var(--well);border:1px solid var(--line);border-radius:8px;color:var(--text);padding:10px 11px;font-size:15px;min-width:0;min-height:42px}
+.linkrow input{flex:1}
+.in:focus,.txt:focus,select:focus,.linkrow input:focus{outline:2px solid var(--slate);outline-offset:-1px;border-color:transparent}
+.txt{width:100%}
+.lhint{color:var(--mute);font-size:13px;margin:8px 0 0}
+.lprog{margin-top:10px}
+.lnote{margin-top:10px;background:#0c1a35;border:1px solid #23406f;border-radius:var(--r);padding:12px;font-size:14px}
+.lnote .btns{display:flex;flex-wrap:wrap;gap:6px;margin-top:10px}
+.lbtn{display:inline-flex;align-items:center;min-height:38px;background:var(--panel2);color:var(--text);padding:6px 12px;font-size:14px;font-weight:600;border-radius:8px;text-decoration:none;border:1px solid var(--line2)}
+.lbtn.pri{background:var(--slate);color:var(--slate-ink);border-color:var(--slate)}
+
+/* ---------- buttons */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:7px;min-height:40px;padding:8px 14px;font-weight:600;font-size:14px;border-radius:8px;background:var(--panel2);border:1px solid var(--line2);color:var(--text);text-decoration:none;white-space:nowrap;transition:background-color var(--t-fast) var(--ease-out),border-color var(--t-fast) var(--ease-out),transform var(--t-fast) var(--ease-out)}
+.btn:hover:not(:disabled){border-color:#3a4b70;background:#17233d}
+.btn:active:not(:disabled),.lbtn:active,.ib:active{transform:scale(.97)}
+.btn.pri{background:var(--slate);color:var(--slate-ink);border-color:var(--slate)}
+.btn.pri:hover:not(:disabled){background:#9cbeff;border-color:#9cbeff}
+.btn.sm{min-height:34px;padding:5px 10px;font-size:13px}
+.btn.ghost{background:none;border-color:transparent;color:var(--mute)}
+.vh{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+.lang{width:100%}
+.lang-hint{font-size:12.5px;color:var(--mute);margin:6px 0 0;line-height:1.45}
+.brand-hint{font-size:12.5px;color:var(--mute);margin:10px 0 8px;line-height:1.45}
+.logo-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.logo-prev{width:44px;height:44px;border-radius:8px;border:1px solid var(--line);display:grid;place-items:center;overflow:hidden;
+  background:repeating-conic-gradient(var(--panel2) 0 25%,var(--panel) 0 50%) 0 0/12px 12px}
+.logo-prev img{max-width:100%;max-height:100%;object-fit:contain}
+#brandOpts .chips.off{opacity:.45}
+.btn.ghost:hover:not(:disabled){color:var(--text);background:var(--panel2);border-color:transparent}
+.btn[aria-pressed=true]{background:rgba(122,167,255,.12);border-color:rgba(122,167,255,.5);color:var(--slate)}
+
+/* ---------- queue */
+.queue{display:flex;flex-direction:column;gap:8px}
+.queue:empty{display:none}
+.qh{display:flex;align-items:baseline;justify-content:space-between;padding:0 2px}
+.qh .ct{font:500 12px var(--f-mono);color:var(--faint)}
+.ql{display:flex;flex-direction:column;background:var(--well);border:1px solid var(--line);border-radius:12px;padding:4px;max-height:286px;overflow-y:auto;scrollbar-width:thin;overscroll-behavior:contain}
+.qi{position:relative;display:grid;grid-template-columns:1fr auto;gap:3px 8px;align-items:center;padding:10px 8px 10px 14px;border-radius:9px;cursor:pointer;text-align:left;width:100%;transition:background-color var(--t-fast) var(--ease-out)}
+.qi+.qi{margin-top:2px}
+.qi:hover{background:rgba(122,167,255,.06)}
+.qi:before{content:"";position:absolute;left:4px;top:12px;bottom:12px;width:3px;border-radius:3px;background:var(--slate);transform:scaleY(0);transition:transform var(--t-med) var(--ease-out)}
+.qi[aria-current=true]{background:var(--panel2)}
+.qi[aria-current=true]:before{transform:scaleY(1)}
+.qi.new{animation:qin .32s var(--ease-out) both}
+@keyframes qin{from{opacity:0;transform:translateY(-6px)}}
+.qi .n{font-weight:600;font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.qi .s{grid-column:1;font-size:12px;color:var(--mute);display:flex;gap:7px;align-items:center}
+.qi .s .dot{width:7px;height:7px;border-radius:50%;background:var(--faint);flex:none;transition:background-color var(--t-med)}
+.qi[data-st=running] .dot{background:var(--rec);animation:blink 1.2s infinite}
+.qi[data-st=done] .dot{background:var(--good)}
+.qi[data-st=error] .dot{background:var(--rec)}
+.qi[data-st=queued] .dot{background:var(--slate)}
+.qi .x{grid-row:1/3;grid-column:2;min-width:34px;height:34px;display:grid;place-items:center;color:var(--faint);border-radius:8px;opacity:.55;transition:opacity var(--t-fast),background-color var(--t-fast),color var(--t-fast)}
+.qi:hover .x,.qi:focus-within .x,.qi[aria-current=true] .x{opacity:1}
+@media(hover:none){.qi .x{opacity:1}}
+.qi .x:hover{color:var(--text);background:var(--panel2)}
+.qi .qb{grid-column:1/-1;height:3px;background:var(--line);border-radius:3px;overflow:hidden}
+.qi .qb i{display:block;height:100%;background:linear-gradient(90deg,var(--slate),#a9c6ff);width:0;transition:width .5s var(--ease-out)}
+@keyframes blink{50%{opacity:.35}}
+
+/* ---------- settings */
+.presets{display:flex;gap:6px;align-items:center}
+.presets select{flex:1}
+.psave{display:flex;gap:6px}
+.psave input{flex:1}
+.grp{border-top:1px solid var(--line);padding-top:6px}
+.grp+.grp{margin-top:-8px}
+.grp>summary{list-style:none;cursor:pointer;display:flex;align-items:center;justify-content:space-between;min-height:44px;border-radius:8px;transition:color var(--t-fast)}
+.grp>summary:hover .eyebrow{color:var(--text)}
+.grp .eyebrow{transition:color var(--t-fast)}
+.grp[open]>summary{margin-bottom:2px}
+.grp[open]>:not(summary){animation:fold .28s var(--ease-out) both}
+@keyframes fold{from{opacity:0;transform:translateY(-4px)}}
+.grp>summary::-webkit-details-marker{display:none}
+.grp>summary:after{content:"";width:8px;height:8px;border-right:1.8px solid var(--mute);border-bottom:1.8px solid var(--mute);transform:rotate(45deg) translateY(-3px);transition:transform var(--t-med) var(--ease-out)}
+.grp[open]>summary:after{transform:rotate(-135deg)}
+.grp .sumv{font-size:12px;color:var(--faint);margin-left:auto;margin-right:12px;font-family:var(--f-mono)}
+label.t{display:block;font-size:12px;color:var(--mute);margin:16px 0 8px;font-weight:600}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip{min-height:34px;padding:5px 11px;font-size:13px;font-weight:600;border-radius:8px;background:var(--well);border:1px solid var(--line);color:var(--text);transition:background-color var(--t-fast) var(--ease-out),border-color var(--t-fast) var(--ease-out),color var(--t-fast) var(--ease-out),transform var(--t-fast) var(--ease-out),box-shadow var(--t-fast)}
+.chip:active:not(:disabled){transform:scale(.95)}
+.chip:hover:not(:disabled){border-color:var(--line2)}
+.chip[aria-pressed=true]{background:var(--slate);color:var(--slate-ink);border-color:var(--slate)}
+.chip:disabled{opacity:.35}
+.chip.sw{width:34px;padding:0;position:relative}
+.chip.sw:before{content:"";position:absolute;inset:7px;border-radius:4px;background:var(--c)}
+.chip.sw[aria-pressed=true]{background:var(--well);box-shadow:0 0 0 2px var(--slate)}
+.chip.ar{display:inline-flex;align-items:center;gap:7px}
+.chip.ar i{display:inline-block;border:1.6px solid currentColor;border-radius:2px;width:calc(var(--w)*1px);height:calc(var(--h)*1px)}
+.chip.cust{display:inline-flex;align-items:center;gap:6px;padding:0 10px 0 4px;cursor:pointer}
+.chip.cust:focus-within{outline:2px solid var(--slate);outline-offset:2px}
+.chip.cust[data-on=true]{background:var(--well);color:var(--text);box-shadow:0 0 0 2px var(--slate)}
+.colour{width:26px;height:26px;padding:0;border:0;border-radius:5px;background:none;cursor:pointer}
+.colour::-webkit-color-swatch-wrapper{padding:6px}.colour::-webkit-color-swatch{border:0;border-radius:4px}
+.colour::-moz-color-swatch{border:0;border-radius:4px}
+.pnote{color:var(--mute);font-size:13px;margin:8px 0 0}
+.go{width:100%;min-height:50px;font:800 15px var(--f-disp);font-stretch:112%;letter-spacing:.06em;text-transform:uppercase;background:var(--slate);color:var(--slate-ink);border-radius:9px;display:flex;align-items:center;justify-content:center;gap:10px}
+.go:hover:not(:disabled){background:#9cbeff;box-shadow:0 8px 24px -10px rgba(122,167,255,.6)}
+.go:active:not(:disabled){transform:scale(.985)}
+.go kbd{background:rgba(0,0,0,.12);border-color:rgba(0,0,0,.25);color:var(--slate-ink)}
+.prog{background:var(--well);border:1px solid var(--line);border-radius:var(--r);padding:12px}
+.prog .row{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.prog strong{font-size:14px}
+.bar{height:6px;background:var(--line);border-radius:6px;overflow:hidden;margin:9px 0 7px}
+.bar i{display:block;height:100%;width:0;background:var(--rec);transition:width .4s}
+.lprog .bar i{background:var(--slate)}
+.msg{color:var(--mute);font-size:13px}
+.foot{color:var(--faint);font-size:12px;margin-top:auto;padding-top:8px}
+.foot.private{margin-top:0;padding-top:4px}
+.foot a.upd{color:var(--text);font-weight:600}
+.foot a{color:var(--mute)}
+
+/* ---------- work tabs */
+.wtabs{display:flex;align-items:flex-end;gap:6px;padding:0 28px;border-bottom:1px solid var(--line);position:sticky;top:52px;background:var(--ink);z-index:4}
+.wtab{position:relative;min-height:46px;padding:0 14px;font:700 12px var(--f-disp);font-stretch:118%;letter-spacing:.12em;text-transform:uppercase;color:var(--mute);border-radius:0}
+.wtab[aria-selected=true]{color:var(--text)}
+.wtab{transition:color var(--t-fast)}
+.wtab:hover{color:var(--text)}
+.wtab:after{content:"";position:absolute;left:12px;right:12px;bottom:-1px;height:2px;border-radius:2px;background:var(--slate);transform:scaleX(0);transition:transform var(--t-med) var(--ease-out)}
+.wtab[aria-selected=true]:after{transform:scaleX(1)}
+.wtab .ct{font-family:var(--f-mono);font-weight:500;letter-spacing:0;color:var(--faint);margin-left:4px}
+.wtabs .sp{flex:1}
+.pane{padding:28px;flex:1}
+.pane:not([hidden]){animation:pin .3s var(--ease-out)}
+@keyframes pin{from{opacity:0;transform:translateY(4px)}}
+@media(max-width:640px){.pane{padding:16px}.wtabs{padding:0 8px;top:52px}}
+
+/* ---------- empty state (hero) */
+.empty{max-width:780px;margin:7vh auto 4vh;text-align:center}
+.empty>*{animation:hero .6s var(--ease-out) both}
+.empty>:nth-child(2){animation-delay:60ms}.empty>:nth-child(3){animation-delay:120ms}.empty>:nth-child(4){animation-delay:180ms}.empty>:nth-child(5){animation-delay:240ms}.empty>:nth-child(6){animation-delay:300ms}
+@keyframes hero{from{opacity:0;transform:translateY(10px)}}
+.brand-h{margin:0;font:inherit}
+.empty h2{font:800 clamp(30px,5vw,52px)/1.02 var(--f-disp);font-stretch:80%;letter-spacing:-.01em;margin:28px 0 14px;text-transform:uppercase}
+.empty h2 em{font-style:normal;color:var(--slate)}
+.empty p{color:var(--mute);max-width:520px;margin:0 auto 24px;line-height:1.6}
+.reel{position:relative;height:96px;margin:0 auto;max-width:640px;border:1px solid var(--line);border-radius:10px;background:var(--well);overflow:hidden}
+.reel canvas{position:absolute;inset:0;width:100%;height:100%}
+.facts{display:flex;flex-wrap:wrap;justify-content:center;gap:8px 22px;margin:24px 0 0;padding:0;list-style:none;font-size:13px;color:var(--mute)}
+.facts li:before{content:"";display:inline-block;width:6px;height:6px;background:var(--slate);border-radius:1px;margin-right:8px;vertical-align:2px}
+.steps{display:grid;grid-template-columns:repeat(3,1fr);gap:28px;margin-top:48px;text-align:left}
+.steps div{border-top:2px solid var(--line2);padding-top:14px;font-size:13px;line-height:1.55;color:var(--mute)}
+.steps b{display:block;color:var(--text);font-size:14px;margin-bottom:4px}
+@media(max-width:640px){.steps{grid-template-columns:1fr}}
+
+/* ---------- board */
+.boardbar{display:flex;flex-wrap:wrap;align-items:center;gap:12px 14px;margin-bottom:20px}
+.boardbar h2{font:800 22px/1.1 var(--f-disp);font-stretch:85%;margin:0;text-transform:uppercase;letter-spacing:.01em;min-width:0;overflow-wrap:anywhere}
+.boardbar .sp{flex:1}
+.boardbar .meta{width:100%;max-width:78ch;color:var(--mute);font-size:13px;line-height:1.6;margin:-2px 0 0}
+.tips{margin:0 0 14px;border:1px solid var(--line);border-radius:var(--r);background:var(--panel)}
+.tips>summary{list-style:none;cursor:pointer;padding:10px 14px;font-size:13px;color:var(--mute);min-height:40px;display:flex;align-items:center}
+.tips>summary::-webkit-details-marker{display:none}
+.tips .cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;padding:0 14px 14px}
+.tips h3{font-size:13px;margin:0 0 4px}
+.tips ul{margin:0;padding-left:16px;font-size:13px;color:var(--mute)}
+.find{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 14px}
+.find .search{display:flex;align-items:center;gap:6px;flex:1;min-width:220px;max-width:520px;background:var(--well);border:1px solid var(--line);border-radius:8px;padding:0 8px 0 10px}
+.find .search:focus-within{outline:2px solid var(--slate);outline-offset:-1px}
+.find .search input{flex:1;min-width:0;background:none;border:0;outline:0;min-height:40px}
+.find .search kbd{font:12px var(--f-mono);color:var(--mute)}
+@media (pointer:coarse){.find .search kbd{display:none}}
+.find[aria-busy] .btn{opacity:.6}
+.findmsg{width:100%;margin:0;color:var(--mute);font-size:13px}
+.findmsg[data-kind=warn]{color:var(--text);border-left:3px solid var(--slate);padding-left:10px}
+.findmsg[data-kind=ok]{color:var(--text)}
+.capnote{border-left:3px solid var(--slate);padding:2px 0 2px 10px;color:var(--text);font-size:13px;margin:0 0 14px}
+.capnote a{color:var(--slate)}
+.capnote.fresh{display:flex;flex-direction:column;align-items:flex-start;gap:8px}
+.capnote.fresh .btn{color:var(--text);min-height:44px}
+.err{color:var(--text);font-size:14px;background:linear-gradient(180deg,rgba(255,90,78,.09),rgba(255,90,78,.03));border:1px solid rgba(255,90,78,.32);border-radius:var(--r);padding:16px 18px;max-width:640px;animation:pin .3s var(--ease-out)}
+.err-head{display:flex;gap:10px;align-items:flex-start;font-size:15px;line-height:1.35}
+.err-head svg.i{color:#ff8a80;margin-top:1px}
+.err-body{margin:8px 0 0 28px;color:var(--mute);white-space:pre-wrap;line-height:1.5}
+.err-body a,.err-head a{color:var(--slate)}
+.err-more{margin:12px 0 0 28px;color:var(--faint);font-size:13px}
+.err-more summary{cursor:pointer;width:max-content}
+.err-more summary:hover{color:var(--mute)}
+.err-more pre{margin:8px 0 0;padding:10px 12px;background:var(--well);border:1px solid var(--line);border-radius:8px;font:12px/1.5 var(--f-mono);white-space:pre-wrap;word-break:break-word;color:var(--mute);max-height:180px;overflow:auto}
+.err a{color:inherit;text-decoration:underline;font-weight:600}
+.card.msg{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:14px}
+.clips{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:22px}
+.clips.enter .clip{animation:cardin .45s var(--ease-out) both}
+.clips.enter .clip:nth-child(2){animation-delay:50ms}.clips.enter .clip:nth-child(3){animation-delay:100ms}.clips.enter .clip:nth-child(4){animation-delay:150ms}.clips.enter .clip:nth-child(5){animation-delay:200ms}.clips.enter .clip:nth-child(n+6){animation-delay:250ms}
+@keyframes cardin{from{opacity:0;transform:translateY(12px) scale(.985)}}
+.clip{background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden;display:flex;flex-direction:column;transition:border-color var(--t-fast),transform var(--t-med) var(--ease-out),box-shadow var(--t-med) var(--ease-out)}
+@media(hover:hover){.clip:hover{transform:translateY(-2px);border-color:var(--line2);box-shadow:0 14px 30px -18px rgba(0,0,0,.8)}}
+.clip.sel{border-color:var(--slate);box-shadow:0 0 0 1px var(--slate)}
+.clip .vw{position:relative;background:#000}
+.clip video{width:100%;display:block;aspect-ratio:var(--ar,9/16);max-height:420px;object-fit:contain;background:#000}
+.clip .badge{position:absolute;top:8px;left:8px;display:flex;gap:5px;pointer-events:none}
+.score{font:700 13px/1 var(--f-mono);background:var(--slate);color:var(--slate-ink);border-radius:5px;padding:5px 6px}
+.score.mine{background:var(--panel2);color:var(--text);border:1px solid var(--line2)}
+.rendering{position:absolute;inset:auto 8px 8px 8px;background:rgba(5,7,12,.9);border:1px solid var(--line2);border-radius:7px;padding:7px 9px;font-size:12px;display:flex;align-items:center;gap:8px}
+.rendering:before{content:"";width:8px;height:8px;border-radius:50%;background:var(--rec);animation:blink 1.2s infinite}
+.clip .b{padding:14px;display:flex;flex-direction:column;gap:10px;flex:1}
+.clip .row{display:flex;align-items:center;gap:8px}
+.clip .when{font:500 12px var(--f-mono);color:var(--mute)}
+.ttl{font-weight:700;font-size:15px;line-height:1.3;margin:0}
+.why{color:var(--mute);font-size:12px;margin:0}
+.mark-io.payoff .tc{color:#5fd38d}
+.nudge.wide{width:auto;padding:0 8px;gap:4px;display:inline-flex;align-items:center;font-size:12px;font-weight:700}
+.pay-msg{font-size:12px;color:var(--warn);max-width:46ch}.pay-msg button{color:var(--text);text-decoration:underline;font:inherit}
+.why.note{color:var(--warn)}
+.ready{align-self:flex-start;display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:700;color:var(--good);font-family:var(--f-mono)}
+.ready:before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor}
+.ready.warn{color:var(--warn)}
+.vtabs{display:flex;gap:2px;background:var(--well);border:1px solid var(--line);border-radius:8px;padding:2px}
+.vtabs button{flex:1;min-height:32px;font-size:12px;font-weight:700;color:var(--mute);border-radius:6px;font-family:var(--f-mono)}
+.vtabs button[aria-pressed=true]{background:var(--panel2);color:var(--text);box-shadow:inset 0 0 0 1px var(--line2)}
+.qc>summary{list-style:none;cursor:pointer;display:inline-flex;gap:8px;align-items:center;min-height:28px}
+.qc>summary::-webkit-details-marker{display:none}
+.qbadge{display:inline-flex;align-items:center;gap:5px;color:var(--good);font-size:12px;font-weight:700}
+.qbadge:before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor}
+.qbadge.warn{color:var(--warn)}
+.st{font-size:12px;color:var(--faint)}
+.check{list-style:none;padding:0;margin:6px 0 0;font-size:12px}
+.check li{padding:3px 0;display:flex;gap:6px;align-items:baseline}
+.check li b{font-weight:700;width:12px;flex:none}
+.check li.ok b{color:var(--good)}
+.check li.no{color:var(--mute)}
+.check li.no b{color:var(--rec)}
+.check span{color:var(--faint)}
+.ev{font-size:10px;text-transform:uppercase;letter-spacing:.06em;border:1px solid var(--line2);border-radius:4px;padding:0 4px;white-space:nowrap}
+.vmeta{color:var(--faint);font:12px var(--f-mono)}
+.acts{display:flex;gap:6px;margin-top:auto}
+.acts .grow{flex:1}
+.keep[aria-pressed=true]{color:var(--slate);border-color:rgba(122,167,255,.55);background:rgba(122,167,255,.1)}
+.keep[aria-pressed=true] svg{fill:currentColor}
+.more{border-top:1px solid var(--line);padding-top:8px}
+.more>summary{list-style:none;cursor:pointer;font-size:13px;color:var(--mute);min-height:32px;display:flex;align-items:center}
+.more>summary::-webkit-details-marker{display:none}
+.more .in-more{display:flex;flex-direction:column;gap:8px;padding-top:6px}
+.copyrow{display:flex;flex-wrap:wrap;gap:5px}
+.copyrow .btn{flex:1 1 45%}
+.logf{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.logf input,.logf select{min-height:38px;padding:7px 9px;font-size:14px}
+.logf .wide{grid-column:1/-1}
+.ltable{width:100%;border-collapse:collapse;font-size:13px}
+.ltable th,.ltable td{text-align:left;padding:8px 6px;border-top:1px solid var(--line);vertical-align:top}
+.ltable th{color:var(--mute);font-weight:600;font-size:12px}
+.lwrap{overflow-x:auto;background:var(--panel);border:1px solid var(--line);border-radius:var(--r)}
+.x{min-width:36px;min-height:36px;color:var(--mute)}
+.loghead{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-bottom:12px}
+.loghead p{flex:1;min-width:240px;margin:0;color:var(--mute);font-size:13px}
+.learn{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:14px;margin-bottom:14px;display:grid;grid-template-columns:minmax(0,1fr);gap:12px}
+.learn-h{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+.learn-h > div{flex:1;min-width:220px}
+.learn h3{margin:0 0 2px;font:800 14px var(--f-disp);font-stretch:110%;letter-spacing:.08em;text-transform:uppercase}
+.learn p{margin:0;color:var(--mute);font-size:13px}
+.learn ol{margin:0;padding-left:20px;color:var(--mute);font-size:13px;display:grid;gap:3px}
+.learn-sum{display:flex;flex-wrap:wrap;gap:10px;align-items:center;font-size:13px;color:var(--mute)}
+.learn-sum label{display:flex;gap:8px;align-items:center}
+.learn-sum select{min-height:36px;padding:6px 9px;font-size:13px}
+.learn-take{font-size:14px;color:var(--text)}
+.learn-take b{font-weight:700}
+.sig td:nth-child(2),.sig td:nth-child(3){font-family:var(--f-mono);font-variant-numeric:tabular-nums;white-space:nowrap}
+.sig tr.own td{border-bottom:2px solid var(--line2)}
+.rho{display:grid;grid-template-columns:72px auto;gap:8px;align-items:center;white-space:nowrap}
+.rho .bar{position:relative;height:8px;background:var(--well);border-radius:4px}
+.rho .bar::after{content:"";position:absolute;left:50%;top:-2px;bottom:-2px;width:1px;background:var(--line2)}
+.rho .bar i{position:absolute;top:0;bottom:0;border-radius:4px}
+.rho .up{background:var(--good)}.rho .down{background:var(--rec)}
+.learn details{font-size:13px;color:var(--mute)}
+.learn details ul{margin:6px 0 0;padding-left:18px;display:grid;gap:2px}
+@media (max-width:560px){.sig th:nth-child(2),.sig td:nth-child(2),.sig th:nth-child(3),.sig td:nth-child(3){display:none}}
+
+/* ---------- transcript */
+.txbar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:12px;position:sticky;top:99px;background:var(--ink);padding:6px 0;z-index:2}
+.txbar .search{display:flex;align-items:center;gap:4px;flex:1;min-width:220px;max-width:420px;background:var(--well);border:1px solid var(--line);border-radius:8px;padding:0 4px 0 10px}
+.txbar .search:focus-within{outline:2px solid var(--slate);outline-offset:-1px}
+.txbar .search input{flex:1;min-width:0;background:none;border:0;outline:0;min-height:40px}
+.txbar .hits{font:12px var(--f-mono);color:var(--mute);min-width:44px;text-align:right}
+.selinfo{font:13px var(--f-mono);color:var(--mute)}
+.tx{max-width:820px;font-size:16px;line-height:1.85}
+.tx p{margin:0 0 14px;display:grid;grid-template-columns:62px 1fr;gap:12px}
+.tx .tcb{font:500 12px/2.4 var(--f-mono);color:var(--faint);text-align:left;padding:0;min-height:28px;align-self:start}
+.tx .tcb:hover{color:var(--slate)}
+.tx w{cursor:text;border-radius:3px;padding:1px 0}
+.tx w.inclip{text-decoration:underline;text-decoration-color:var(--line2);text-underline-offset:5px}
+.tx w.on{background:rgba(122,167,255,.28);color:#fff}
+.tx w.hit{box-shadow:0 2px 0 var(--rec)}
+.tx w.hit.cur{background:rgba(255,90,78,.3)}
+.tx w.filler{color:var(--faint)}
+.tx ::selection{background:rgba(122,167,255,.35)}
+.txhint{color:var(--mute);font-size:13px;max-width:820px;margin:0 0 16px}
+
+/* ---------- studio */
+.studio{position:fixed;inset:0;z-index:20;background:var(--ink);display:grid;grid-template-rows:auto 1fr auto;animation:rise .2s ease-out}
+@keyframes rise{from{opacity:0;transform:translateY(8px)}}
+.st-head{display:flex;align-items:center;gap:10px;padding:8px 12px;border-bottom:1px solid var(--line);min-height:56px;flex-wrap:wrap}
+.st-id{display:flex;align-items:center;gap:10px;min-width:0;flex:1}
+.st-num{font:500 12px var(--f-mono);color:var(--slate);border:1px solid rgba(122,167,255,.5);border-radius:5px;padding:3px 6px;white-space:nowrap}
+.st-id h2{margin:0;font:700 15px var(--f-ui);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.st-state{font-size:13px;color:var(--mute);display:inline-flex;align-items:center;gap:7px}
+.st-state.busy:before{content:"";width:8px;height:8px;border-radius:50%;background:var(--rec);animation:blink 1.2s infinite}
+.st-body{display:grid;grid-template-columns:minmax(300px,1fr) minmax(320px,420px);min-height:0}
+.st-stage{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:14px;min-height:0;background:radial-gradient(ellipse at 50% 40%,#0e1730,var(--ink) 70%)}
+.st-frame{position:relative;height:min(100%,calc(100vh - 330px));max-width:100%;aspect-ratio:var(--ar,9/16);background:#000;overflow:hidden;border-radius:6px;box-shadow:0 0 0 1px var(--line2),0 20px 60px rgba(0,0,0,.5);container-type:size;touch-action:none}
+.st-frame.drag{cursor:grab}.st-frame.drag:active{cursor:grabbing}
+.st-frame video,.st-frame canvas{position:absolute;inset:0;width:100%;height:100%}
+.st-frame canvas{filter:blur(6px) brightness(.85);transform:scale(1.08)}
+.st-frame video{object-fit:contain}
+.st-frame.crop video{object-fit:cover}
+.st-frame canvas.split{filter:none;transform:none}
+.st-frame.split video:not(.out){opacity:0}
+body:not(.desk) .deskonly{display:none}
+.st-frame .out{object-fit:contain;background:#000}
+.st-safe{position:absolute;inset:0;pointer-events:none}
+.st-cap{position:absolute;left:var(--ml);right:var(--ml);text-align:center;font:900 calc(var(--fs)*1cqw)/1.12 var(--capfont,"Cap Black"),var(--f-disp);text-transform:uppercase;color:#fff;pointer-events:none;overflow-wrap:break-word}
+.st-cap.pop{-webkit-text-stroke:calc(var(--fs)*.16cqw) #000;paint-order:stroke fill;text-shadow:0 calc(var(--fs)*.05cqw) calc(var(--fs)*.06cqw) rgba(0,0,0,.6)}
+.st-cap.clean{text-transform:none;-webkit-text-stroke:calc(var(--fs)*.1cqw) #000;paint-order:stroke fill}
+.st-cap.boxed span.ln{background:#000;padding:.08em .22em;box-decoration-break:clone;-webkit-box-decoration-break:clone}
+.st-cap .hl{color:var(--hl)}
+.st-cap.pop .hl{font-size:1.12em;line-height:0}
+.st-logo{position:absolute;object-fit:contain;pointer-events:none}
+.st-hook{position:absolute;left:var(--ml);right:var(--ml);text-align:center;pointer-events:none;font:900 calc(var(--hs)*1cqw)/1.25 var(--capfont,"Cap Black"),var(--f-disp)}
+.st-hook span{background:#fff;color:#111;padding:.18em .35em;box-decoration-break:clone;-webkit-box-decoration-break:clone}
+.st-transport{display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:center}
+.st-transport .tc{font-size:13px;color:var(--mute);min-width:150px;text-align:center}
+.play{width:44px;height:44px;border-radius:50%;background:var(--text);color:var(--ink);display:grid;place-items:center}
+.play svg.i{fill:currentColor;stroke:none;width:16px;height:16px}
+.st-insp{border-left:1px solid var(--line);display:flex;flex-direction:column;min-height:0;background:var(--panel)}
+.st-insp .seg{margin:12px 12px 0}
+.st-scroll{overflow-y:auto;padding:4px 14px 14px;flex:1;scrollbar-width:thin}
+.lines{display:flex;flex-direction:column;gap:4px}
+.lnrow{display:grid;grid-template-columns:58px 1fr;gap:6px;align-items:center}
+.lnrow .tcb{font:500 12px var(--f-mono);color:var(--faint);min-height:38px;text-align:left;padding:0 4px;border-radius:6px}
+.lnrow .tcb:hover{color:var(--slate);background:var(--panel2)}
+.lnrow.now .tcb{color:var(--slate)}
+.lnrow.now .ed-line{border-color:rgba(122,167,255,.5)}
+.ed-line{min-height:38px;padding:7px 9px;font-size:14px}
+.ed-status{margin:0;padding:10px 14px;border-top:1px solid var(--line);font-size:13px;color:var(--mute);min-height:42px}
+.ed-status:empty{display:none}
+.st-tl{border-top:1px solid var(--line);background:var(--panel);padding:8px 12px 12px}
+.tl-bar{display:flex;align-items:center;gap:6px 12px;flex-wrap:wrap;margin-bottom:8px}
+.mark-io{display:flex;align-items:center;gap:4px}
+.mark-io .eyebrow{color:var(--slate);margin-right:4px}
+.mark-io .tc{font-size:13px;min-width:62px}
+.nudge{min-width:34px;min-height:34px;display:grid;place-items:center;border:1px solid var(--line2);border-radius:7px;color:var(--mute)}
+.nudge:hover{color:var(--text);border-color:#3a4b70}
+.tl-len{font:13px var(--f-mono);color:var(--mute)}
+.tl-len b{color:var(--text);font-weight:500}
+.tl-len .fit{color:var(--good)}.tl-len .off{color:var(--warn)}
+.tl-bar .sp{flex:1}
+.tlwrap{position:relative;height:132px;border:1px solid var(--line);border-radius:8px;background:var(--well);overflow:hidden}
+.tlwrap canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;cursor:crosshair}
+.tlwrap canvas:focus-visible{outline:2px solid var(--slate);outline-offset:-2px}
+@media(max-width:1000px){
+  .studio{grid-template-rows:auto auto auto auto;overflow-y:auto;display:block}
+  .st-body{grid-template-columns:1fr;display:block}
+  .st-stage{padding:10px}
+  .st-frame{height:auto;width:min(100%,calc(52vh * var(--arw,0.5625)))}
+  .st-insp{border-left:0;border-top:1px solid var(--line)}
+  .st-scroll{overflow:visible}
+  .st-tl{position:sticky;bottom:0;z-index:2}
+  .tlwrap{height:112px}
+}
+@media(max-width:560px){.st-head .kbdh,.go kbd,.toplink span{display:none}.st-transport .tc{min-width:0}.st-id{order:10;flex-basis:100%}.top{gap:8px;padding:0 10px}.word{font-size:14px;letter-spacing:.06em}}
+
+/* ---------- dialogs, drop, toast */
+dialog{background:var(--panel);color:var(--text);border:1px solid var(--line2);border-radius:12px;padding:0;max-width:min(560px,calc(100vw - 32px));width:100%}
+dialog::backdrop{background:rgba(0,0,0,.6)}
+.dlg-h{display:flex;align-items:center;justify-content:space-between;padding:12px 12px 0 18px}
+.dlg-h h2{font:800 15px var(--f-disp);font-stretch:118%;letter-spacing:.1em;text-transform:uppercase;margin:0}
+.keys{padding:6px 18px 18px;display:grid;grid-template-columns:1fr 1fr;gap:4px 24px}
+.keys h3{grid-column:1/-1;font-size:12px;color:var(--mute);margin:14px 0 4px;font-weight:600}
+.keys div{display:flex;justify-content:space-between;gap:10px;font-size:14px;padding:3px 0;border-bottom:1px solid var(--line)}
+@media(max-width:560px){.keys{grid-template-columns:1fr}}
+.dropzone{position:fixed;inset:10px;z-index:30;border:2px dashed var(--slate);border-radius:16px;background:rgba(5,7,12,.88);display:grid;place-items:center;font:800 26px var(--f-disp);font-stretch:90%;text-transform:uppercase;color:var(--slate);pointer-events:none}
+.toast{position:fixed;left:50%;bottom:calc(24px + env(safe-area-inset-bottom));transform:translate(-50%,8px);background:var(--text);color:var(--ink);padding:10px 16px;border-radius:9px;font-size:14px;font-weight:600;opacity:0;transition:opacity .22s var(--ease-out),transform .3s var(--ease-out);pointer-events:none;z-index:40;max-width:calc(100vw - 32px)}
+.toast.on{opacity:1;transform:translate(-50%,0)}
+.busy{opacity:.5;pointer-events:none}
+/* ---------- account (optional settings sync) */
+.acct-btn{display:inline-flex;align-items:center;gap:8px;min-height:36px;padding:0 12px;border-radius:999px;border:1px solid var(--line2);color:var(--text);font-size:13px;font-weight:600;position:relative;transition:background-color var(--t-fast) var(--ease-out),border-color var(--t-fast),transform var(--t-fast) var(--ease-out)}
+.acct-btn:hover{background:var(--panel2);border-color:#3a4b70}
+.acct-btn:active{transform:scale(.97)}
+.acct-btn:has(.acct-av){padding:0 4px 0 4px;border-color:transparent}
+.acct-av{display:inline-grid;place-items:center;width:28px;height:28px;border-radius:50%;background:var(--slate);color:var(--slate-ink);font:800 13px var(--f-disp)}
+.acct-av.lg{width:40px;height:40px;font-size:17px;flex:none}
+.acct-dot{position:absolute;right:2px;bottom:4px;width:9px;height:9px;border-radius:50%;background:var(--faint);box-shadow:0 0 0 2px var(--ink);transition:background-color var(--t-med)}
+.acct-btn[data-state=ok] .acct-dot{background:var(--good)}
+.acct-btn[data-state=syncing] .acct-dot{background:var(--slate);animation:blink 1s infinite}
+.acct-btn[data-state=offline] .acct-dot,.acct-btn[data-state=error] .acct-dot{background:var(--warn)}
+#acct[open]{animation:pin .28s var(--ease-out)}
+.acct-body{padding:14px 20px 22px;display:flex;flex-direction:column;gap:14px}
+.acct-why{margin:0;color:var(--mute);font-size:14px;line-height:1.55}
+.acct-why b{color:var(--text);font-weight:600}
+.acct-f{display:flex;flex-direction:column;gap:6px;font-size:13px;color:var(--mute);font-weight:600}
+.acct-f .in{width:100%}
+.acct-hint{margin:-6px 0 0;font-size:12px;color:var(--faint)}
+.acct-err{margin:0;color:#ff8a80;font-size:13px}
+.acct-go{min-height:46px;font-size:15px}
+.acct-fine{margin:0;color:var(--faint);font-size:12px;line-height:1.5}
+.acct-fine a{color:var(--mute)}
+.acct-who{display:flex;gap:12px;align-items:center}
+.acct-who b{display:block;font-size:15px;overflow-wrap:anywhere}
+.acct-st{font-size:12px;color:var(--mute)}
+.acct-st[data-state=ok]{color:var(--good)}.acct-st[data-state=offline],.acct-st[data-state=error]{color:var(--warn)}
+.acct-row{display:flex;flex-wrap:wrap;gap:8px}
+.acct-more{border-top:1px solid var(--line);padding-top:10px}
+.acct-more>summary{cursor:pointer;font-size:14px;color:var(--mute);min-height:32px;display:flex;align-items:center}
+.acct-more>summary:hover{color:var(--text)}
+.acct-more[open]>:not(summary){animation:fold .25s var(--ease-out) both}
+.acct-more form,.acct-more>.btn{display:flex;flex-direction:column;gap:10px;margin-top:10px;align-items:flex-start}
+.acct-more form .acct-f{align-self:stretch}
+.acct-more.danger>summary{color:#ff8a80}
+.btn.danger{border-color:rgba(255,90,78,.5);color:#ff8a80}
+.btn.danger:hover:not(:disabled){background:rgba(255,90,78,.12);border-color:#ff5a4e}
+@media(max-width:640px){.acct-btn span:not(.acct-av):not(.sr):not(.acct-dot){font-size:12px}}
+@media(prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-up" viewBox="0 0 24 24"><path d="M12 16V4m0 0L7 9m5-5 5 5M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3"/></symbol>
+  <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3A4 4 0 0 0 11 18.7l1-1"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="M7 4.5v15l13-7.5z"/></symbol>
+  <symbol id="i-pause" viewBox="0 0 24 24"><path d="M6 4h4v16H6zM14 4h4v16h-4z"/></symbol>
+  <symbol id="i-dl" viewBox="0 0 24 24"><path d="M12 4v12m0 0-5-5m5 5 5-5M4 20h16"/></symbol>
+  <symbol id="i-star" viewBox="0 0 24 24"><path d="m12 3.5 2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z"/></symbol>
+  <symbol id="i-edit" viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16zM13.5 6.5l4 4"/></symbol>
+  <symbol id="i-left" viewBox="0 0 24 24"><path d="m15 5-7 7 7 7"/></symbol>
+  <symbol id="i-right" viewBox="0 0 24 24"><path d="m9 5 7 7-7 7"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+  <symbol id="i-zip" viewBox="0 0 24 24"><path d="M5 4h14v16H5zM12 4v2m0 2v2m0 2v2m-1 0h2v3h-2z"/></symbol>
+  <symbol id="i-key" viewBox="0 0 24 24"><path d="M3 7h18v10H3zM6 10h1m3 0h1m3 0h1m3 0h1M7 14h10"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><path d="m20 20-4.5-4.5M11 17a6 6 0 1 0 0-12 6 6 0 0 0 0 12z"/></symbol>
+  <symbol id="i-up2" viewBox="0 0 24 24"><path d="m6 15 6-6 6 6"/></symbol>
+  <symbol id="i-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+  <symbol id="i-scis" viewBox="0 0 24 24"><path d="M6 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6zm0 12a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM8.1 7.9 20 18M8.1 16.1 20 6"/></symbol>
+  <symbol id="i-loop" viewBox="0 0 24 24"><path d="M17 2l3 3-3 3M4 11V9a4 4 0 0 1 4-4h12M7 22l-3-3 3-3M20 13v2a4 4 0 0 1-4 4H4"/></symbol>
+  <symbol id="i-share" viewBox="0 0 24 24"><path d="M12 15V3m0 0L8 7m4-4 4 4M5 12v7a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-7"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-minus" viewBox="0 0 24 24"><path d="M5 12h14"/></symbol>
+  <symbol id="i-fit" viewBox="0 0 24 24"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></symbol>
+</svg>
+
+<header class="top">
+  <h1 class="brand-h"><a class="brand" href="index.html" aria-label="Clip Machine home"><svg class="mark" viewBox="0 0 32 32" fill="currentColor" aria-hidden="true" focusable="false"><path d="M5 5h6v3H8v16h3v3H5zM21 5h6v22h-6v-3h3V8h-3z"/><path d="M11 14h3v7h-3zM15 10h3v15h-3zM19 15h3v5h-3z"/></svg><span class="word">Clip<b>Machine</b></span></a></h1>
+  <span class="tag">Long video in, ready-to-post clips out. Runs on your device.</span>
+  <span class="sp"></span>
+  <a class="toplink" href="https://github.com/blin0908/clip-machine/releases/latest" target="_blank" rel="noopener" aria-label="Desktop app"><svg class="i"><use href="#i-dl"/></svg><span>Desktop app</span></a>
+  <button class="ib" id="keysBtn" aria-label="Keyboard shortcuts (?)" title="Keyboard shortcuts (?)"><svg class="i"><use href="#i-key"/></svg></button>
+</header>
+
+<div class="app">
+  <aside class="rail" id="setup" aria-label="Source and settings">
+    <section>
+      <div class="seg" role="tablist" aria-label="Video source"><button type="button" role="tab" id="tabFile" aria-selected="true" aria-controls="paneFile"><svg class="i"><use href="#i-up"/></svg>Upload</button><button type="button" role="tab" id="tabLink" aria-selected="false" aria-controls="paneLink"><svg class="i"><use href="#i-link"/></svg>Paste a link</button></div>
+      <div id="paneFile" role="tabpanel" aria-labelledby="tabFile"><label class="file"><input type="file" id="file" accept="video/*,audio/*" multiple><svg class="i"><use href="#i-up"/></svg><span id="fname">Add videos</span><small>Drop files anywhere, or choose. MP4, MOV or audio.</small></label></div>
+      <div id="paneLink" role="tabpanel" aria-labelledby="tabLink" class="hide">
+        <form class="linkrow" id="linkForm" novalidate><input id="link" type="url" inputmode="url" enterkeyhint="go" placeholder="https://…/video.mp4" autocomplete="off" aria-label="Video link"><button type="submit" class="btn pri" id="linkGo">Get video</button></form>
+        <p class="lhint">Links that end in .mp4 or .mov load right here. YouTube, TikTok and most video sites need the free desktop app.</p>
+        <div id="lprog" class="lprog hide" role="progressbar" aria-label="Downloading video" aria-valuemin="0" aria-valuemax="100">
+          <div class="bar"><i id="lbar"></i></div>
+          <div class="prog row" style="padding:0;border:0;background:none"><span class="msg" id="lmsg"></span><button type="button" class="btn sm ghost" id="lcancel">Cancel</button></div>
+        </div>
+        <div id="lnote" class="lnote hide" role="status"></div>
+      </div>
+    </section>
+
+    <section class="queue" id="queue" aria-label="Videos"></section>
+
+    <section>
+      <label class="t" for="preset" style="margin-top:0">Preset</label>
+      <div class="presets"><select id="preset" aria-label="Preset"></select><button class="btn sm" id="psave" type="button">Save as…</button><button class="btn sm ghost" id="pdel" type="button" aria-label="Delete preset"><svg class="i"><use href="#i-x"/></svg></button></div>
+      <form class="psave hide" id="psaveForm" style="margin-top:6px"><input class="in" id="pname" maxlength="40" placeholder="Preset name, e.g. Podcast · TikTok" aria-label="Preset name"><button class="btn sm pri" type="submit">Save</button></form>
+    </section>
+
+    <details class="grp" open>
+      <summary><span class="eyebrow">Output</span></summary>
+      <label class="t">Posting to</label>
+      <div class="chips" data-k="platform"><button class="chip" data-v="all" aria-pressed="true">All</button><button class="chip" data-v="tiktok">TikTok</button><button class="chip" data-v="reels">Reels</button><button class="chip" data-v="shorts">Shorts</button><button class="chip" data-v="facebook">Facebook</button><button class="chip" data-v="snapchat">Snapchat</button><button class="chip" data-v="x">X</button></div>
+      <p class="pnote" id="pnote"></p>
+      <label class="t">Moments per video</label>
+      <div class="chips" data-k="n"><button class="chip" data-v="1">1</button><button class="chip" data-v="3" aria-pressed="true">3</button><button class="chip" data-v="5">5</button><button class="chip" data-v="8">8</button></div>
+      <label class="t">Cuts per moment</label>
+      <div class="chips" data-k="version"><button class="chip" data-v="both" aria-pressed="true" id="vboth">Short + long</button><button class="chip" data-v="short" id="vshort">Short only</button><button class="chip" data-v="long" id="vlong">Long only</button></div>
+      <label class="t">Frame</label>
+      <div class="chips" data-k="format"><button class="chip ar" data-v="9:16" aria-pressed="true"><i style="--w:9;--h:16"></i>9:16</button><button class="chip ar" data-v="4:5"><i style="--w:11;--h:14"></i>4:5</button><button class="chip ar" data-v="1:1"><i style="--w:13;--h:13"></i>1:1</button><button class="chip ar" data-v="16:9"><i style="--w:18;--h:10"></i>16:9</button></div>
+      <div id="qualityRow"><label class="t">Export</label>
+      <div class="chips" data-k="quality"><button class="chip" data-v="fast" aria-pressed="true">Fast · 720p</button><button class="chip" data-v="hd">Full HD · 1080p</button></div></div>
+    </details>
+
+    <details class="grp" id="more">
+      <summary><span class="eyebrow">Captions &amp; look</span><span class="sumv" id="lookSum"></span></summary>
+      <div class="chips" data-k="captions" style="margin-top:10px"><button class="chip" data-v="1" aria-pressed="true">Word-by-word captions</button><button class="chip" data-v="0">No captions</button></div>
+      <label class="t">Style</label>
+      <div class="chips" data-k="style"><button class="chip" data-v="pop" aria-pressed="true">Pop</button><button class="chip" data-v="clean">Clean</button><button class="chip" data-v="boxed">Boxed</button></div>
+      <label class="t" id="hlLabel">Highlight colour</label>
+      <div class="chips" data-k="hl" role="group" aria-labelledby="hlLabel"><button class="chip sw" data-v="#FFF000" style="--c:#FFF000" aria-label="Yellow" aria-pressed="true"></button><button class="chip sw" data-v="#47E5FF" style="--c:#47E5FF" aria-label="Cyan"></button><button class="chip sw" data-v="#6CFF8F" style="--c:#6CFF8F" aria-label="Green"></button><button class="chip sw" data-v="#FF4FA3" style="--c:#FF4FA3" aria-label="Pink"></button><button class="chip sw" data-v="#FF8A1F" style="--c:#FF8A1F" aria-label="Orange"></button><label class="chip cust" title="Pick any colour"><input type="color" class="colour" id="hlc" value="#fff000" aria-label="Custom highlight colour">Custom</label></div>
+      <label class="t">Size</label>
+      <div class="chips" data-k="size"><button class="chip" data-v="s">Small</button><button class="chip" data-v="m" aria-pressed="true">Medium</button><button class="chip" data-v="l">Large</button></div>
+      <label class="t">Position</label>
+      <div class="chips" data-k="pos"><button class="chip" data-v="bottom" aria-pressed="true">Lower third</button><button class="chip" data-v="middle">Middle</button><button class="chip" data-v="top">Upper</button></div>
+      <div class="chips" data-k="hook" style="margin-top:10px"><button class="chip" data-v="1" aria-pressed="true">Headline for first 3s</button><button class="chip" data-v="0">No headline</button></div>
+      <label class="t">Framing</label>
+      <div class="chips" data-k="layout"><button class="chip" data-v="fit" aria-pressed="true">Full frame + blur</button><button class="chip" data-v="crop">Fill (crop)</button><button class="chip deskonly" data-v="auto" disabled title="Fills the frame and follows whoever is talking">Follow speaker</button><button class="chip deskonly" data-v="split" disabled title="Two people, one in each half: for podcasts and interviews">Split screen</button></div>
+      <p class="hint deskonly" id="layoutHint" hidden></p>
+    </details>
+
+    <details class="grp" id="brandGrp">
+      <summary><span class="eyebrow">Brand</span><span class="sumv" id="brandSum"></span></summary>
+      <p class="hint brand-hint">Your logo in a top corner of every clip, under the captions. PNG with a transparent background works best.</p>
+      <div class="logo-row">
+        <div class="logo-prev" id="logoPrev" hidden><img alt="Your logo"></div>
+        <button class="btn sm" id="logoPick" type="button">Add a logo</button>
+        <input type="file" id="logoFile" accept="image/png,image/jpeg,image/webp" class="vh">
+        <button class="btn sm ghost" id="logoDel" type="button">Remove</button>
+      </div>
+      <div id="brandOpts">
+        <div class="chips" data-k="logo" style="margin-top:10px"><button class="chip" data-v="1" aria-pressed="true">Logo on clips</button><button class="chip" data-v="0">No logo</button></div>
+        <label class="t">Corner</label>
+        <div class="chips" data-k="lpos"><button class="chip" data-v="tl" aria-pressed="true">Top left</button><button class="chip" data-v="tr">Top right</button></div>
+        <label class="t">Size</label>
+        <div class="chips" data-k="lsize"><button class="chip" data-v="s">Small</button><button class="chip" data-v="m" aria-pressed="true">Medium</button><button class="chip" data-v="l">Large</button></div>
+        <label class="t">Opacity</label>
+        <div class="chips" data-k="lop"><button class="chip" data-v="0.5">50%</button><button class="chip" data-v="0.7" aria-pressed="true">70%</button><button class="chip" data-v="1">100%</button></div>
+      </div>
+    </details>
+
+    <details class="grp">
+      <summary><span class="eyebrow">Edits</span></summary>
+      <div class="chips" data-k="enhance" style="margin-top:10px"><button class="chip" data-v="1" aria-pressed="true">Enhance audio + picture</button><button class="chip" data-v="0">No enhancement</button></div>
+      <div class="chips" data-k="tighten" style="margin-top:6px"><button class="chip" data-v="1" aria-pressed="true">Cut dead air + um/uh</button><button class="chip" data-v="0">Keep pauses</button></div>
+      <label class="t" for="cta">End card question (long cut)</label>
+      <input id="cta" class="txt" maxlength="80" placeholder="e.g. Which one would you pick?">
+    </details>
+
+    <details class="grp">
+      <summary><span class="eyebrow">Speech</span><span class="sumv" id="langSum"></span></summary>
+      <label class="t" for="lang">Spoken language</label>
+      <select id="lang" class="lang"></select>
+      <p class="hint lang-hint" id="langNote" hidden></p>
+      <p class="hint lang-hint">Hype words and laughter are recognised in 15 languages, including Spanish, Hindi, Arabic, Japanese and Chinese. Other languages are scored on energy, pacing, the opening and structure.</p>
+      <label class="t">Speech model</label>
+      <div class="chips" data-k="model"><button class="chip" data-v="Xenova/whisper-tiny.en">Fastest · 40 MB</button><button class="chip" data-v="Xenova/whisper-base.en" aria-pressed="true">Balanced · 80 MB</button></div>
+    </details>
+
+    <button class="go" id="go" disabled><span id="goLabel">Find the moments</span><kbd>⌘↵</kbd></button>
+
+    <section class="prog hide" id="prog" aria-live="polite">
+      <div class="row"><strong id="plabel">Working…</strong><span class="tc msg" id="ppct">0%</span></div>
+      <div class="bar"><i id="pbar"></i></div>
+      <div class="row"><span class="msg" id="pmsg"></span><button class="btn sm ghost" id="cancel">Cancel</button></div>
+    </section>
+
+    <p class="foot">Every clip passes a quality gate (format, length, loudness, clipping, black frames, silence, frozen picture) before you see it. <a href="https://github.com/blin0908/clip-machine">Source &amp; research</a>. Only clip videos you have the rights to.</p>
+    <p class="foot private">Your videos never leave this device: transcribing, scoring and rendering all run here. <a href="https://blin0908.github.io/clip-machine/privacy.html" target="_blank" rel="noopener">Privacy</a>. <span id="ver"></span></p>
+  </aside>
+
+  <main class="work">
+    <div class="wtabs" role="tablist" aria-label="Workspace">
+      <button class="wtab" role="tab" id="tClips" aria-selected="true" aria-controls="pClips">Clips<span class="ct" id="nClips"></span></button>
+      <button class="wtab" role="tab" id="tTx" aria-selected="false" aria-controls="pTx">Transcript</button>
+      <button class="wtab" role="tab" id="tLog" aria-selected="false" aria-controls="pLog">Results log</button>
+    </div>
+
+    <section class="pane" id="pClips" role="tabpanel" aria-labelledby="tClips">
+      <div class="empty" id="empty">
+        <div class="reel" aria-hidden="true"><canvas id="reel"></canvas></div>
+        <h2>Find the <em>clips</em> worth posting</h2>
+        <p>Add a podcast, stream or talk. Clip Machine transcribes it, scores every moment, and cuts captioned clips you can trim, restyle and export in the studio.</p>
+        <button class="btn pri" type="button" id="emptyAdd"><svg class="i"><use href="#i-up"/></svg>Add videos</button>
+        <ul class="facts"><li>Free, no watermark</li><li>No account</li><li>Your video never leaves this device</li></ul>
+        <div class="steps"><div><b>Queue your videos</b>Drop several at once. They run one after another with the same settings.</div><div><b>Review the board</b>Keep the best, open any clip in the studio to fix the trim or captions.</div><div><b>Export in one go</b>Download the kept clips as a .zip with captions and .srt files.</div></div>
+      </div>
+      <div id="board" class="hide">
+        <div class="boardbar">
+          <h2 id="bTitle"></h2>
+          <span class="sp"></span>
+          <div class="seg" role="group" aria-label="Show"><button type="button" id="fAll" aria-pressed="true">All</button><button type="button" id="fKept" aria-pressed="false">Kept <span class="ct mono" id="nKept"></span></button></div>
+          <select id="sort" aria-label="Sort clips"><option value="score">Best first</option><option value="time">In video order</option></select>
+          <button class="btn" id="zip" type="button"><svg class="i"><use href="#i-zip"/></svg><span id="zipLabel">Download all</span></button>
+          <p class="meta" id="bMeta"></p>
+        </div>
+        <form class="find" id="findForm" role="search" aria-label="Find clips by description">
+          <div class="search"><svg class="i" aria-hidden="true" style="color:var(--mute)"><use href="#i-search"/></svg><input id="findq" type="search" enterkeyhint="search" autocomplete="off" maxlength="200" placeholder="e.g. the part about pricing" aria-label="Describe the moment you want" aria-describedby="findMsg"><kbd aria-hidden="true">/</kbd></div>
+          <button class="btn" id="findGo" type="submit">Find clips</button>
+          <p class="findmsg" id="findMsg" role="status" aria-live="polite" hidden></p>
+        </form>
+        <div id="bNotes"></div>
+      </div>
+      <section id="out" aria-live="polite"></section>
+    </section>
+
+    <section class="pane" id="pTx" role="tabpanel" aria-labelledby="tTx" hidden>
+      <div class="txbar">
+        <div class="search"><svg class="i" style="color:var(--mute)"><use href="#i-search"/></svg><input id="txq" type="search" placeholder="Search the transcript" aria-label="Search the transcript"><span class="hits" id="txhits"></span><button class="ib" id="txprev" aria-label="Previous match"><svg class="i"><use href="#i-up2"/></svg></button><button class="ib" id="txnext" aria-label="Next match"><svg class="i"><use href="#i-down"/></svg></button></div>
+        <span class="selinfo" id="selinfo"></span>
+        <button class="btn pri" id="mkclip" disabled><svg class="i"><use href="#i-scis"/></svg>Make clip from selection</button>
+      </div>
+      <p class="txhint" id="txhint">Select words (drag, or click one word then Shift-click another) to make your own clip from any part of the video.</p>
+      <div class="tx" id="tx"></div>
+    </section>
+
+    <section class="pane" id="pLog" role="tabpanel" aria-labelledby="tLog" hidden>
+      <div class="loghead"><p>Judge each cut by its job. Log the numbers at 24 hours, 72 hours, and 7 days, and compare clips at the same age. <span id="logStorage">Saved in this browser.</span> Log a post from a clip's "More" panel.</p><button class="btn" id="csv"><svg class="i"><use href="#i-dl"/></svg>Export CSV</button></div>
+      <div class="learn" id="learn">
+        <div class="learn-h">
+          <div><h3>Learn from your results</h3><p>Import a YouTube Studio export to see which scoring signals your best clips share.</p></div>
+          <button class="btn" id="studioPick" type="button"><svg class="i"><use href="#i-up"/></svg>Import YouTube Studio CSV</button>
+          <input type="file" id="studioFile" class="vh" accept=".csv,text/csv" tabindex="-1" aria-hidden="true">
+        </div>
+        <div id="learnOut"></div>
+      </div>
+      <div id="logtbl" class="msg">No results logged yet.</div>
+    </section>
+  </main>
+</div>
+
+<div id="studio" class="studio hide" role="dialog" aria-modal="true" aria-labelledby="stTitle">
+  <header class="st-head">
+    <button class="ib" id="stClose" aria-label="Back to the board (Esc)" title="Back to the board (Esc)"><svg class="i"><use href="#i-left"/></svg></button>
+    <div class="st-id"><span class="st-num" id="stNum"></span><h2 id="stTitle"></h2></div>
+    <div class="vtabs" id="stCuts" role="group" aria-label="Cut"></div>
+    <button class="ib" id="stPrev" aria-label="Previous clip ([)" title="Previous clip ["><svg class="i"><use href="#i-up2"/></svg></button>
+    <button class="ib" id="stNext" aria-label="Next clip (])" title="Next clip ]"><svg class="i"><use href="#i-down"/></svg></button>
+    <span class="st-state" id="stState" role="status"></span>
+    <button class="btn ghost" id="stReset" type="button">Reset</button>
+    <button class="btn pri" id="stRender" data-rerender type="button">Render <kbd class="kbdh">⌘↵</kbd></button>
+  </header>
+  <div class="st-body">
+    <section class="st-stage" aria-label="Preview">
+      <div class="st-frame" id="stFrame">
+        <canvas id="stBg" width="36" height="64" aria-hidden="true"></canvas>
+        <video id="stVid" playsinline preload="auto"></video>
+        <canvas id="stSplit" class="split" width="540" height="960" aria-hidden="true" hidden></canvas>
+        <video id="stOut" class="out hide" playsinline controls preload="metadata"></video>
+        <img class="st-logo" id="stLogo" alt="" aria-hidden="true" hidden>
+        <div class="st-hook" id="stHook" aria-hidden="true"></div>
+        <div class="st-cap" id="stCap" aria-hidden="true"></div>
+      </div>
+      <div class="st-transport">
+        <button class="play" id="stPlay" aria-label="Play selection (Space)"><svg class="i"><use href="#i-play"/></svg></button>
+        <span class="tc" id="stTC">0:00.0</span>
+        <div class="seg" role="group" aria-label="Preview source"><button type="button" id="stSrc" aria-pressed="true" title="Live preview of your edit, before rendering">Preview</button><button type="button" id="stRend" aria-pressed="false">Rendered</button></div>
+        <button class="btn sm" id="stLoop" aria-pressed="true" title="Loop the selection (L)"><svg class="i"><use href="#i-loop"/></svg>Loop</button>
+      </div>
+    </section>
+    <section class="st-insp" aria-label="Clip settings">
+      <div class="seg" role="tablist" aria-label="Inspector"><button type="button" role="tab" id="stTabText" aria-selected="true" aria-controls="stText">Text</button><button type="button" role="tab" id="stTabLook" aria-selected="false" aria-controls="stLook">Look</button></div>
+      <div class="st-scroll">
+        <div id="stText" role="tabpanel" aria-labelledby="stTabText">
+          <label class="t" for="stHeadline">Headline (first 3 seconds)</label>
+          <input class="txt ed-title" id="stHeadline" maxlength="90">
+          <label class="t">Captions <span class="st">· fix misheard words; click a time to jump there</span></label>
+          <div class="lines" id="stLines"></div>
+          <div id="stCtaWrap"><label class="t" for="stCta">End card question</label><input class="txt" id="stCta" maxlength="80" placeholder="Optional, shows for the last 3 seconds"></div>
+        </div>
+        <div id="stLook" role="tabpanel" aria-labelledby="stTabLook" hidden>
+          <div class="chips" data-ek="captions" style="margin-top:10px"><button class="chip" data-v="1">Captions on</button><button class="chip" data-v="0">Off</button></div>
+          <label class="t">Caption style</label>
+          <div class="chips" data-ek="style"><button class="chip" data-estyle="pop" data-v="pop">Pop</button><button class="chip" data-estyle="clean" data-v="clean">Clean</button><button class="chip" data-estyle="boxed" data-v="boxed">Boxed</button></div>
+          <label class="t" id="stHlLabel">Highlight colour</label>
+          <div class="chips" data-ek="hl" role="group" aria-labelledby="stHlLabel"><button class="chip sw" data-v="#FFF000" style="--c:#FFF000" aria-label="Yellow"></button><button class="chip sw" data-v="#47E5FF" style="--c:#47E5FF" aria-label="Cyan"></button><button class="chip sw" data-v="#6CFF8F" style="--c:#6CFF8F" aria-label="Green"></button><button class="chip sw" data-v="#FF4FA3" style="--c:#FF4FA3" aria-label="Pink"></button><button class="chip sw" data-v="#FF8A1F" style="--c:#FF8A1F" aria-label="Orange"></button><label class="chip cust" title="Pick any colour"><input type="color" class="colour" id="stHlc" aria-label="Custom highlight colour">Custom</label></div>
+          <label class="t">Size</label>
+          <div class="chips" data-ek="size"><button class="chip" data-v="s">Small</button><button class="chip" data-v="m">Medium</button><button class="chip" data-v="l">Large</button></div>
+          <label class="t">Position</label>
+          <div class="chips" data-ek="pos"><button class="chip" data-v="bottom">Lower third</button><button class="chip" data-v="middle">Middle</button><button class="chip" data-v="top">Upper</button></div>
+          <div class="chips" data-ek="hook" style="margin-top:10px"><button class="chip" data-v="1">Headline on</button><button class="chip" data-v="0">Off</button></div>
+          <label class="t">Frame</label>
+          <div class="chips" data-ek="format"><button class="chip ar" data-v="9:16"><i style="--w:9;--h:16"></i>9:16</button><button class="chip ar" data-v="4:5"><i style="--w:11;--h:14"></i>4:5</button><button class="chip ar" data-v="1:1"><i style="--w:13;--h:13"></i>1:1</button><button class="chip ar" data-v="16:9"><i style="--w:18;--h:10"></i>16:9</button></div>
+          <label class="t">Framing</label>
+          <div class="chips" data-ek="layout"><button class="chip" data-v="fit">Full frame + blur</button><button class="chip" data-v="crop">Fill (crop)</button><button class="chip deskonly" data-v="auto">Follow speaker</button><button class="chip deskonly" data-v="split">Split screen</button></div>
+          <p class="pnote" id="stCropHint">With Fill, drag the picture to reframe it.</p>
+          <p class="pnote" id="stFaceNote" role="status" hidden></p>
+          <div id="stBrand">
+            <label class="t">Logo</label>
+            <div class="chips" data-ek="logo"><button class="chip" data-v="1">On</button><button class="chip" data-v="0">Off</button></div>
+            <div class="chips" data-ek="lpos" style="margin-top:6px"><button class="chip" data-v="tl">Top left</button><button class="chip" data-v="tr">Top right</button></div>
+            <div class="chips" data-ek="lsize" style="margin-top:6px"><button class="chip" data-v="s">Small</button><button class="chip" data-v="m">Medium</button><button class="chip" data-v="l">Large</button></div>
+          </div>
+          <label class="t">Edits</label>
+          <div class="chips" data-ek="tighten"><button class="chip" data-v="1">Cut dead air + um/uh</button><button class="chip" data-v="0">Keep pauses</button></div>
+        </div>
+      </div>
+      <p class="ed-status" id="stStatus" role="status"></p>
+    </section>
+  </div>
+  <section class="st-tl" aria-label="Timeline">
+    <div class="tl-bar">
+      <div class="mark-io"><span class="eyebrow">In</span><span class="tc" id="stIn"></span><button class="nudge" data-nudge="start:-1" aria-label="Start one word earlier"><svg class="i"><use href="#i-left"/></svg></button><button class="nudge" data-nudge="start:1" aria-label="Start one word later"><svg class="i"><use href="#i-right"/></svg></button></div>
+      <div class="mark-io"><span class="eyebrow">Out</span><span class="tc" id="stOutTC"></span><button class="nudge" data-nudge="end:-1" aria-label="End one word earlier"><svg class="i"><use href="#i-left"/></svg></button><button class="nudge" data-nudge="end:1" aria-label="End one word later"><svg class="i"><use href="#i-right"/></svg></button></div>
+      <span class="tl-len" id="stLen"></span>
+      <div class="mark-io payoff"><button class="nudge wide" id="stPayoff" aria-label="Mark the payoff at the playhead (P)" title="The moment this clip has to reach: a reveal, a punchline, an answer (P)"><svg class="i"><use href="#i-plus"/></svg>Payoff</button><span class="tc" id="stPayTC"></span><button class="nudge" id="stPayClear" aria-label="Clear the payoff marker" hidden><svg class="i"><use href="#i-x"/></svg></button></div>
+      <span class="pay-msg" id="stPayMsg" role="status"></span>
+      <span class="sp"></span>
+      <button class="nudge" id="stZoomOut" aria-label="Zoom out (-)"><svg class="i"><use href="#i-minus"/></svg></button>
+      <button class="nudge" id="stZoomIn" aria-label="Zoom in (+)"><svg class="i"><use href="#i-plus"/></svg></button>
+      <button class="nudge" id="stZoomFit" aria-label="Fit the clip (0)"><svg class="i"><use href="#i-fit"/></svg></button>
+    </div>
+    <div class="tlwrap"><canvas id="stTl" tabindex="0" aria-label="Timeline. Drag the yellow handles to trim, click to move the playhead. Keys: I and O mark in and out, arrows step a word." role="application"></canvas></div>
+  </section>
+</div>
+
+<dialog id="keys" aria-labelledby="keysTitle">
+  <div class="dlg-h"><h2 id="keysTitle">Shortcuts</h2><button class="ib" data-close aria-label="Close"><svg class="i"><use href="#i-x"/></svg></button></div>
+  <div class="keys">
+    <h3>Anywhere</h3>
+    <div>Find the moments <span><kbd>⌘</kbd> <kbd>↵</kbd></span></div><div>This list <kbd>?</kbd></div>
+    <h3>Clips board</h3>
+    <div>Select clip <span><kbd>←</kbd> <kbd>→</kbd></span></div><div>Open in studio <kbd>↵</kbd></div>
+    <div>Keep / unkeep <kbd>K</kbd></div><div>Play / pause <kbd>Space</kbd></div>
+    <div>Find clips by description <kbd>/</kbd></div>
+    <h3>Studio</h3>
+    <div>Play / pause <kbd>Space</kbd></div><div>Back / forward 1s <span><kbd>J</kbd> <kbd>L</kbd></span></div>
+    <div>Mark in / out <span><kbd>I</kbd> <kbd>O</kbd></span></div><div>Mark the payoff (reveal, punchline) <span><kbd>P</kbd></span></div><div>Go to in / out <span><kbd>⇧I</kbd> <kbd>⇧O</kbd></span></div>
+    <div>Step a word <span><kbd>←</kbd> <kbd>→</kbd></span></div><div>Zoom <span><kbd>−</kbd> <kbd>+</kbd> <kbd>0</kbd></span></div>
+    <div>Previous / next clip <span><kbd>[</kbd> <kbd>]</kbd></span></div><div>Render <span><kbd>⌘</kbd> <kbd>↵</kbd></span></div>
+    <div>Back to the board <kbd>Esc</kbd></div><div>Free drag (no snapping) <span><kbd>Alt</kbd> + drag</span></div>
+  </div>
+</dialog>
+<div class="dropzone hide" id="dropzone">Drop to add to the queue</div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<script type="module" src="app.js"></script>
+<script type="module" src="account.js"></script>
+</body>
+</html>

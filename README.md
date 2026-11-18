@@ -4,7 +4,11 @@ A free AI clipper. Give it a long video and it finds the strongest moments and c
 
 **No account, no watermark, no subscription.** It runs on your own device: your video is never uploaded anywhere.
 
-### ▶ Use it now: **https://blin0908.github.io/clip-machine/**
+### ▶ Use it now: **https://blin0908.github.io/clip-machine/workspace.html**
+
+[Explore the homepage](https://blin0908.github.io/clip-machine/).
+
+![Clip Machine finds captioned clips from a recording](design/readme-hero.png)
 
 Works best in **Chrome or Edge** on computers and Android phones. Firefox works but is slower. **Safari, and every browser on iPhone/iPad** (they all use Safari's engine), currently handles videos up to about a minute before running out of memory; for longer videos, use a computer or the desktop app. Safari also keeps that memory when you reload, so after a reload Clip Machine offers a fresh tab for the next video. After the first run it also works **offline**. On a phone, *Add to Home Screen* opens it like an app.
 
@@ -116,6 +120,8 @@ claude mcp add clip-machine -e CLIP_MCP_URL=http://192.168.1.20:8765 -e CLIP_KEY
 ```
 
 Check it with `claude mcp list` (it should say Connected).
+
+![The real Clip Machine editor with a generated test clip](design/readme-studio.png)
 
 ## The workspace
 

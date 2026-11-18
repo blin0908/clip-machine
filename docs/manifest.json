@@ -1,1 +1,29 @@
-{"name":"Clip Machine","short_name":"Clips","description":"Free AI clipper that runs on your device","start_url":"./","scope":"./","display":"standalone","background_color":"#05070c","theme_color":"#05070c","icons":[{"src":"icon.svg","sizes":"any","type":"image/svg+xml"},{"src":"icon-512.png","sizes":"512x512","type":"image/png"},{"src":"icon-180.png","sizes":"180x180","type":"image/png"}]}
+{
+  "name": "Clip Machine",
+  "short_name": "Clips",
+  "description": "Free AI clipper that runs on your device",
+  "start_url": "workspace.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#05070c",
+  "theme_color": "#05070c",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "icon-180.png",
+      "sizes": "180x180",
+      "type": "image/png"
+    }
+  ],
+  "id": "./"
+}

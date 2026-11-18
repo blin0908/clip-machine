@@ -68,7 +68,7 @@ def authed():
 
 @app.before_request
 def gate():
-    if request.path in ("/manifest.json", "/icon.svg"):
+    if request.path in PUBLIC_UI_FILES:
         return
     if not authed():
         return make_response("Clip Machine: open the link with ?key=… shown on your Mac.", 403)
@@ -78,7 +78,7 @@ def gate():
 def remember(resp):
     if secrets.compare_digest(request.args.get("key") or "", KEY):
         resp.set_cookie("ck", KEY, max_age=60 * 60 * 24 * 365, samesite="Lax", httponly=True)
-        if request.method == "GET" and request.path in ("/", "/classic") and resp.status_code == 200:
+        if request.method == "GET" and request.path in ("/", "/classic", "/index.html", "/workspace.html") and resp.status_code == 200:
             # the cookie now carries the key: take it out of the address bar (history, screenshots, shared links)
             rest = urllib.parse.urlencode([(k, v) for k, v in request.args.items(multi=True) if k != "key"])
             resp = redirect(request.path + ("?" + rest if rest else ""), 302)
@@ -633,9 +633,20 @@ def platforms():
     return jsonify(clipper.PLATFORMS)
 
 
-UI_FILES = {"formula.js", "formula.json", "app.js", "studio.js", "account.js", "zip.js", "nle.js", "asr-worker.js", "search.js", "search-worker.js", "sw.js", "icon-180.png", "icon-512.png"}
+PUBLIC_UI_FILES = {"/manifest.json", "/icon.svg", "/icon-180.png", "/icon-512.png",
+                   "/brand/favicon.svg", "/brand/favicon-32.png", "/brand/favicon.ico",
+                   "/brand/lockup-horizontal.svg", "/brand/logo-mark.svg"}
+BRAND_FILES = {p.removeprefix("/brand/") for p in PUBLIC_UI_FILES if p.startswith("/brand/")}
+UI_FILES = {"index.html", "workspace.html", "home.css", "home.js", "privacy.html", "og-image.png", "formula.js", "formula.json", "app.js", "studio.js", "account.js", "zip.js", "nle.js", "asr-worker.js", "search.js", "search-worker.js", "sw.js", "icon-180.png", "icon-512.png"}
 
 
+@app.get("/index.html")
+@app.get("/workspace.html")
+@app.get("/home.css")
+@app.get("/home.js")
+@app.get("/privacy.html")
+@app.get("/og-image.png")
+@app.get("/brand/<path:sub>")
 @app.get("/formula.js")
 @app.get("/formula.json")
 @app.get("/app.js")
@@ -654,7 +665,7 @@ UI_FILES = {"formula.js", "formula.json", "app.js", "studio.js", "account.js", "
 def ui_files(sub=None):
     # the browser UI lives in docs/ in the repo (web/ in the release zip); the desktop app serves the same pages
     name = request.path.lstrip("/")
-    if not (name in UI_FILES or name.startswith(("fonts/", "vendor/"))):
+    if not (name in UI_FILES or (name.startswith("brand/") and sub in BRAND_FILES) or name.startswith(("fonts/", "vendor/"))):
         abort(404)
     for d in (HERE / "docs", HERE / "web"):
         if (d / name).is_file():
@@ -666,7 +677,7 @@ def ui_files(sub=None):
 def index():
     for d in (HERE / "docs", HERE / "web"):
         if (d / "index.html").exists() and (d / "studio.js").exists():
-            return send_from_directory(d, "index.html")
+            return send_from_directory(d, "workspace.html" if (d / "workspace.html").is_file() else "index.html")
     return send_from_directory(HERE, "index.html")
 
 
@@ -682,7 +693,9 @@ def manifest():
     start = f"/?key={KEY}" if authed() else "/"
     resp = jsonify(name="Clip Machine", short_name="Clips", start_url=start, display="standalone",
                    background_color="#05070c", theme_color="#05070c",
-                   icons=[{"src": "/icon.svg", "sizes": "any", "type": "image/svg+xml"}])
+                   icons=[{"src": "/icon.svg", "sizes": "any", "type": "image/svg+xml"},
+                          {"src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable"},
+                          {"src": "/icon-180.png", "sizes": "180x180", "type": "image/png"}])
     resp.headers["Cache-Control"] = "no-store"
     resp.headers["Vary"] = "Cookie"
     return resp
@@ -690,9 +703,10 @@ def manifest():
 
 @app.get("/icon.svg")
 def icon():
-    svg = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" rx="22" fill="#05070c"/>'
-           '<path d="M30 25h40v50H30z" fill="none" stroke="#ffe600" stroke-width="7" rx="6"/><path d="M45 40l15 10-15 10z" fill="#ffe600"/></svg>')
-    return app.response_class(svg, mimetype="image/svg+xml")
+    for directory in (HERE / "docs", HERE / "web"):
+        if (directory / "icon.svg").is_file():
+            return send_from_directory(directory, "icon.svg")
+    abort(404)
 
 
 def lan_ip():

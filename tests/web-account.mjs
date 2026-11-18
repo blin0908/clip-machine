@@ -34,7 +34,7 @@ try {
 
   // ---- no API configured → no account button, no errors, no CSP violations
   const A = await device();
-  await A.page.goto(WEB); await A.page.waitForSelector("#go");
+  await A.page.goto(WEB + "workspace.html"); await A.page.waitForSelector("#go");
   await A.page.waitForTimeout(800);
   check(await A.page.locator("#acctBtn.hide").count() === 1, "without an API the account button stays hidden");
   check(A.csp.length === 0, "the page loads with no Content-Security-Policy violations", A.csp[0] || "");
@@ -61,7 +61,7 @@ try {
 
   // ---- device B: has its own preset, signs in, ends up with both
   const B = await device();
-  await B.page.goto(WEB); await B.page.waitForSelector("#go");
+  await B.page.goto(WEB + "workspace.html"); await B.page.waitForSelector("#go");
   await B.page.evaluate(api => { localStorage.setItem("clipmachine.api", api); localStorage.setItem("clipmachine.presets", JSON.stringify({ "From device B": { n: 1 } })); }, API);
   await B.page.reload(); await B.page.waitForSelector("#acctBtn:not(.hide)", { timeout: 15000 });
   await B.page.click("#acctBtn"); await B.page.fill("#acctEmail", email); await B.page.fill("#acctPw", "wrong password here"); await B.page.click(".acct-go");

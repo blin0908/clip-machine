@@ -1,5 +1,7 @@
 # Homepage integration handoff
 
+**Implemented locally on November 18, 2026 on `codex/homepage-integration`.** The website root now serves the homepage, `docs/workspace.html` contains the editor, and the desktop root still opens that editor. Logo/icon routes, release assets and `cm-shell-v14` are integrated. Nothing is pushed or deployed. The original asset handoff below is retained as design context; do not apply it twice. See `design/INTEGRATION-VALIDATION.md` for verification.
+
 This is a working standalone homepage preview at `design/homepage/index.html`, not a deployed change or an app screenshot. It uses the current palette/fonts and Benny’s selected A / Peak window outlined lockup. Its moving process diagram is explicitly labelled an illustration; it contains no fabricated metrics, testimonials or app captures.
 
 ## Safe current preview

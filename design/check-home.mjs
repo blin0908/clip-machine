@@ -43,7 +43,7 @@ try{
   check(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'320px layout has no horizontal overflow');
   await page.setViewportSize({width:390,height:844});
   await page.keyboard.press('Tab');check(await page.locator('.skip').evaluate(el=>el===document.activeElement),'skip link is first keyboard stop');
-  const links=await page.locator('a[href="../../docs/index.html"]').all();check(links.length===3,'three working app entry points');
+  const links=await page.locator('a[href="../../docs/workspace.html"]').all();check(links.length===3,'three working app entry points');
   await links[0].click();check(await page.locator('#file').count()===1&&await page.locator('#go').count()===1,'Try it out opens actual unchanged workspace');
   check(errors.length===0,'no browser JavaScript errors');
 }finally{await writeFile(resolve(out,'checks.json'),JSON.stringify(results,null,2)+'\n');await browser.close();await new Promise(r=>server.close(r));}

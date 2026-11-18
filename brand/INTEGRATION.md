@@ -1,5 +1,7 @@
 # Selected Peak window integration
 
+**Implemented locally on November 18, 2026 on `codex/homepage-integration`.** The website root now serves the homepage, `docs/workspace.html` contains the editor, and the desktop root still opens that editor. Logo/icon routes, release assets and `cm-shell-v14` are integrated. Nothing is pushed or deployed. The original asset handoff below is retained as design context; do not apply it twice. See `design/INTEGRATION-VALIDATION.md` for verification.
+
 Benny selected A on November 18, 2026. This branch replaces only the three explicitly allowed `docs/icon*` files and adds assets in `brand/`. It does not edit Claude's shared application files. The accounts commit `aff46fe` is included by rebase; production port 8765 is untouched.
 
 ## Top bar: exact HTML and CSS for Claude
