@@ -1,0 +1,15 @@
+{
+  "name": "clip-machine-accounts",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --local --port 8787",
+    "db:local": "wrangler d1 execute clipmachine --local --file schema.sql",
+    "db:remote": "wrangler d1 execute clipmachine --remote --file schema.sql",
+    "deploy": "wrangler deploy",
+    "test": "node --test test/api.test.mjs"
+  },
+  "devDependencies": {
+    "wrangler": "4.45.0"
+  }
+}

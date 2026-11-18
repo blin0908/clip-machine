@@ -4,6 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#05070c">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://cdn.jsdelivr.net blob: 'wasm-unsafe-eval'; worker-src 'self' blob: https://cdn.jsdelivr.net; connect-src 'self' https: blob: data: http://localhost:* http://127.0.0.1:*; img-src 'self' blob: data:; media-src 'self' blob: https:; font-src 'self' https://cdn.jsdelivr.net blob: data:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'self'; form-action 'self'">
+<meta name="referrer" content="strict-origin-when-cross-origin">
+<!-- Optional accounts (settings sync). Empty = no account button. Set to the deployed Worker, e.g. https://clip-machine-accounts.<you>.workers.dev -->
+<meta name="cm-api" content="">
 <meta name="description" content="Free AI clipper. Finds the best moments in a long video and cuts captioned clips for TikTok, Reels and Shorts, with a trim-and-caption studio, entirely in your browser.">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Clips">
@@ -451,6 +455,43 @@ dialog::backdrop{background:rgba(0,0,0,.6)}
 .toast{position:fixed;left:50%;bottom:calc(24px + env(safe-area-inset-bottom));transform:translate(-50%,8px);background:var(--text);color:var(--ink);padding:10px 16px;border-radius:9px;font-size:14px;font-weight:600;opacity:0;transition:opacity .22s var(--ease-out),transform .3s var(--ease-out);pointer-events:none;z-index:40;max-width:calc(100vw - 32px)}
 .toast.on{opacity:1;transform:translate(-50%,0)}
 .busy{opacity:.5;pointer-events:none}
+/* ---------- account (optional settings sync) */
+.acct-btn{display:inline-flex;align-items:center;gap:8px;min-height:36px;padding:0 12px;border-radius:999px;border:1px solid var(--line2);color:var(--text);font-size:13px;font-weight:600;position:relative;transition:background-color var(--t-fast) var(--ease-out),border-color var(--t-fast),transform var(--t-fast) var(--ease-out)}
+.acct-btn:hover{background:var(--panel2);border-color:#3a4b70}
+.acct-btn:active{transform:scale(.97)}
+.acct-btn:has(.acct-av){padding:0 4px 0 4px;border-color:transparent}
+.acct-av{display:inline-grid;place-items:center;width:28px;height:28px;border-radius:50%;background:var(--slate);color:var(--slate-ink);font:800 13px var(--f-disp)}
+.acct-av.lg{width:40px;height:40px;font-size:17px;flex:none}
+.acct-dot{position:absolute;right:2px;bottom:4px;width:9px;height:9px;border-radius:50%;background:var(--faint);box-shadow:0 0 0 2px var(--ink);transition:background-color var(--t-med)}
+.acct-btn[data-state=ok] .acct-dot{background:var(--good)}
+.acct-btn[data-state=syncing] .acct-dot{background:var(--slate);animation:blink 1s infinite}
+.acct-btn[data-state=offline] .acct-dot,.acct-btn[data-state=error] .acct-dot{background:var(--warn)}
+#acct[open]{animation:pin .28s var(--ease-out)}
+.acct-body{padding:14px 20px 22px;display:flex;flex-direction:column;gap:14px}
+.acct-why{margin:0;color:var(--mute);font-size:14px;line-height:1.55}
+.acct-why b{color:var(--text);font-weight:600}
+.acct-f{display:flex;flex-direction:column;gap:6px;font-size:13px;color:var(--mute);font-weight:600}
+.acct-f .in{width:100%}
+.acct-hint{margin:-6px 0 0;font-size:12px;color:var(--faint)}
+.acct-err{margin:0;color:#ff8a80;font-size:13px}
+.acct-go{min-height:46px;font-size:15px}
+.acct-fine{margin:0;color:var(--faint);font-size:12px;line-height:1.5}
+.acct-fine a{color:var(--mute)}
+.acct-who{display:flex;gap:12px;align-items:center}
+.acct-who b{display:block;font-size:15px;overflow-wrap:anywhere}
+.acct-st{font-size:12px;color:var(--mute)}
+.acct-st[data-state=ok]{color:var(--good)}.acct-st[data-state=offline],.acct-st[data-state=error]{color:var(--warn)}
+.acct-row{display:flex;flex-wrap:wrap;gap:8px}
+.acct-more{border-top:1px solid var(--line);padding-top:10px}
+.acct-more>summary{cursor:pointer;font-size:14px;color:var(--mute);min-height:32px;display:flex;align-items:center}
+.acct-more>summary:hover{color:var(--text)}
+.acct-more[open]>:not(summary){animation:fold .25s var(--ease-out) both}
+.acct-more form,.acct-more>.btn{display:flex;flex-direction:column;gap:10px;margin-top:10px;align-items:flex-start}
+.acct-more form .acct-f{align-self:stretch}
+.acct-more.danger>summary{color:#ff8a80}
+.btn.danger{border-color:rgba(255,90,78,.5);color:#ff8a80}
+.btn.danger:hover:not(:disabled){background:rgba(255,90,78,.12);border-color:#ff5a4e}
+@media(max-width:640px){.acct-btn span:not(.acct-av):not(.sr):not(.acct-dot){font-size:12px}}
 @media(prefers-reduced-motion:reduce){*,*:before,*:after{animation:none!important;transition:none!important}}
 </style>
 </head>
@@ -590,7 +631,7 @@ dialog::backdrop{background:rgba(0,0,0,.6)}
     </section>
 
     <p class="foot">Every clip passes a quality gate (format, length, loudness, clipping, black frames, silence, frozen picture) before you see it. <a href="https://github.com/blin0908/clip-machine">Source &amp; research</a>. Only clip videos you have the rights to.</p>
-    <p class="foot private">Your videos never leave this device: transcribing, scoring and rendering all run here. <span id="ver"></span></p>
+    <p class="foot private">Your videos never leave this device: transcribing, scoring and rendering all run here. <a href="https://blin0908.github.io/clip-machine/privacy.html" target="_blank" rel="noopener">Privacy</a>. <span id="ver"></span></p>
   </aside>
 
   <main class="work">
@@ -758,5 +799,6 @@ dialog::backdrop{background:rgba(0,0,0,.6)}
 <div class="dropzone hide" id="dropzone">Drop to add to the queue</div>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 <script type="module" src="app.js"></script>
+<script type="module" src="account.js"></script>
 </body>
 </html>

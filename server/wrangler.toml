@@ -1,0 +1,25 @@
+name = "clip-machine-accounts"
+main = "src/worker.js"
+compatibility_date = "2025-10-01"
+workers_dev = true
+
+[vars]
+# Exact origins allowed to call the API from a browser (comma-separated). The desktop app is served from localhost.
+ALLOWED_ORIGINS = "https://blin0908.github.io,http://localhost:8765,http://127.0.0.1:8765"
+# "1" also allows any http://localhost:<port> / 127.0.0.1:<port> origin. Leave "0" in production.
+DEV_ORIGINS = "0"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "clipmachine"
+# Replace with the id printed by `npx wrangler d1 create clipmachine` before deploying.
+database_id = "00000000-0000-0000-0000-000000000000"
+
+[env.dev.vars]
+ALLOWED_ORIGINS = "https://blin0908.github.io"
+DEV_ORIGINS = "1"
+
+[[env.dev.d1_databases]]
+binding = "DB"
+database_name = "clipmachine"
+database_id = "00000000-0000-0000-0000-000000000000"

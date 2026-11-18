@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#05070c">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
+<meta name="description" content="What Clip Machine stores about you, and what it never does.">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<title>Privacy · Clip Machine</title>
+<style>
+@font-face{font-family:"Archivo";src:url(fonts/ui/archivo-400-800.woff2) format("woff2");font-weight:400 800;font-stretch:62% 125%;font-display:swap}
+@font-face{font-family:"Instrument Sans";src:url(fonts/ui/instrumentsans-400-700.woff2) format("woff2");font-weight:400 700;font-display:swap}
+:root{--ink:#05070c;--panel:#0a1120;--line:#18233a;--text:#e8edf6;--mute:#9aa6bd;--slate:#7aa7ff;--good:#4cc38a}
+*{box-sizing:border-box}
+body{margin:0;background:var(--ink);color:var(--text);font:16px/1.65 "Instrument Sans",system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+main{max-width:720px;margin:0 auto;padding:48px 20px 80px}
+a{color:var(--slate)}
+.back{font-size:14px;color:var(--mute);text-decoration:none}
+.back:hover{color:var(--text)}
+h1{font:800 clamp(30px,6vw,44px)/1.05 "Archivo",sans-serif;font-stretch:85%;text-transform:uppercase;margin:24px 0 8px}
+h2{font:800 15px "Archivo",sans-serif;font-stretch:118%;letter-spacing:.1em;text-transform:uppercase;margin:44px 0 10px;color:var(--text)}
+p,li{color:var(--mute)}
+strong{color:var(--text);font-weight:600}
+.lede{font-size:18px;color:var(--text)}
+.box{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin:24px 0}
+.box li{margin:4px 0}
+.never li::marker{content:"✕  ";color:#ff8a80}
+.yes li::marker{content:"✓  ";color:var(--good)}
+table{width:100%;border-collapse:collapse;font-size:14px;margin:12px 0}
+th,td{text-align:left;padding:10px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--text);font-weight:600}
+td{color:var(--mute)}
+.date{font-size:13px;color:var(--mute)}
+</style>
+</head>
+<body>
+<main>
+<a class="back" href="./">← Back to Clip Machine</a>
+<h1>Privacy</h1>
+<p class="date">Last updated 17 November 2026</p>
+<p class="lede">Clip Machine runs on your own device. Your videos are never uploaded to us, with or without an account.</p>
+
+<div class="box never"><ul>
+<li><strong>No video, audio, transcript or clip</strong> is ever sent to Clip Machine's server.</li>
+<li><strong>No analytics, ads, tracking pixels or third-party trackers.</strong></li>
+<li><strong>No selling or sharing</strong> of anything you give us.</li>
+<li><strong>No IP addresses or device fingerprints</strong> are kept by our account server.</li>
+</ul></div>
+
+<h2>Without an account</h2>
+<p>Everything happens in your browser or in the desktop app on your computer. Your settings, presets and results log are saved in your browser's local storage (or, in the desktop app, in its folder on your computer) and nowhere else.</p>
+<p>To work, the website downloads its video engine and speech models the first time you use them, from <strong>jsDelivr</strong> and <strong>Hugging Face</strong>. Like any website, those services see your IP address when your browser fetches a file. They don't receive your video. The desktop app checks GitHub once a day for a new version. When you paste a link into the desktop app, it downloads that video directly from the site you linked (for example YouTube), using your own connection.</p>
+
+<h2>With an account (optional)</h2>
+<p>An account only exists to keep your settings the same on every device. Here is everything our server stores:</p>
+<table>
+<tr><th>What</th><th>Why</th><th>How long</th></tr>
+<tr><td>Your email address</td><td>So you can sign in</td><td>Until you delete the account</td></tr>
+<tr><td>A one-way hash of your password (PBKDF2-SHA256, salted)</td><td>To check your password without storing it</td><td>Until you delete the account</td></tr>
+<tr><td>Hashes of your sign-in tokens, with when they were created and last used</td><td>To keep you signed in on each device</td><td>60 days, or until you sign out</td></tr>
+<tr><td>Your synced settings: presets, last-used settings, brand logo (PNG), results log, YouTube Studio import</td><td>The sync itself</td><td>Until you delete the account</td></tr>
+<tr><td>One-way hashes of your network and email, with a time, for each sign-in attempt</td><td>To slow down password-guessing</td><td>Deleted within a day</td></tr>
+</table>
+<p>The results log can include the titles of your posts and their view counts, because that's what you enter into it. Only you can read it: every request needs your sign-in token, and the server only ever returns your own row.</p>
+<p>The server runs on <strong>Cloudflare</strong> (Workers and D1), which processes data in its data centres, which may be outside your country. Connections are encrypted (HTTPS).</p>
+
+<h2>Your controls</h2>
+<div class="box yes"><ul>
+<li><strong>Download my data</strong> (Account → Download my data) gives you everything above as a JSON file, apart from the password and token hashes.</li>
+<li><strong>Delete account</strong> removes your account and synced settings from our server immediately. Settings already in your browser stay there.</li>
+<li><strong>Sign out everywhere</strong> ends every session on every device. Changing your password signs out your other devices.</li>
+</ul></div>
+<p>There's no password reset by email yet, because we don't send email. If you forget your password, create a new account. The old one's data can be removed on request.</p>
+
+<h2>Security</h2>
+<p>Passwords are never stored or logged in readable form. Sign-in tokens are random, and only their hashes are kept, so a copy of our database wouldn't let anyone sign in as you. Repeated wrong passwords are slowed down, and the server only accepts requests from Clip Machine's own pages. The code is open source, so you can check all of this: <a href="https://github.com/blin0908/clip-machine/tree/main/server" rel="noopener">server/</a> and <a href="https://github.com/blin0908/clip-machine/blob/main/docs/account.js" rel="noopener">docs/account.js</a>.</p>
+
+<h2>Questions or requests</h2>
+<p>Open an issue on <a href="https://github.com/blin0908/clip-machine/issues" rel="noopener">GitHub</a>. Don't post your email or password there. Say you'd like to be contacted privately. If this page changes, the date at the top changes too, and anything that affects data we already hold will be announced in the app first.</p>
+</main>
+</body>
+</html>

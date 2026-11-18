@@ -633,13 +633,14 @@ def platforms():
     return jsonify(clipper.PLATFORMS)
 
 
-UI_FILES = {"formula.js", "formula.json", "app.js", "studio.js", "zip.js", "nle.js", "asr-worker.js", "search.js", "search-worker.js", "sw.js", "icon-180.png", "icon-512.png"}
+UI_FILES = {"formula.js", "formula.json", "app.js", "studio.js", "account.js", "zip.js", "nle.js", "asr-worker.js", "search.js", "search-worker.js", "sw.js", "icon-180.png", "icon-512.png"}
 
 
 @app.get("/formula.js")
 @app.get("/formula.json")
 @app.get("/app.js")
 @app.get("/studio.js")
+@app.get("/account.js")
 @app.get("/zip.js")
 @app.get("/nle.js")
 @app.get("/asr-worker.js")
