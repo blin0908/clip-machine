@@ -1,0 +1,30 @@
+"""Deterministic HTML marketing layouts using real captured product screens."""
+import json
+from pathlib import Path
+from html import escape
+root=Path(__file__).resolve().parent
+version=__import__('argparse').ArgumentParser()
+version.add_argument('--version',default='1.8.4')
+args=version.parse_args()
+if not __import__('re').fullmatch(r'[0-9]+(?:\.[0-9]+){1,3}(?:-[a-zA-Z0-9.]+)?',args.version):raise SystemExit('Use a release version, e.g. 1.8.4')
+css='''@font-face{font-family:Archivo;font-weight:100 900;font-stretch:62% 125%;src:url('../docs/fonts/ui/archivo-400-800.woff2')}@font-face{font-family:Instrument;font-weight:400 700;src:url('../docs/fonts/ui/instrumentsans-400-700.woff2')}*{box-sizing:border-box}html,body{margin:0;background:#05070c;color:#e8edf6;font-family:Instrument,Arial,sans-serif}.canvas{position:relative;overflow:hidden;padding:54px 64px;background:radial-gradient(ellipse at 100% 0%,#142744 0%,#0a1120 45%,#05070c 85%)}.logo{display:block;width:340px;height:auto}.kicker{font:700 17px Instrument;letter-spacing:.14em;color:#7aa7ff;text-transform:uppercase}h1{font:800 58px/.98 Archivo,Arial;letter-spacing:-.045em;margin:32px 0 22px}p{font-size:24px;color:#9aa6bd;margin:0}.facts{color:#e8edf6;font-size:21px;display:flex;gap:30px}.shot{border:1px solid #26344f;border-radius:14px;overflow:hidden;background:#0a1120;box-shadow:0 22px 60px #0009}.shot img{width:100%;display:block}.source{font:13px Instrument;letter-spacing:.04em;color:#9aa6bd}.bottom{position:absolute;bottom:0;left:0;right:0;padding:15px 64px;display:flex;justify-content:space-between;background:#05070c}.og h1{font-size:56px;margin:26px 0 18px}.og .logo{width:280px}.og .shot{position:absolute;top:284px;left:64px;width:1072px}.hero h1{font-size:78px;max-width:800px}.hero .shot{position:absolute;left:64px;right:64px;top:365px}.hero .facts{font-size:24px}.studio{padding:36px}.studio .shot{margin:28px auto 0;width:1400px}.release{display:grid;grid-template-columns:1fr 1fr;gap:40px;align-items:center}.release .logo{width:380px}.release h1{font-size:76px}.release .shot{width:670px;transform:none}.release .version{color:#7aa7ff;font-size:36px;font-weight:700}.feature{padding:70px 64px}.feature h1{font-size:84px;line-height:1.04;max-width:900px;margin:55px 0 35px}.feature .logo{width:340px}.feature .shot{position:absolute;top:500px;left:40px;width:1000px;height:735px}.feature .shot img{height:100%;object-fit:cover}.feature p{font-size:28px}.feature.queue .shot,.feature.find .shot{display:flex;align-items:center;padding:36px;background:#0a1120}.feature.queue .shot img,.feature.find .shot img{height:auto;object-fit:contain}.feature.handoff .shot img{position:absolute;width:5760px;height:4000px;max-width:none;object-fit:fill;padding:0;left:-1518px;top:-1578px}.feature.find .shot img{position:absolute;width:5000px;height:auto;max-width:none;left:40px;top:260px}.banner{padding:0;background:radial-gradient(ellipse at center,#142744,#05070c 73%)}.safe-content{position:absolute;left:507px;top:508.5px;width:1546px;height:423px;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:40px}.safe-content .logo{width:1230px}.safe-content p{font-size:42px;color:#e8edf6}.banner .bracket{position:absolute;inset:300px 300px;border:1px solid #26344f;border-radius:100px;transform:rotate(-9deg)}.safe-line{display:none;position:absolute;left:507px;top:508.5px;width:1546px;height:423px;border:3px dashed #f2a530}.safe-label{display:none;position:absolute;top:465px;left:507px;color:#f2a530;font-size:22px}.safe-preview .safe-line,.safe-preview .safe-label{display:block}.profile{padding:0;background:#05070c;display:flex;align-items:center;justify-content:center}.profile img{width:800px;height:800px}'''
+# Font URLs are validated by the renderer; no system-only font should be necessary.
+files=[]
+def page(name,w,h,cls,body):
+    text=f'<!doctype html><html lang="en"><meta charset="utf-8"><title>Clip Machine · {escape(name)}</title><style>{css}.canvas{{width:{w}px;height:{h}px}}</style><body><main class="canvas {cls}">{body}</main></body></html>'
+    (root/f'{name}.html').write_text(text)
+    files.append(dict(name=name,width=w,height=h,source=f'{name}.html',output=f'{name}.png'))
+logo='<img class="logo" src="../brand/lockup-horizontal.svg" alt="Clip Machine">'
+shot=lambda name:f'<div class="shot"><img src="captures/{name}.png" alt="Actual Clip Machine {name} screen"></div>'
+facts='<div class="facts"><span>Free.</span><span>No watermark.</span><span>On your device.</span></div>'
+foot='<div class="bottom"><span class="source">ACTUAL APP · GENERATED TEST FOOTAGE</span><span class="source">CLIP MACHINE</span></div>'
+page('og-image',1200,630,'og',logo+'<h1>Find the clips worth posting.</h1>'+facts+shot('board')+foot)
+page('readme-hero',1600,900,'hero',logo+'<h1>Find the clips<br>worth posting.</h1>'+facts+shot('board')+foot)
+page('readme-studio',1600,1200,'studio',logo+shot('studio')+foot)
+page('release-banner',1280,640,'release','<div>'+logo+f'<h1>Keep the<br>good part.</h1><p class="version">v{escape(args.version)}</p><p>Free. No watermark. On your device.</p></div>'+shot('board')+foot)
+for name,head,sub in [('queue','Bring the recording.','Find the moments.'),('studio','Make the cut yours.','Trim. Reframe. Refine.'),('find','Describe the moment.','Find it in the recording.'),('handoff','Keep editing.','Hand off to Premiere or Resolve.')]:
+    page('feature-'+name,1080,1350,'feature '+name,logo+'<h1>'+head+'</h1><p>'+sub+'</p>'+shot(name+'-detail' if name in ('queue','find') else name)+'<div class="bottom"><span class="source">GENERATED DEMO</span></div>')
+page('youtube-banner',2560,1440,'banner','<div class="bracket"></div><div class="safe-content">'+logo+'<p>Building it. One change at a time.</p></div><div class="safe-line"></div><span class="safe-label">1546 × 423 ALL-DEVICE SAFE AREA</span>')
+page('youtube-profile',800,800,'profile','<img src="../brand/icon.svg" alt="Clip Machine Peak window">')
+(root/'assets.json').write_text(json.dumps(files,indent=2)+'\n')
+print('Built',len(files),'HTML sources.')

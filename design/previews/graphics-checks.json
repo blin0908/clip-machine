@@ -1,0 +1,72 @@
+[
+  {
+    "asset": "og-image",
+    "width": 1200,
+    "height": 630,
+    "images_loaded": true,
+    "text_within_canvas": true
+  },
+  {
+    "asset": "readme-hero",
+    "width": 1600,
+    "height": 900,
+    "images_loaded": true,
+    "text_within_canvas": true
+  },
+  {
+    "asset": "readme-studio",
+    "width": 1600,
+    "height": 1200,
+    "images_loaded": true,
+    "text_within_canvas": true
+  },
+  {
+    "asset": "release-banner",
+    "width": 1280,
+    "height": 640,
+    "images_loaded": true,
+    "text_within_canvas": true
+  },
+  {
+    "asset": "feature-queue",
+    "width": 1080,
+    "height": 1350,
+    "images_loaded": true,
+    "text_within_canvas": true
+  },
+  {
+    "asset": "feature-studio",
+    "width": 1080,
+    "height": 1350,
+    "images_loaded": true,
+    "text_within_canvas": true
+  },
+  {
+    "asset": "feature-find",
+    "width": 1080,
+    "height": 1350,
+    "images_loaded": true,
+    "text_within_canvas": true
+  },
+  {
+    "asset": "feature-handoff",
+    "width": 1080,
+    "height": 1350,
+    "images_loaded": true,
+    "text_within_canvas": true
+  },
+  {
+    "asset": "youtube-banner",
+    "width": 2560,
+    "height": 1440,
+    "images_loaded": true,
+    "text_within_canvas": true
+  },
+  {
+    "asset": "youtube-profile",
+    "width": 800,
+    "height": 800,
+    "images_loaded": true,
+    "text_within_canvas": true
+  }
+]

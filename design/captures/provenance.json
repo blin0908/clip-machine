@@ -1,0 +1,16 @@
+{
+  "captured_at": "2026-11-18T17:06:27.150Z",
+  "app_base_commit": "aff46fe",
+  "source": "tests/media/talk_80s.mp4",
+  "source_sha256": "d7acc9929c7568a58318be1216ff0ec272f4873f303e2d97c01ada48e10cd5ef",
+  "source_rights": "Generated test fixture: ffmpeg testsrc2 and system TTS; see tests/make_media.sh. Not customer footage.",
+  "viewport": [
+    1440,
+    1000
+  ],
+  "device_scale_factor": 2,
+  "port": 8790,
+  "clips": 2,
+  "page_errors": [],
+  "notes": "Actual app UI and real native job. Find capture shows a typed query, not a fabricated successful result. Private job folders were never loaded."
+}

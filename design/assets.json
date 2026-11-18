@@ -1,0 +1,72 @@
+[
+  {
+    "name": "og-image",
+    "width": 1200,
+    "height": 630,
+    "source": "og-image.html",
+    "output": "og-image.png"
+  },
+  {
+    "name": "readme-hero",
+    "width": 1600,
+    "height": 900,
+    "source": "readme-hero.html",
+    "output": "readme-hero.png"
+  },
+  {
+    "name": "readme-studio",
+    "width": 1600,
+    "height": 1200,
+    "source": "readme-studio.html",
+    "output": "readme-studio.png"
+  },
+  {
+    "name": "release-banner",
+    "width": 1280,
+    "height": 640,
+    "source": "release-banner.html",
+    "output": "release-banner.png"
+  },
+  {
+    "name": "feature-queue",
+    "width": 1080,
+    "height": 1350,
+    "source": "feature-queue.html",
+    "output": "feature-queue.png"
+  },
+  {
+    "name": "feature-studio",
+    "width": 1080,
+    "height": 1350,
+    "source": "feature-studio.html",
+    "output": "feature-studio.png"
+  },
+  {
+    "name": "feature-find",
+    "width": 1080,
+    "height": 1350,
+    "source": "feature-find.html",
+    "output": "feature-find.png"
+  },
+  {
+    "name": "feature-handoff",
+    "width": 1080,
+    "height": 1350,
+    "source": "feature-handoff.html",
+    "output": "feature-handoff.png"
+  },
+  {
+    "name": "youtube-banner",
+    "width": 2560,
+    "height": 1440,
+    "source": "youtube-banner.html",
+    "output": "youtube-banner.png"
+  },
+  {
+    "name": "youtube-profile",
+    "width": 800,
+    "height": 800,
+    "source": "youtube-profile.html",
+    "output": "youtube-profile.png"
+  }
+]
