@@ -1,0 +1,58 @@
+[
+  {
+    "label": "deterministic animated waveform loads",
+    "pass": true
+  },
+  {
+    "label": "diagram has one accessible description, not duplicate controls",
+    "pass": true
+  },
+  {
+    "label": "pause motion works",
+    "pass": true
+  },
+  {
+    "label": "pause stops animated process graphic",
+    "pass": true
+  },
+  {
+    "label": "click-through scroll reaches workflow",
+    "pass": true
+  },
+  {
+    "label": "reduced-motion mode honours OS preference",
+    "pass": true
+  },
+  {
+    "label": "reduced-motion mode removes playhead motion",
+    "pass": true
+  },
+  {
+    "label": "reduced-motion content remains visible",
+    "pass": true
+  },
+  {
+    "label": "390px layout has no horizontal overflow",
+    "pass": true
+  },
+  {
+    "label": "320px layout has no horizontal overflow",
+    "pass": true
+  },
+  {
+    "label": "skip link is first keyboard stop",
+    "pass": true
+  },
+  {
+    "label": "three working app entry points",
+    "pass": true
+  },
+  {
+    "label": "Try it out opens actual unchanged workspace",
+    "pass": true
+  },
+  {
+    "label": "no browser JavaScript errors",
+    "pass": true
+  }
+]
