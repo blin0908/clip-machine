@@ -1,0 +1,119 @@
+{
+  "selected": "A \u2014 Peak window",
+  "selection_date": "2026-11-18",
+  "wordmark": {
+    "font": "docs/fonts/ui/archivo-400-800.woff2",
+    "sha256": "4c98b9d490d1698ec95f2ff17a6c7d0e72691864c0c5d7bc2a2c161b45afe5ad",
+    "axes": {
+      "wght": 800,
+      "wdth": 125
+    },
+    "tracking_font_units": -18
+  },
+  "wordmark_width": 1247.597,
+  "mark_ink_bounds": [
+    5,
+    5,
+    27,
+    27
+  ],
+  "icon_ink_bounds": [
+    22.5,
+    22.5,
+    77.5,
+    77.5
+  ],
+  "mask_safe_circle": {
+    "center": [
+      50,
+      50
+    ],
+    "radius": 40,
+    "maximum_ink_corner_radius": 38.890873,
+    "pass": true
+  },
+  "palette": [
+    {
+      "token": "ink",
+      "hex": "#05070c",
+      "contrast_on_ink": 1.0
+    },
+    {
+      "token": "panel",
+      "hex": "#0a1120",
+      "contrast_on_ink": 1.07
+    },
+    {
+      "token": "panel2",
+      "hex": "#111b30",
+      "contrast_on_ink": 1.17
+    },
+    {
+      "token": "well",
+      "hex": "#03050a",
+      "contrast_on_ink": 1.01
+    },
+    {
+      "token": "line",
+      "hex": "#18233a",
+      "contrast_on_ink": 1.29
+    },
+    {
+      "token": "line2",
+      "hex": "#26344f",
+      "contrast_on_ink": 1.62
+    },
+    {
+      "token": "text",
+      "hex": "#e8edf6",
+      "contrast_on_ink": 17.15
+    },
+    {
+      "token": "mute",
+      "hex": "#9aa6bd",
+      "contrast_on_ink": 8.22
+    },
+    {
+      "token": "faint",
+      "hex": "#7e8aa2",
+      "contrast_on_ink": 5.8
+    },
+    {
+      "token": "slate",
+      "hex": "#7aa7ff",
+      "contrast_on_ink": 8.44
+    },
+    {
+      "token": "slate-ink",
+      "hex": "#04102a",
+      "contrast_on_ink": 1.07
+    },
+    {
+      "token": "rec",
+      "hex": "#ff5a4e",
+      "contrast_on_ink": 6.55
+    },
+    {
+      "token": "good",
+      "hex": "#4cc38a",
+      "contrast_on_ink": 9.1
+    },
+    {
+      "token": "warn",
+      "hex": "#f2a530",
+      "contrast_on_ink": 9.79
+    },
+    {
+      "token": "light-mark",
+      "hex": "#142744",
+      "contrast_on_ink": 1.35
+    },
+    {
+      "token": "light-surface",
+      "hex": "#eef2f8",
+      "contrast_on_ink": 17.94
+    }
+  ],
+  "light_mark_contrast": 13.32,
+  "accent_button_text_contrast": 7.91
+}

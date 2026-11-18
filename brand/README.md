@@ -1,20 +1,18 @@
-# Clip Machine concept review
+# Clip Machine identity
 
-Three original SVG concepts, awaiting Benny's selection. No logo is selected and no existing app icon has been replaced.
+**Selected: A — Peak window, November 18, 2026.** The full vector identity, outlined Archivo Wide wordmark, lockups, install icons and favicon are ready for integration.
 
-- **A — Peak window:** brackets isolate the strongest waveform peak.
-- **B — Splice:** a single rising cut divides a compact slate.
-- **C — Cue:** an open square C surrounds a timeline cue.
+Open `identity.html` for the selected identity. Original A/B/C concepts are retained under `concepts/` as history. See `BRAND.md` for sizes, spacing, palette, reference comparisons and the asset inventory; see `INTEGRATION.md` for the exact shared-file changes Claude needs to apply.
 
-Open `concepts/concepts.html` for dark/light comparisons at 16, 32, 64 and 256 px. `comparison.png`, `actual-sizes.png`, `favicon-zoom.png` and `mobile.png` are real Chrome renders of those assets. Circular compositions are concept checks, not certification of final maskable icons.
-
-Rebuild from the repository root:
+Rebuild with a separate tooling environment (do not modify Claude's shared Python environment):
 
 ```sh
-.venv/bin/python brand/build_concepts.py
+python3 -m venv /tmp/clip-machine-brand-tools
+/tmp/clip-machine-brand-tools/bin/python -m pip install -r brand/requirements-render.txt
+/tmp/clip-machine-brand-tools/bin/python brand/build_identity.py
 node brand/render.mjs
 ```
 
-The local test dependencies must be installed under `tests/node_modules`; rendering uses installed Chrome. Only one browser page is used. No cloud image generation, third-party logo assets or footage were used.
+`node brand/render.mjs --concepts-only` rebuilds the original concept comparison. PNGs use installed Chrome through the existing Playwright test dependency; ICO wraps the exact rendered 16px and 32px PNGs. No third-party logo asset, cloud image generation or private footage is included.
 
-Next, after the choice: refine proportions, compare against the named competitor marks, outline the Archivo wordmark, produce lockups, verify final maskable icons, and write `BRAND.md` and the shared-file integration snippet. This review is not a trademark clearance.
+The desktop's generated `/icon.svg` is still the old identity until Claude applies the explicit route handoff. No shared source or live deployment is changed by the asset commit.
