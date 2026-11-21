@@ -79,12 +79,29 @@ function headers(origin, env, extra = {}) {
 }
 const json = (body, status, origin, env) => new Response(JSON.stringify(body), { status, headers: headers(origin, env) });
 
+const TOO_BIG = "That's too much data to save. Remove some old results or a large logo and try again.";
 async function body(req) {
   const len = +req.headers.get("content-length") || 0;
-  if (len > MAX_BODY) throw new Fail(413, "That's too much data to save. Remove some old results or a large logo and try again.");
+  if (len > MAX_BODY) throw new Fail(413, TOO_BIG);
   if (!/^application\/json\b/i.test(req.headers.get("content-type") || "")) throw new Fail(415, "Send JSON.");
-  const text = await req.text();
-  if (text.length > MAX_BODY) throw new Fail(413, "That's too much data to save. Remove some old results or a large logo and try again.");
+  // read at most MAX_BODY bytes, even when Content-Length is missing or wrong (chunked uploads)
+  const parts = [];
+  let size = 0;
+  if (req.body) {
+    const reader = req.body.getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > MAX_BODY) { await reader.cancel().catch(() => {}); throw new Fail(413, TOO_BIG); }
+      parts.push(value);
+    }
+  }
+  const bytes = new Uint8Array(size);
+  let at = 0;
+  for (const p of parts) { bytes.set(p, at); at += p.byteLength; }
+  let text;
+  try { text = new TextDecoder("utf-8", { fatal: true }).decode(bytes); } catch { throw new Fail(400, "The request wasn't valid JSON."); }
   try { const v = JSON.parse(text); if (v && typeof v === "object" && !Array.isArray(v)) return v; } catch {}
   throw new Fail(400, "The request wasn't valid JSON.");
 }
@@ -107,9 +124,11 @@ function cleanPassword(pw, email) {
 // ---------------------------------------------------------------- rate limiting
 async function limit(env, key, max, windowSec, message) {
   const k = await sha256("rl:" + key), t = now();
-  const { n } = await env.DB.prepare("SELECT COUNT(*) AS n FROM attempts WHERE k = ? AND at > ?").bind(k, t - windowSec).first();
-  if (n >= max) throw new Fail(429, message);
-  await env.DB.prepare("INSERT INTO attempts (k, at) VALUES (?, ?)").bind(k, t).run();
+  // one statement, so the count and the insert can't interleave with a parallel request (D1 runs each statement atomically)
+  const r = await env.DB.prepare(
+    "INSERT INTO attempts (k, at) SELECT ?1, ?2 WHERE (SELECT COUNT(*) FROM attempts WHERE k = ?1 AND at > ?3) < ?4")
+    .bind(k, t, t - windowSec, max).run();
+  if (!r.meta || !r.meta.changes) throw new Fail(429, message);
   if (Math.random() < 0.05) await env.DB.prepare("DELETE FROM attempts WHERE at < ?").bind(t - 86400).run();
 }
 const ipOf = req => req.headers.get("cf-connecting-ip") || "local";

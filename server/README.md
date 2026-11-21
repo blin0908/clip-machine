@@ -42,7 +42,7 @@ npx wrangler dev --local --env dev --port 8787
 Point a local copy of the site at it: open the site on `http://localhost:…`, then in the browser console run `localStorage.setItem("clipmachine.api", "http://127.0.0.1:8787")` and reload. The override only works on localhost.
 
 Tests:
-- `npm test`: 12 API tests against a throwaway local database
+- `npm test`: 13 API tests against a throwaway local database
 - `node tests/web-account.mjs`: two-device sync in Chrome, run from the repo root
 
 ## Deploy (needs Benny's Cloudflare account)

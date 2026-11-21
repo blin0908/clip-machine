@@ -158,3 +158,21 @@ test("bad requests: no token, junk token, non-JSON, unknown route", async () => 
   const t = (await call("/signup", { method: "POST", body: { email: email(12), password: PW } })).j.token;
   assert.equal((await call("/nope", { token: t })).status, 404);
 });
+
+test("rate limits hold under a parallel burst (count and insert are one statement)", async () => {
+  const ip = "10.77.0.1";
+  const rs = await Promise.all(Array.from({ length: 12 }, (_, i) =>
+    call("/signup", { method: "POST", ip, body: { email: email("burst" + i), password: PW } })));
+  assert.equal(rs.filter(r => r.status === 201).length, 5, rs.map(r => r.status).join(","));
+  assert.equal(rs.filter(r => r.status === 429).length, 7);
+});
+
+test("a body with no Content-Length is cut off at the cap", async () => {
+  const chunk = new Uint8Array(64 * 1024).fill(32);   // spaces: valid JSON padding
+  let sent = 0;
+  const stream = new ReadableStream({ pull(c) { if (sent >= 2 * 1024 * 1024) return c.close(); sent += chunk.length; c.enqueue(chunk); } });
+  const r = await fetch(BASE + "/login", { method: "POST", body: stream, duplex: "half",
+    headers: { origin: SITE, "content-type": "application/json", "cf-connecting-ip": "10.78.0.1" } });
+  assert.equal(r.status, 413);
+  assert.equal(r.headers.get("access-control-allow-origin"), SITE);
+});
