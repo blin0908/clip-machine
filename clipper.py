@@ -510,7 +510,9 @@ def transcribe(wav: Path, model_size="base", progress=_noop, duration=None, lang
         model = _whisper(model_size)
         if language not in LANGUAGES or language == "auto":
             # detect first, so the English filler prompt below can't pull other languages towards English
-            language, _, _ = model.detect_language(audio, vad_filter=True, language_detection_segments=3)
+            # it only reads the first 3 speech windows (30 s each), so give it the first 6 minutes, not the whole
+            # video: running voice detection over an hour of audio just to pick the language was pure waste
+            language, _, _ = model.detect_language(audio[:16000 * 360], vad_filter=True, language_detection_segments=3)
         big = BIG_MODEL.get(language)
         if big and model_size in _SIZES and _SIZES.index(model_size) < _SIZES.index(big):
             progress("transcribe", 0, f"Loading the {big} speech model: smaller ones can't write this language correctly")
@@ -1507,10 +1509,14 @@ def render(video: Path, m: Moment, out: Path, layout="fit", captions=True, crop_
             ";[a]asplit[ao][aq];[aq]silencedetect=n=-45dB:d=2,ebur128=peak=true,anullsink")
     cmd += ["-nostats", "-sws_flags", "lanczos", "-filter_complex", f"{vchain};{achain}{taps}", "-map", "[vo]", "-map", "[ao]",
             # H.264 High, 8-12 Mbps ceiling, 2 s GOP, AAC 48 kHz: accepted everywhere, well under size caps
-            "-c:v", "libx264", "-profile:v", "high", "-preset", "veryfast", "-crf", "19",
-            "-maxrate", "12M", "-bufsize", "24M", "-g", str(fps * 2), "-r", str(fps), "-pix_fmt", "yuv420p",
+            *video_encoder(fps), "-r", str(fps), "-pix_fmt", "yuv420p",
             "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-movflags", "+faststart", "-shortest", str(out)]
     r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode != 0 and "h264_videotoolbox" in cmd:   # the hardware encoder can be busy or missing: software it is
+        _hw_failed(r.stderr)
+        i = cmd.index("-c:v"); j = cmd.index("-r", i)
+        cmd = cmd[:i] + video_encoder(fps) + cmd[j:]
+        r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode != 0:
         raise RuntimeError("ffmpeg failed: " + "\n".join(l for l in r.stderr.splitlines() if not re.search(r"\bt: ", l))[-800:])
     detect_log = "\n".join(l for l in r.stderr.splitlines()
@@ -1524,6 +1530,39 @@ def render(video: Path, m: Moment, out: Path, layout="fit", captions=True, crop_
             "_audiogram": not info["has_video"], "W": W, "H": H,
             "_expected": sum(b - a for a, b in keep), "_layout": layout, "_detect_log": detect_log,
             **({"reframe": rf} if rf else {})}
+
+
+_HW = None   # can this ffmpeg use the Mac's hardware H.264 encoder? decided on first render
+
+
+def _hw_ok():
+    """Apple VideoToolbox: measured 20 Nov 2026 on a 39 s clip, encoding is about half of a render's CPU work and the
+    hardware encoder cuts the whole render's CPU time by ~55%. CLIP_ENCODER=x264 forces the software encoder."""
+    global _HW
+    if _HW is None:
+        _HW = False
+        if sys.platform == "darwin" and os.environ.get("CLIP_ENCODER", "").lower() not in ("x264", "libx264", "cpu"):
+            try:
+                enc = subprocess.run([FFMPEG, "-hide_banner", "-encoders"], capture_output=True, text=True, timeout=20).stdout
+                _HW = "h264_videotoolbox" in enc
+            except Exception:  # noqa: BLE001
+                pass
+    return _HW
+
+
+def _hw_failed(err):
+    global _HW
+    _HW = False
+    tail = (err or "").strip().splitlines()[-1:] or ["unknown error"]
+    print(f"[render] the hardware encoder failed ({tail[0][:160]}); using the software encoder", file=sys.stderr)
+
+
+def video_encoder(fps):
+    """ffmpeg video-encoder arguments: Apple's hardware encoder on Macs, else x264. Same profile, GOP and ceiling."""
+    gop = ["-g", str(fps * 2)]
+    if _hw_ok():
+        return ["-c:v", "h264_videotoolbox", "-profile:v", "high", "-b:v", "10M", "-maxrate", "12M", "-bufsize", "24M", *gop]
+    return ["-c:v", "libx264", "-profile:v", "high", "-preset", "veryfast", "-crf", "19", "-maxrate", "12M", "-bufsize", "24M", *gop]
 
 
 def render_workers():

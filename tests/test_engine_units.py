@@ -5,6 +5,7 @@
 import os
 import sys
 import unittest
+import unittest.mock
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -421,3 +422,23 @@ class LinkDownloads(unittest.TestCase):
         self.assertTrue(clipper.explain_error(e).startswith("The link downloader couldn't start."))
         self.assertEqual(clipper.explain_error(RuntimeError("Head\n\nBody")), "Head\n\nBody")
         self.assertEqual(clipper.explain_error(RuntimeError("plain")), "plain")
+
+
+class HardwareEncoder(unittest.TestCase):
+    def tearDown(self):
+        clipper._HW = None
+
+    def test_hardware_then_software_after_a_failure(self):
+        clipper._HW = True
+        enc = clipper.video_encoder(30)
+        self.assertEqual(enc[:2], ["-c:v", "h264_videotoolbox"])
+        self.assertIn("-g", enc); self.assertEqual(enc[enc.index("-g") + 1], "60")
+        clipper._hw_failed("Error: cannot create compression session")
+        enc = clipper.video_encoder(30)
+        self.assertEqual(enc[:2], ["-c:v", "libx264"])
+        self.assertIn("-crf", enc)
+
+    def test_env_forces_software(self):
+        clipper._HW = None
+        with unittest.mock.patch.dict(os.environ, {"CLIP_ENCODER": "x264"}):
+            self.assertFalse(clipper._hw_ok())

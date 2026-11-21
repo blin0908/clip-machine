@@ -156,11 +156,27 @@ function setStage(label, pct, msg = "") {
   $("#prog").classList.remove("hide");
   const many = sessions.filter(s => s.batch).length;
   const pre = running && many > 1 ? `Video ${sessions.filter(s => s.batch && (s.status === "done" || s.status === "error")).length + 1} of ${many} · ` : "";
-  $("#plabel").textContent = pre + label; $("#ppct").textContent = Math.round(pct) + "%";
+  $("#plabel").textContent = pre + label; $("#ppct").textContent = Math.round(pct) + "%" + etaText(pct);
+  document.title = `${Math.round(pct)}% · ${BASE_TITLE}`;     // progress stays visible from another tab
   $("#pbar").style.width = Math.max(0, Math.min(100, pct)) + "%"; $("#pmsg").textContent = msg;
   const s = sessions.find(x => x.status === "running");
   if (s) { s.pct = pct; s.msg = label.replace(/…$/, ""); paintQueueItem(s); }
 }
+// time left: elapsed × remaining ÷ done, smoothed so the number doesn't jump around; restarts with each video
+const BASE_TITLE = document.title;
+const eta = { t0: 0, last: 0, est: null };
+function etaText(pct) {
+  const now = performance.now();
+  if (!eta.t0 || pct < eta.last - 5) { eta.t0 = now; eta.est = null; }
+  eta.last = pct;
+  const el = (now - eta.t0) / 1000;
+  if (pct < 6 || pct >= 99 || el < 8) return "";
+  const raw = el * (100 - pct) / pct;
+  eta.est = eta.est == null ? raw : eta.est * 0.85 + raw * 0.15;
+  const s = eta.est;
+  return s < 45 ? " · under a minute left" : s < 90 ? " · about a minute left" : ` · about ${Math.round(s / 60)} min left`;
+}
+function stageDone() { eta.t0 = 0; document.title = BASE_TITLE; }
 const STAGES = { load: [0, 8], audio: [8, 14], asr: [14, 60], score: [60, 62], render: [62, 100] };
 const stage = (k, pct, label, msg) => { const [a, b] = STAGES[k]; setStage(label, a + (b - a) * pct / 100, msg); };
 // stage timings for benchmarks: window.__perf = [{ k, ms }, ...]
@@ -749,7 +765,7 @@ async function go() {
   } finally {
     running = false;
     sessions.filter(s => s.status === "queued").forEach(s => { s.status = "ready"; });
-    $("#prog").classList.add("hide");
+    $("#prog").classList.add("hide"); stageDone();
     paintQueue(); paintGo(); renderBoard();
     try { await wakeLock?.release(); } catch {}
     pump();
@@ -1810,8 +1826,8 @@ const src = params.get("src");   // e.g. ?src=sample.mp4 (same-origin or CORS-en
 if (src) {
   try {
     const f = await fetchVideo(new URL(src, location.href).href, (p, m) => setStage("Fetching video…", p ?? 0, m));
-    $("#prog").classList.add("hide");
+    $("#prog").classList.add("hide"); stageDone();
     addFiles([f]);
     if (params.get("auto") === "1") go();
-  } catch (e) { $("#prog").classList.add("hide"); toast("Couldn't load ?src video"); }
+  } catch (e) { $("#prog").classList.add("hide"); stageDone(); toast("Couldn't load ?src video"); }
 }
