@@ -8,6 +8,9 @@ workers_dev = true
 ALLOWED_ORIGINS = "https://blin0908.github.io,http://localhost:8765,http://127.0.0.1:8765"
 # "1" also allows any http://localhost:<port> / 127.0.0.1:<port> origin. Leave "0" in production.
 DEV_ORIGINS = "0"
+# Payments: set STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET with `wrangler secret put` (never in this file).
+# Live keys (sk_live_) are refused unless this is "1".
+BILLING_LIVE = "0"
 
 [[d1_databases]]
 binding = "DB"

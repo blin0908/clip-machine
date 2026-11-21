@@ -1,6 +1,7 @@
 // Clip Machine accounts API (Cloudflare Worker + D1).
 //
-// What it stores: an email, a password hash, session-token hashes, and one JSON document of settings the web app
+// What it stores: an email, a password hash, session-token hashes, Stripe customer/subscription ids and status if the
+// person chose to support the project, and one JSON document of settings the web app
 // syncs (presets, last-used settings, brand logo, results log, YouTube Studio import). Videos, transcripts and clips
 // never reach it. No IP addresses or user agents are stored; rate-limit keys are one-way hashes.
 //
@@ -172,6 +173,122 @@ async function getData(env, userId) {
   return row ? { rev: row.rev, updated: row.updated, data: JSON.parse(row.data) } : { rev: 0, updated: null, data: {} };
 }
 
+// ---------------------------------------------------------------- billing (Stripe)
+// Support is optional and unlocks nothing: every feature stays free. Payment only marks the account as a supporter.
+// Prices are created inline at checkout (no Stripe dashboard setup needed). Amounts are in cents.
+const PLANS = {
+  usd: { month: 300, year: 3000, oneMin: 300, oneMax: 50000 },
+  cad: { month: 400, year: 4000, oneMin: 400, oneMax: 50000 },
+};
+const STRIPE_TOLERANCE = 300;             // seconds a webhook signature stays valid
+function billingOn(env) {
+  const k = String(env.STRIPE_SECRET_KEY || "");
+  if (!k || !env.STRIPE_WEBHOOK_SECRET) return false;
+  if (/^(sk|rk)_live_/.test(k) && env.BILLING_LIVE !== "1") return false;   // live keys need an explicit switch
+  return /^(sk|rk)_(test|live)_/.test(k);
+}
+const stripeLive = env => /^(sk|rk)_live_/.test(String(env.STRIPE_SECRET_KEY || ""));
+
+function form(obj, prefix = "", out = new URLSearchParams()) {           // Stripe's nested form encoding
+  for (const [k, v] of Object.entries(obj)) {
+    if (v === undefined || v === null) continue;
+    const key = prefix ? `${prefix}[${k}]` : k;
+    if (typeof v === "object") form(v, key, out); else out.append(key, String(v));
+  }
+  return out;
+}
+async function stripe(env, method, path, params) {
+  const base = String(env.STRIPE_API || "https://api.stripe.com").replace(/\/+$/, "");
+  const r = await fetch(base + path, {
+    method,
+    headers: { authorization: "Bearer " + env.STRIPE_SECRET_KEY, "content-type": "application/x-www-form-urlencoded", "stripe-version": "2025-03-31.basil" },
+    body: params ? form(params) : undefined,
+  });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    console.error("stripe", method, path, r.status, j.error && j.error.message);
+    throw new Fail(502, "The payment service didn't answer properly. Nothing was charged. Try again in a minute.");
+  }
+  return j;
+}
+
+function hexOf(buf) { return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, "0")).join(""); }
+async function verifyStripe(env, raw, header) {
+  const parts = {};
+  for (const kv of String(header || "").split(",")) { const i = kv.indexOf("="); if (i > 0) (parts[kv.slice(0, i).trim()] ||= []).push(kv.slice(i + 1).trim()); }
+  const t = +(parts.t || [])[0];
+  if (!t || Math.abs(now() - t) > STRIPE_TOLERANCE) return false;
+  const key = await crypto.subtle.importKey("raw", enc.encode(env.STRIPE_WEBHOOK_SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const want = hexOf(await crypto.subtle.sign("HMAC", key, enc.encode(`${t}.${raw}`)));
+  return (parts.v1 || []).some(sig => eq(sig, want));
+}
+async function rawBody(req, max) {
+  const parts = []; let size = 0;
+  if (req.body) {
+    const reader = req.body.getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > max) { await reader.cancel().catch(() => {}); throw new Fail(413, "Too large."); }
+      parts.push(value);
+    }
+  }
+  const bytes = new Uint8Array(size); let at = 0;
+  for (const p of parts) { bytes.set(p, at); at += p.byteLength; }
+  return new TextDecoder().decode(bytes);
+}
+
+function billingView(u) {
+  const active = u.sub_status === "active" || u.sub_status === "trialing";
+  return {
+    supporter: active || u.sub_status === "past_due" || !!u.backer,
+    subscription: u.sub_status && u.sub_status !== "none"
+      ? { status: u.sub_status, interval: u.sub_interval, renews: u.sub_until, cancel_at_period_end: !!u.cancel_at_end } : null,
+    backer: !!u.backer,
+    manage: !!u.stripe_customer,
+  };
+}
+async function billingRow(env, userId) {
+  return env.DB.prepare("SELECT stripe_customer, stripe_sub, sub_status, sub_interval, sub_until, cancel_at_end, backer, sub_event_at FROM users WHERE id = ?").bind(userId).first();
+}
+function returnURL(env, origin, path) {
+  // only send people back to a site we already trust
+  const site = originOK(origin, env) ? origin : String(env.ALLOWED_ORIGINS || "").split(",")[0].trim();
+  const base = site.includes("github.io") ? site + "/clip-machine" : site;
+  return base + path;
+}
+
+const SUB_EVENTS = new Set(["customer.subscription.created", "customer.subscription.updated", "customer.subscription.deleted", "customer.subscription.paused", "customer.subscription.resumed"]);
+async function handleStripeEvent(env, ev) {
+  const o = ev.data && ev.data.object || {};
+  if (ev.type === "checkout.session.completed" || ev.type === "checkout.session.async_payment_succeeded") {
+    const userId = o.client_reference_id || (o.metadata || {}).user_id;
+    if (!userId) return;
+    const paid = o.payment_status === "paid" || o.payment_status === "no_payment_required";
+    await env.DB.prepare("UPDATE users SET stripe_customer = COALESCE(?, stripe_customer) WHERE id = ?").bind(o.customer || null, userId).run();
+    if (o.mode === "payment" && paid) await env.DB.prepare("UPDATE users SET backer = 1 WHERE id = ?").bind(userId).run();
+    if (o.mode === "subscription" && o.subscription)
+      await env.DB.prepare("UPDATE users SET stripe_sub = COALESCE(stripe_sub, ?) WHERE id = ?").bind(String(o.subscription), userId).run();
+    return;
+  }
+  if (SUB_EVENTS.has(ev.type)) {
+    const userId = (o.metadata || {}).user_id;
+    const row = userId
+      ? await env.DB.prepare("SELECT id, sub_event_at FROM users WHERE id = ?").bind(userId).first()
+      : await env.DB.prepare("SELECT id, sub_event_at FROM users WHERE stripe_customer = ?").bind(String(o.customer || "")).first();
+    if (!row) return;
+    if ((row.sub_event_at || 0) > (ev.created || 0)) return;           // an older event arriving late
+    const item = ((o.items || {}).data || [])[0] || {};
+    const status = ev.type === "customer.subscription.deleted" ? "canceled" : String(o.status || "none");
+    const until = o.current_period_end || item.current_period_end || null;
+    const interval = ((item.price || {}).recurring || {}).interval || ((item.plan || {}).interval) || null;
+    await env.DB.prepare(`UPDATE users SET stripe_customer = COALESCE(stripe_customer, ?), stripe_sub = ?, sub_status = ?, sub_interval = ?,
+        sub_until = ?, cancel_at_end = ?, sub_event_at = ?, backer = CASE WHEN ? IN ('active','trialing','past_due') THEN 1 ELSE backer END WHERE id = ?`)
+      .bind(o.customer || null, o.id || null, status, interval, until, o.cancel_at_period_end ? 1 : 0, ev.created || now(), status, row.id).run();
+  }
+}
+
 // ---------------------------------------------------------------- routes
 async function route(req, env, url) {
   const p = url.pathname, m = req.method;
@@ -200,13 +317,34 @@ async function route(req, env, url) {
     return { token: await newSession(env, u.id), user: { email, created: u.created } };
   }
 
+  if (p === `${V}/billing/config` && m === "GET") {
+    const on = billingOn(env);
+    return { enabled: on, test_mode: on && !stripeLive(env), currencies: on ? PLANS : null };
+  }
+
+  if (p === `${V}/stripe/webhook` && m === "POST") {
+    if (!billingOn(env)) throw new Fail(404, "Not found.");
+    const raw = await rawBody(req, 256 * 1024);
+    if (!(await verifyStripe(env, raw, req.headers.get("stripe-signature")))) throw new Fail(400, "Bad signature.");
+    let ev; try { ev = JSON.parse(raw); } catch { throw new Fail(400, "Bad JSON."); }
+    if (!ev || typeof ev.id !== "string" || typeof ev.type !== "string") throw new Fail(400, "Bad event.");
+    if (!!ev.livemode !== stripeLive(env)) throw new Fail(400, "Wrong mode.");
+    const fresh = await env.DB.prepare("INSERT OR IGNORE INTO stripe_events (id, at) VALUES (?, ?)").bind(ev.id, now()).run();
+    if (!fresh.meta.changes) return { received: true, duplicate: true };
+    try { await handleStripeEvent(env, ev); }
+    catch (e) { await env.DB.prepare("DELETE FROM stripe_events WHERE id = ?").bind(ev.id).run(); throw e; }   // let Stripe retry
+    if (Math.random() < 0.05) await env.DB.prepare("DELETE FROM stripe_events WHERE at < ?").bind(now() - 30 * 86400).run();
+    return { received: true };
+  }
+
   // everything below needs a signed-in user
   const user = await authed(req, env);
 
   if (p === `${V}/me` && m === "GET") {
     const { n } = await env.DB.prepare("SELECT COUNT(*) AS n FROM sessions WHERE user_id = ? AND expires > ?").bind(user.id, now()).first();
     const d = await getData(env, user.id);
-    return { user: { email: user.email, created: user.created }, sessions: n, sync: { rev: d.rev, updated: d.updated } };
+    return { user: { email: user.email, created: user.created }, sessions: n, sync: { rev: d.rev, updated: d.updated },
+             billing: billingView(await billingRow(env, user.id) || {}) };
   }
 
   if (p === `${V}/logout` && m === "POST") {
@@ -242,16 +380,62 @@ async function route(req, env, url) {
     return { ok: true };
   }
 
+  if (p === `${V}/billing/checkout` && m === "POST") {
+    if (!billingOn(env)) throw new Fail(503, "Payments aren't switched on yet. Everything in Clip Machine is free in the meantime.");
+    await limit(env, "checkout:" + user.id, 10, 3600, "Too many checkout attempts. Try again in an hour.");
+    const b = await body(req);
+    const cur = String(b.currency || "").toLowerCase(), kind = String(b.kind || ""), plan = PLANS[cur];
+    if (!plan) throw new Fail(400, "Pick USD or CAD.");
+    const row = await billingRow(env, user.id) || {};
+    let line, mode;
+    if (kind === "month" || kind === "year") {
+      if (["active", "trialing", "past_due"].includes(row.sub_status)) throw new Fail(409, "You already support Clip Machine. Use Manage billing to change it.");
+      mode = "subscription";
+      line = { price_data: { currency: cur, unit_amount: plan[kind], recurring: { interval: kind }, product_data: { name: "Clip Machine Supporter" } }, quantity: 1 };
+    } else if (kind === "once") {
+      const amount = Math.round(Number(b.amount) * 100);
+      if (!Number.isFinite(amount) || amount < plan.oneMin || amount > plan.oneMax)
+        throw new Fail(400, `Choose an amount between ${plan.oneMin / 100} and ${plan.oneMax / 100} ${cur.toUpperCase()}.`);
+      mode = "payment";
+      line = { price_data: { currency: cur, unit_amount: amount, product_data: { name: "Clip Machine one-time support" } }, quantity: 1 };
+    } else throw new Fail(400, "Pick monthly, yearly or one-time.");
+    const origin = req.headers.get("origin");
+    const params = {
+      mode, client_reference_id: user.id, metadata: { user_id: user.id },
+      line_items: { 0: line },
+      success_url: returnURL(env, origin, "/pricing.html?thanks=1"), cancel_url: returnURL(env, origin, "/pricing.html?canceled=1"),
+      ...(row.stripe_customer ? { customer: row.stripe_customer } : { customer_email: user.email }),
+      ...(mode === "subscription" ? { subscription_data: { metadata: { user_id: user.id } } } : { customer_creation: row.stripe_customer ? undefined : "always", payment_intent_data: { metadata: { user_id: user.id } } }),
+    };
+    const sess = await stripe(env, "POST", "/v1/checkout/sessions", params);
+    if (!/^https:\/\/checkout\.stripe\.com\//.test(String(sess.url)) && !String(env.STRIPE_API || "").startsWith("http://127.0.0.1"))
+      throw new Fail(502, "The payment service returned an unexpected address. Nothing was charged.");
+    return { url: sess.url };
+  }
+
+  if (p === `${V}/billing/portal` && m === "POST") {
+    if (!billingOn(env)) throw new Fail(503, "Payments aren't switched on yet.");
+    const row = await billingRow(env, user.id) || {};
+    if (!row.stripe_customer) throw new Fail(404, "There's no billing on this account yet.");
+    const sess = await stripe(env, "POST", "/v1/billing_portal/sessions", { customer: row.stripe_customer, return_url: returnURL(env, req.headers.get("origin"), "/pricing.html") });
+    return { url: sess.url };
+  }
+
   if (p === `${V}/export` && m === "GET") {
     const d = await getData(env, user.id);
     return { exported: new Date().toISOString(), account: { email: user.email, created: new Date(user.created * 1000).toISOString() },
-             synced: d.data, sync_rev: d.rev, note: "This is everything Clip Machine's server stores about you, apart from the password hash and session-token hashes." };
+             synced: d.data, sync_rev: d.rev, billing: billingView(await billingRow(env, user.id) || {}), note: "This is everything Clip Machine's server stores about you, apart from the password hash and session-token hashes." };
   }
 
   if (p === `${V}/account` && m === "DELETE") {
     const b = await body(req);
     const u = await env.DB.prepare("SELECT pw FROM users WHERE id = ?").bind(user.id).first();
     if (!(await checkPassword(String(b.password ?? ""), u.pw))) throw new Fail(403, "That password isn't right, so the account wasn't deleted.");
+    const bill = await billingRow(env, user.id) || {};
+    if (bill.stripe_sub && ["active", "trialing", "past_due", "paused", "incomplete"].includes(bill.sub_status)) {
+      if (!billingOn(env)) throw new Fail(503, "This account has an active subscription and payments are offline right now, so it wasn't deleted. Try again later.");
+      await stripe(env, "DELETE", `/v1/subscriptions/${encodeURIComponent(bill.stripe_sub)}`);   // stop future charges first
+    }
     await env.DB.batch([
       env.DB.prepare("DELETE FROM user_data WHERE user_id = ?").bind(user.id),
       env.DB.prepare("DELETE FROM sessions WHERE user_id = ?").bind(user.id),

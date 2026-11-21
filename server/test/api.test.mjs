@@ -3,6 +3,8 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
+import { createServer } from "node:http";
+import { createHmac } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
@@ -14,12 +16,30 @@ const BASE = `http://127.0.0.1:${PORT}/v1`;
 const SITE = "https://blin0908.github.io";
 const persist = mkdtempSync(join(tmpdir(), "cm-d1-"));
 const WR = join(ROOT, "node_modules", ".bin", "wrangler");
-let dev;
+let dev, mock;
+// a stand-in for api.stripe.com: records every call and answers like Stripe would
+const MOCK_PORT = PORT + 200, WHSEC = "whsec_test_secret";
+const stripeCalls = [];
+const startMock = () => new Promise(res => {
+  mock = createServer((req, r) => {
+    let b = ""; req.on("data", c => b += c); req.on("end", () => {
+      const params = Object.fromEntries(new URLSearchParams(b));
+      stripeCalls.push({ method: req.method, path: req.url, params, auth: req.headers.authorization });
+      r.setHeader("content-type", "application/json");
+      if (req.url === "/v1/checkout/sessions") return r.end(JSON.stringify({ id: "cs_test_1", url: `http://127.0.0.1:${MOCK_PORT}/pay/cs_test_1` }));
+      if (req.url === "/v1/billing_portal/sessions") return r.end(JSON.stringify({ id: "bps_1", url: `http://127.0.0.1:${MOCK_PORT}/portal` }));
+      if (req.url.startsWith("/v1/subscriptions/")) return r.end(JSON.stringify({ id: req.url.split("/").pop(), status: "canceled" }));
+      r.statusCode = 404; r.end(JSON.stringify({ error: { message: "no such route" } }));
+    });
+  }).listen(MOCK_PORT, "127.0.0.1", res);
+});
 
 before(async () => {
+  await startMock();
   execFileSync(WR, ["d1", "execute", "clipmachine", "--local", "--env", "dev", "--persist-to", persist, "--file", "schema.sql"],
                { cwd: ROOT, stdio: "ignore", env: { ...process.env, WRANGLER_SEND_METRICS: "false" } });
-  dev = spawn(WR, ["dev", "--local", "--env", "dev", "--port", String(PORT), "--ip", "127.0.0.1", "--persist-to", persist, "--show-interactive-dev-session=false"],
+  dev = spawn(WR, ["dev", "--local", "--env", "dev", "--port", String(PORT), "--ip", "127.0.0.1", "--persist-to", persist, "--show-interactive-dev-session=false",
+                     "--var", "STRIPE_SECRET_KEY:sk_test_mock", "--var", `STRIPE_WEBHOOK_SECRET:${WHSEC}`, "--var", `STRIPE_API:http://127.0.0.1:${MOCK_PORT}`],
               { cwd: ROOT, stdio: "ignore", env: { ...process.env, WRANGLER_SEND_METRICS: "false" } });
   for (let i = 0; i < 120; i++) {
     try { if ((await fetch(BASE + "/health")).ok) return; } catch {}
@@ -27,7 +47,7 @@ before(async () => {
   }
   throw new Error("wrangler dev didn't start");
 });
-after(() => { dev?.kill(); rmSync(persist, { recursive: true, force: true }); });
+after(() => { dev?.kill(); mock?.close(); rmSync(persist, { recursive: true, force: true }); });
 
 let ipN = 0;   // each signup comes from its own (pretend) address so the per-network signup limit doesn't trip
 const call = async (path, { method = "GET", body, token, origin = SITE, raw, ip } = {}) => {
@@ -175,4 +195,106 @@ test("a body with no Content-Length is cut off at the cap", async () => {
     headers: { origin: SITE, "content-type": "application/json", "cf-connecting-ip": "10.78.0.1" } });
   assert.equal(r.status, 413);
   assert.equal(r.headers.get("access-control-allow-origin"), SITE);
+});
+
+
+// ---------------------------------------------------------------- billing
+const sign = (payload, t = Math.floor(Date.now() / 1000), secret = WHSEC) =>
+  `t=${t},v1=${createHmac("sha256", secret).update(`${t}.${payload}`).digest("hex")}`;
+const hook = async (ev, sig) => {
+  const raw = JSON.stringify(ev);
+  const r = await fetch(BASE + "/stripe/webhook", { method: "POST", body: raw, headers: { "content-type": "application/json", "stripe-signature": sig ?? sign(raw) } });
+  return { status: r.status, j: await r.json().catch(() => null) };
+};
+let evN = 0;
+const event = (type, object, created = Math.floor(Date.now() / 1000)) => ({ id: `evt_${Date.now()}_${++evN}`, type, created, livemode: false, data: { object } });
+const signup = async n => (await call("/signup", { method: "POST", body: { email: email(n), password: PW } })).j.token;
+
+test("billing config: test mode, prices in cents", async () => {
+  const c = await call("/billing/config");
+  assert.equal(c.status, 200); assert.equal(c.j.enabled, true); assert.equal(c.j.test_mode, true);
+  assert.equal(c.j.currencies.usd.month, 300); assert.equal(c.j.currencies.cad.year, 4000);
+});
+
+test("checkout: validates the choice, builds the right Stripe session, never trusts a client price", async () => {
+  const token = await signup("pay1");
+  assert.equal((await call("/billing/checkout", { method: "POST", token, body: { currency: "eur", kind: "month" } })).status, 400);
+  assert.equal((await call("/billing/checkout", { method: "POST", token, body: { currency: "usd", kind: "weekly" } })).status, 400);
+  assert.equal((await call("/billing/checkout", { method: "POST", token, body: { currency: "usd", kind: "once", amount: 1 } })).status, 400);
+  assert.equal((await call("/billing/checkout", { method: "POST", body: { currency: "usd", kind: "month" } })).status, 401);
+  const r = await call("/billing/checkout", { method: "POST", token, body: { currency: "usd", kind: "month", unit_amount: 1 } });
+  assert.equal(r.status, 200); assert.match(r.j.url, /\/pay\/cs_test_1$/);
+  const c = stripeCalls.at(-1);
+  assert.equal(c.auth, "Bearer sk_test_mock");
+  assert.equal(c.params.mode, "subscription");
+  assert.equal(c.params["line_items[0][price_data][unit_amount]"], "300");
+  assert.equal(c.params["line_items[0][price_data][recurring][interval]"], "month");
+  assert.match(c.params.customer_email, /^userpay1-/);
+  assert.equal(c.params.success_url, "https://blin0908.github.io/clip-machine/pricing.html?thanks=1");
+  assert.ok(c.params.client_reference_id && c.params.client_reference_id === c.params["subscription_data[metadata][user_id]"]);
+  const once = await call("/billing/checkout", { method: "POST", token, body: { currency: "cad", kind: "once", amount: 12.5 } });
+  assert.equal(once.status, 200);
+  assert.equal(stripeCalls.at(-1).params.mode, "payment");
+  assert.equal(stripeCalls.at(-1).params["line_items[0][price_data][unit_amount]"], "1250");
+  assert.equal(stripeCalls.at(-1).params["line_items[0][price_data][currency]"], "cad");
+});
+
+test("webhook: signature, freshness and mode are checked; events apply once and in order", async () => {
+  const token = await signup("pay2");
+  await call("/billing/checkout", { method: "POST", token, body: { currency: "usd", kind: "year" } });
+  const uid = stripeCalls.at(-1).params.client_reference_id;
+  const done = event("checkout.session.completed", { mode: "subscription", payment_status: "paid", client_reference_id: uid, customer: "cus_2", subscription: "sub_2" });
+  const raw = JSON.stringify(done);
+  assert.equal((await hook(done, "t=1,v1=deadbeef")).status, 400, "bad signature");
+  assert.equal((await hook(done, sign(raw, Math.floor(Date.now() / 1000) - 900))).status, 400, "old timestamp");
+  assert.equal((await hook(done, sign(raw, undefined, "whsec_wrong"))).status, 400, "wrong secret");
+  assert.equal((await hook({ ...done, livemode: true })).status, 400, "live event on a test key");
+  assert.equal((await hook(done)).status, 200);
+  assert.equal((await hook(done)).j.duplicate, true, "a retried delivery is ignored");
+  const t0 = Math.floor(Date.now() / 1000);
+  const sub = (status, extra = {}) => ({ id: "sub_2", customer: "cus_2", status, cancel_at_period_end: false, metadata: { user_id: uid },
+    items: { data: [{ current_period_end: t0 + 365 * 86400, price: { recurring: { interval: "year" } } }] }, ...extra });
+  assert.equal((await hook(event("customer.subscription.updated", sub("active"), t0))).status, 200);
+  let me = (await call("/me", { token })).j.billing;
+  assert.equal(me.supporter, true); assert.equal(me.subscription.status, "active"); assert.equal(me.subscription.interval, "year");
+  assert.equal(me.subscription.renews, t0 + 365 * 86400); assert.equal(me.manage, true);
+  // an older "incomplete" event arriving late must not undo the newer "active" one
+  await hook(event("customer.subscription.updated", sub("incomplete"), t0 - 60));
+  assert.equal((await call("/me", { token })).j.billing.subscription.status, "active");
+  // a second subscription is refused while one is active
+  assert.equal((await call("/billing/checkout", { method: "POST", token, body: { currency: "usd", kind: "month" } })).status, 409);
+  // cancel at period end, then deleted: no longer subscribed, still remembered as a backer
+  await hook(event("customer.subscription.updated", sub("active", { cancel_at_period_end: true }), t0 + 1));
+  assert.equal((await call("/me", { token })).j.billing.subscription.cancel_at_period_end, true);
+  await hook(event("customer.subscription.deleted", sub("canceled"), t0 + 2));
+  me = (await call("/me", { token })).j.billing;
+  assert.equal(me.subscription.status, "canceled"); assert.equal(me.backer, true);
+});
+
+test("one-time support marks a backer; events with no matching user are ignored", async () => {
+  const token = await signup("pay3");
+  await call("/billing/checkout", { method: "POST", token, body: { currency: "usd", kind: "once", amount: 5 } });
+  const uid = stripeCalls.at(-1).params.client_reference_id;
+  assert.equal((await call("/me", { token })).j.billing.supporter, false);
+  await hook(event("checkout.session.completed", { mode: "payment", payment_status: "unpaid", client_reference_id: uid, customer: "cus_3" }));
+  assert.equal((await call("/me", { token })).j.billing.backer, false, "an unpaid (delayed) payment isn't counted yet");
+  await hook(event("checkout.session.completed", { mode: "payment", payment_status: "paid", client_reference_id: uid, customer: "cus_3" }));
+  const b = (await call("/me", { token })).j.billing;
+  assert.equal(b.backer, true); assert.equal(b.supporter, true); assert.equal(b.subscription, null);
+  assert.equal((await hook(event("customer.subscription.updated", { id: "sub_x", customer: "cus_nobody", status: "active" }))).status, 200);
+});
+
+test("billing portal needs a Stripe customer; deleting an account cancels its subscription first", async () => {
+  const token = await signup("pay4");
+  assert.equal((await call("/billing/portal", { method: "POST", token, body: {} })).status, 404);
+  await call("/billing/checkout", { method: "POST", token, body: { currency: "cad", kind: "month" } });
+  const uid = stripeCalls.at(-1).params.client_reference_id;
+  await hook(event("checkout.session.completed", { mode: "subscription", payment_status: "paid", client_reference_id: uid, customer: "cus_4", subscription: "sub_4" }));
+  await hook(event("customer.subscription.created", { id: "sub_4", customer: "cus_4", status: "active", metadata: { user_id: uid },
+    items: { data: [{ current_period_end: 2e9, price: { recurring: { interval: "month" } } }] } }));
+  const portal = await call("/billing/portal", { method: "POST", token, body: {} });
+  assert.equal(portal.status, 200); assert.equal(stripeCalls.at(-1).params.customer, "cus_4");
+  const del = await call("/account", { method: "DELETE", token, body: { password: PW } });
+  assert.equal(del.status, 200);
+  assert.ok(stripeCalls.some(c => c.method === "DELETE" && c.path === "/v1/subscriptions/sub_4"), "subscription canceled at Stripe");
 });

@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#05070c">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self'; connect-src 'self' https: http://localhost:* http://127.0.0.1:*; object-src 'none'; base-uri 'self'; form-action 'none'">
+<meta name="referrer" content="strict-origin-when-cross-origin">
+<meta name="cm-api" content="">
+<meta name="description" content="Clip Machine is free: every feature, no watermark, no credit meter. Support it if it saves you time.">
+<meta property="og:type" content="website">
+<meta property="og:title" content="Clip Machine pricing: free, with optional support">
+<meta property="og:description" content="Every feature free. No watermark. No credits. Support from US$3 a month if you want to.">
+<meta property="og:image" content="https://blin0908.github.io/clip-machine/og-image.png">
+<meta name="twitter:card" content="summary_large_image">
+<title>Pricing · Clip Machine</title>
+<link rel="manifest" href="manifest.json" crossorigin="use-credentials">
+<link rel="icon" href="brand/favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="stylesheet" href="home.css">
+<link rel="stylesheet" href="pricing.css">
+<script src="pricing.js" type="module"></script>
+</head>
+<body class="pricing-page">
+<a class="skip" href="#main">Skip to content</a>
+<header class="nav"><a class="wordmark" href="index.html" aria-label="Clip Machine home"><img class="brand-full" src="brand/lockup-horizontal.svg" alt="" width="240" height="32"><img class="brand-compact" src="brand/logo-mark.svg" alt="" width="44" height="44"></a><nav aria-label="Main"><a href="index.html#how">How it works</a><a href="pricing.html" aria-current="page">Pricing</a><a class="button small" href="workspace.html">Try it out <span aria-hidden="true">↗</span></a></nav></header>
+
+<main id="main">
+  <section class="p-hero" aria-labelledby="p-title">
+    <p class="eyebrow"><span class="status-dot" aria-hidden="true"></span> PRICING</p>
+    <h1 id="p-title">Free.<br><span>Actually free.</span></h1>
+    <p class="lead">Every feature. No watermark. No credit meter. Clip Machine runs on your own device, so there's no server bill to pass on to you.</p>
+    <div class="p-status" id="pStatus" role="status" hidden></div>
+  </section>
+
+  <section class="p-controls" aria-label="Price options">
+    <div class="p-seg" role="radiogroup" aria-label="Billing period">
+      <button type="button" role="radio" data-period="month" aria-checked="false">Monthly</button>
+      <button type="button" role="radio" data-period="year" aria-checked="true">Yearly <em>2 months free</em></button>
+    </div>
+    <div class="p-seg" role="radiogroup" aria-label="Currency">
+      <button type="button" role="radio" data-cur="usd" aria-checked="true">USD</button>
+      <button type="button" role="radio" data-cur="cad" aria-checked="false">CAD</button>
+    </div>
+  </section>
+
+  <section class="p-plans" aria-label="Plans">
+    <article class="p-card">
+      <header><h2>Free</h2><p class="p-price"><b data-free>$0</b><span>forever</span></p><p class="p-for">For anyone with a long video and a short attention span.</p></header>
+      <ul class="p-list">
+        <li><b>Unlimited videos.</b> Your computer is the only limit.</li>
+        <li>Finds the moments, captions them and reframes for TikTok, Shorts and Reels</li>
+        <li>Follow the speaker, split screen, brand logo</li>
+        <li>Find clips by describing them</li>
+        <li>Hand-off to Premiere and Resolve</li>
+        <li><b>No watermark. No account needed.</b></li>
+        <li>Browser and desktop app (Mac, Windows, Linux)</li>
+      </ul>
+      <a class="button p-cta" href="workspace.html">Start clipping <span aria-hidden="true">↗</span></a>
+    </article>
+
+    <article class="p-card p-feature" aria-describedby="sup-note">
+      <p class="p-flag">THE BEST WAY TO HELP</p>
+      <header><h2>Supporter</h2><p class="p-price"><b data-sub>$30</b><span data-sub-unit>a year</span></p><p class="p-for" data-sub-sub>That's $2.50 a month, less than one coffee.</p></header>
+      <ul class="p-list">
+        <li><b>Everything in Free</b>, which is everything</li>
+        <li>A supporter badge on your account</li>
+        <li>Your money goes straight into making Clip Machine faster and better</li>
+        <li>Cancel any time in two clicks. You stay a supporter until the period ends.</li>
+      </ul>
+      <button class="button primary p-cta" type="button" data-buy="sub">Become a supporter <span aria-hidden="true">→</span></button>
+      <p class="p-note" id="sup-note">Supporting unlocks nothing. Every feature stays free for everyone.</p>
+    </article>
+
+    <article class="p-card">
+      <header><h2>One-time</h2><p class="p-price"><b data-once>$10</b><span>once</span></p><p class="p-for">Rather not subscribe? Chip in once, any amount.</p></header>
+      <div class="p-amounts" role="radiogroup" aria-label="One-time amount">
+        <button type="button" role="radio" data-amt="5">$5</button><button type="button" role="radio" data-amt="10" aria-checked="true">$10</button><button type="button" role="radio" data-amt="25">$25</button>
+        <label class="p-custom"><span class="sr">Custom amount</span><input id="pCustom" type="number" inputmode="decimal" min="3" max="500" step="1" placeholder="Other"></label>
+      </div>
+      <ul class="p-list">
+        <li>A backer badge on your account, for good</li>
+        <li>No renewal, nothing to cancel</li>
+      </ul>
+      <button class="button p-cta" type="button" data-buy="once">Chip in <span aria-hidden="true">→</span></button>
+      <p class="p-err" id="pErr" role="alert" hidden></p>
+    </article>
+  </section>
+
+  <section class="p-compare section" aria-labelledby="cmp-title">
+    <div class="p-sec-h"><p class="eyebrow">THE SAME MONTH ELSEWHERE</p><h2 id="cmp-title">What other clippers charge.</h2>
+      <p>Cheapest paid plan with watermark-free exports, as listed on each company's own pricing page, checked November 17, 2026. Prices change, so check the linked page.</p></div>
+    <div class="p-table-wrap" tabindex="0" role="region" aria-labelledby="cmp-title">
+    <table class="p-table">
+      <thead><tr><th scope="col">Tool</th><th scope="col">Cheapest paid plan</th><th scope="col">What you get</th><th scope="col">Free plan</th></tr></thead>
+      <tbody>
+        <tr class="us"><th scope="row">Clip Machine</th><td><b>$0</b></td><td>Unlimited, on your device</td><td>Everything, no watermark</td></tr>
+        <tr><th scope="row"><a href="https://www.opus.pro/pricing" target="_blank" rel="noopener">OpusClip</a></th><td>US$15/mo</td><td>150 credits a month</td><td>60 credits, watermarked</td></tr>
+        <tr><th scope="row"><a href="https://www.submagic.co/pricing" target="_blank" rel="noopener">Submagic</a></th><td>US$19/mo</td><td>5 long videos clipped a month</td><td>Trial only</td></tr>
+        <tr><th scope="row"><a href="https://www.descript.com/pricing" target="_blank" rel="noopener">Descript</a></th><td>US$24/mo</td><td>10 media hours a month</td><td>60 minutes, watermarked</td></tr>
+        <tr><th scope="row"><a href="https://klap.app/pricing" target="_blank" rel="noopener">Klap</a></th><td>US$29/mo</td><td>100 clips a month</td><td>One-video preview</td></tr>
+        <tr><th scope="row"><a href="https://www.munchstudio.com/pricing" target="_blank" rel="noopener">Munch</a></th><td>US$68/mo</td><td>500 source minutes a month</td><td>7-day trial</td></tr>
+      </tbody>
+    </table>
+    </div>
+    <p class="p-fine">Fair warning: cloud tools render on their own servers, so on an old or slow computer they can finish sooner than Clip Machine does. Their annual plans cost less per month than shown here.</p>
+  </section>
+
+  <section class="p-faq section" aria-labelledby="faq-title">
+    <div class="p-sec-h"><p class="eyebrow">QUESTIONS</p><h2 id="faq-title">The fine print, in plain words.</h2></div>
+    <details><summary>How can it be free?</summary><p>Transcribing, picking moments and rendering all happen on your computer or phone. Nothing is uploaded, so there's no per-video cost for us to cover. Support pays for development time, not servers.</p></details>
+    <details><summary>What does a supporter get that free users don't?</summary><p>A badge, and the knowledge that you're paying for the next improvement. We don't hold features back for paying users.</p></details>
+    <details><summary>Do I need an account?</summary><p>Not to clip. You need a free account only to support Clip Machine (so we know who to show the badge to) or to sync your presets between devices.</p></details>
+    <details><summary>How do I cancel?</summary><p>Open the account menu in the workspace and choose <b>Manage billing</b>. Cancelling stops the next renewal; you stay a supporter until the end of the period you paid for.</p></details>
+    <details><summary>Who handles my card?</summary><p>Stripe. Card details go straight to Stripe and never touch Clip Machine's server. We keep only Stripe's customer and subscription ids and whether a payment went through. See the <a href="privacy.html">privacy page</a>.</p></details>
+    <details><summary>Why yearly and monthly?</summary><p>Yearly costs the same as 10 months, so it's cheaper per month, and it saves a renewal fee on each payment. Monthly is there if you'd rather not commit.</p></details>
+  </section>
+
+  <section class="final section"><p class="eyebrow">MAKE SOMETHING WORTH WATCHING.</p><h2>The moment is there.<br><span>Go find it.</span></h2><a class="button primary" href="workspace.html">Try Clip Machine <span aria-hidden="true">↗</span></a></section>
+</main>
+<footer><a class="wordmark" href="index.html" aria-label="Clip Machine home"><img src="brand/lockup-horizontal.svg" alt="" width="240" height="32"></a><span>Free. Open source. On your device.</span><a href="privacy.html">Privacy</a><a href="https://github.com/blin0908/clip-machine" target="_blank" rel="noopener">GitHub ↗</a></footer>
+</body>
+</html>

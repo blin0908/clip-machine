@@ -637,7 +637,7 @@ PUBLIC_UI_FILES = {"/manifest.json", "/icon.svg", "/icon-180.png", "/icon-512.pn
                    "/brand/favicon.svg", "/brand/favicon-32.png", "/brand/favicon.ico",
                    "/brand/lockup-horizontal.svg", "/brand/logo-mark.svg"}
 BRAND_FILES = {p.removeprefix("/brand/") for p in PUBLIC_UI_FILES if p.startswith("/brand/")}
-UI_FILES = {"index.html", "workspace.html", "home.css", "home.js", "privacy.html", "og-image.png", "formula.js", "formula.json", "app.js", "studio.js", "account.js", "zip.js", "nle.js", "asr-worker.js", "search.js", "search-worker.js", "sw.js", "icon-180.png", "icon-512.png"}
+UI_FILES = {"index.html", "workspace.html", "home.css", "home.js", "privacy.html", "pricing.html", "pricing.css", "pricing.js", "og-image.png", "formula.js", "formula.json", "app.js", "studio.js", "account.js", "zip.js", "nle.js", "asr-worker.js", "search.js", "search-worker.js", "sw.js", "icon-180.png", "icon-512.png"}
 
 
 @app.get("/index.html")
@@ -645,6 +645,9 @@ UI_FILES = {"index.html", "workspace.html", "home.css", "home.js", "privacy.html
 @app.get("/home.css")
 @app.get("/home.js")
 @app.get("/privacy.html")
+@app.get("/pricing.html")
+@app.get("/pricing.css")
+@app.get("/pricing.js")
 @app.get("/og-image.png")
 @app.get("/brand/<path:sub>")
 @app.get("/formula.js")

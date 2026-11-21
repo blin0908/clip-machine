@@ -17,7 +17,25 @@ What it stores, and why, is spelled out for users in [`docs/privacy.html`](../do
 | PUT | `/sync` | bearer | `{rev, data}`: writes only if `rev` matches, else 409 with `current` so the client can merge. Only known keys are kept; the logo must be a PNG data URL; 1 MB cap |
 | POST | `/password` | bearer | `{current, password}`: changes it and signs out other devices |
 | GET | `/export` | bearer | Everything stored about the user (no hashes) |
-| DELETE | `/account` | bearer | `{password}`: deletes the user, their sessions and their synced data |
+| DELETE | `/account` | bearer | `{password}`: cancels an active subscription at Stripe first, then deletes the user, their sessions and their synced data |
+| GET | `/billing/config` | none | `{enabled, test_mode, currencies}`. The pricing page hides checkout unless `enabled` |
+| POST | `/billing/checkout` | bearer | `{currency: "usd"\|"cad", kind: "month"\|"year"\|"once", amount?}` → `{url}` of a Stripe Checkout page. Prices come from `PLANS` in the Worker, never from the client. 10 per account per hour |
+| POST | `/billing/portal` | bearer | `{url}` of Stripe's billing portal (change card, cancel) |
+| POST | `/stripe/webhook` | Stripe signature | Applies `checkout.session.completed` and `customer.subscription.*`. Checks the HMAC signature and a 5-minute timestamp window, refuses test/live mismatches, applies each event id once, and ignores subscription events older than the last one applied |
+
+## Pricing and billing
+
+Everything is free. Support is optional and unlocks nothing but a badge (see `docs/pricing.html`):
+
+| | USD | CAD |
+|---|---|---|
+| Supporter, monthly | $3 | $4 |
+| Supporter, yearly (2 months free) | $30 | $40 |
+| One-time | any amount from $3 | any amount from $4 |
+
+Prices live in `PLANS` in `src/worker.js` (cents) and are created inline at checkout, so no products need setting up in Stripe. The page reads them from `/billing/config`. Card details stay on Stripe's pages; the database keeps only Stripe's customer/subscription ids and the subscription status.
+
+Billing is off unless both `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET` are set. A live key (`sk_live_…`) is also refused unless `BILLING_LIVE=1`, so test keys are the default.
 
 ## Security model
 
@@ -42,7 +60,8 @@ npx wrangler dev --local --env dev --port 8787
 Point a local copy of the site at it: open the site on `http://localhost:…`, then in the browser console run `localStorage.setItem("clipmachine.api", "http://127.0.0.1:8787")` and reload. The override only works on localhost.
 
 Tests:
-- `npm test`: 13 API tests against a throwaway local database
+- `npm test`: 18 API tests (5 for billing, against a stand-in Stripe) on a throwaway local database
+- `node tests/web-pricing.mjs`: the pricing page and a full Supporter checkout in Chrome, run from the repo root
 - `node tests/web-account.mjs`: two-device sync in Chrome, run from the repo root
 
 ## Deploy (needs Benny's Cloudflare account)
@@ -55,4 +74,16 @@ Tests:
 6. Check it: `curl https://clip-machine-accounts.<subdomain>.workers.dev/v1/health` should print `{"ok":true}`.
 7. Put that URL in `docs/index.html`: `<meta name="cm-api" content="https://clip-machine-accounts.<subdomain>.workers.dev">`. Then push. The account button appears on the site once the API answers.
 
+Also put the same URL in `docs/pricing.html`'s `cm-api` meta.
+
 Until step 7, the site behaves exactly as before: no button, no network calls to the API.
+
+### Switching on payments (test mode first)
+
+Needs a Stripe account owned by Benny (or, if he's under 18, a parent or guardian).
+1. In Stripe's dashboard, stay in **Test mode**. Copy the secret key (`sk_test_…`).
+2. Developers → Webhooks → add endpoint `https://<worker>/v1/stripe/webhook` with events `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `customer.subscription.created`, `customer.subscription.updated`, `customer.subscription.deleted`. Copy its signing secret (`whsec_…`).
+3. `npx wrangler secret put STRIPE_SECRET_KEY` and `npx wrangler secret put STRIPE_WEBHOOK_SECRET`, pasting each when asked.
+4. Turn on the customer portal (Settings → Billing → Customer portal) so **Manage billing** works.
+5. Buy a Supporter plan on the site with Stripe's test card `4242 4242 4242 4242`. The account menu should show the badge.
+6. Going live later: switch Stripe to live mode, repeat steps 1–4 with the live key and secret, and set `BILLING_LIVE = "1"` in `wrangler.toml`. Do that only after deciding refunds and taxes.

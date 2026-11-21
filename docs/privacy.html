@@ -64,6 +64,16 @@ td{color:var(--mute)}
 <tr><td>One-way hashes of your network and email, with a time, for each sign-in attempt</td><td>To slow down password-guessing</td><td>Deleted within a day</td></tr>
 </table>
 <p>The results log can include the titles of your posts and their view counts, because that's what you enter into it. Only you can read it: every request needs your sign-in token, and the server only ever returns your own row.</p>
+<h2>If you support Clip Machine (optional)</h2>
+<p>Payments go through <strong>Stripe</strong>. You type your card details on Stripe's own checkout page, so they never reach Clip Machine's server. Stripe's handling of your payment is covered by <a href="https://stripe.com/privacy" rel="noopener">Stripe's privacy policy</a>.</p>
+<table>
+<tr><th>What we store</th><th>Why</th><th>How long</th></tr>
+<tr><td>Stripe's customer id and subscription id for your account</td><td>To match Stripe's payment notices to your account and open <b>Manage billing</b></td><td>Until you delete the account</td></tr>
+<tr><td>Subscription status, monthly or yearly, renewal date, whether it will renew, and whether you've ever paid</td><td>To show your supporter badge and status</td><td>Until you delete the account</td></tr>
+<tr><td>Ids of Stripe's payment notices</td><td>So a notice Stripe sends twice is only counted once</td><td>30 days</td></tr>
+</table>
+<p>Supporting unlocks nothing: every feature is free for everyone. Deleting your account cancels an active subscription first, so you aren't charged again. Your videos, transcripts and clips are never sent to Stripe.</p>
+
 <p>The server runs on <strong>Cloudflare</strong> (Workers and D1), which processes data in its data centres, which may be outside your country. Connections are encrypted (HTTPS).</p>
 
 <h2>Your controls</h2>

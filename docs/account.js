@@ -105,6 +105,8 @@ async function signedIn(j) {
   setState("syncing");
   const changed = await pull({ first: true }).catch(e => { setState("error", e.message); return false; });
   startLoop(); render();
+  const back = sessionStorage.getItem("cm.after"); sessionStorage.removeItem("cm.after");
+  if (back === "pricing") { toast("Signed in. Taking you back to pricing…"); setTimeout(() => location.assign("pricing.html"), 700); return; }
   if (changed) { toast("Signed in. Loading your synced settings…"); setTimeout(() => location.reload(), 700); }
   else toast("Signed in. Your settings will stay in sync.");
 }
@@ -158,11 +160,28 @@ function paintAuth(mode = "signin") {
   };
 }
 const ago = t => { if (!t) return "not yet"; const s = Math.round((Date.now() - t) / 1000); return s < 10 ? "just now" : s < 90 ? `${s} s ago` : `${Math.round(s / 60)} min ago`; };
+const day = t => new Date(t * 1000).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+async function paintBilling(box) {
+  // Support is optional and unlocks nothing; this only shows the status and a way to manage it.
+  let b;
+  try { const [cfg, me] = await Promise.all([api("/billing/config"), api("/me")]); if (!cfg.enabled) return; b = me.billing || {}; } catch { return; }
+  const s = b.subscription, active = s && ["active", "trialing", "past_due"].includes(s.status);
+  const line = active
+    ? (s.status === "past_due" ? "Your last payment didn't go through. Update your card in Manage billing."
+       : s.cancel_at_period_end ? `Supporter until ${day(s.renews)}. It won't renew.` : `Supporter, ${s.interval === "year" ? "yearly" : "monthly"}. Renews ${day(s.renews)}.`)
+    : b.backer ? "You've backed Clip Machine. Thank you." : "Everything here is free. If it saves you time, you can chip in.";
+  box.innerHTML = `<div class="acct-bill-row">${b.supporter ? `<span class="acct-badge">${active ? "Supporter" : "Backer"}</span>` : ""}<span>${esc(line)}</span></div>
+    <div class="acct-row">${b.manage ? `<button class="btn" id="acctBillMgr" type="button">Manage billing</button>` : ""}${active ? "" : `<a class="btn" href="pricing.html">${b.backer ? "Support again" : "Support Clip Machine"}</a>`}</div>`;
+  box.hidden = false;
+  const mgr = box.querySelector("#acctBillMgr");
+  if (mgr) mgr.onclick = async () => { mgr.disabled = true; try { location.href = (await api("/billing/portal", { method: "POST", body: {} })).url; } catch (e) { toast(e.message); mgr.disabled = false; } };
+}
 function paintAccount() {
   const label = { ok: `Synced ${ago(lastSync)}`, syncing: "Syncing…", offline: "Offline. Changes sync when you're back online.", error: btn.title, idle: "Not synced yet" }[state];
   dlg.innerHTML = `<div class="dlg-h"><h2 id="acctTitle">Account</h2><button class="ib" data-close aria-label="Close"><svg class="i"><use href="#i-x"/></svg></button></div>
     <div class="acct-body">
       <div class="acct-who"><span class="acct-av lg" aria-hidden="true">${esc(session.email[0].toUpperCase())}</span><div><b>${esc(session.email)}</b><span class="acct-st" data-state="${state}">${esc(label)}</span></div></div>
+      <div class="acct-bill" id="acctBill" hidden></div>
       <p class="acct-why">Syncing: presets, last-used settings, brand logo, results log and your YouTube Studio import. <b>Videos, transcripts and clips stay on this device.</b></p>
       <div class="acct-row"><button class="btn" id="acctSync">Sync now</button><button class="btn" id="acctExport">Download my data</button><button class="btn" id="acctOut">Sign out</button></div>
       <details class="acct-more"><summary>Change password</summary>
@@ -176,6 +195,7 @@ function paintAccount() {
       <p class="acct-fine"><a href="${PRIVACY}" target="_blank" rel="noopener">What we store and why</a></p>
     </div>`;
   const $ = s => dlg.querySelector(s);
+  paintBilling($("#acctBill"));
   $("#acctSync").onclick = async () => { setState("syncing"); try { const ch = await pull(); if (ch) { toast("Updated from your other devices. Reloading…"); setTimeout(() => location.reload(), 700); } else toast("Everything is in sync."); } catch (e) { toast(e.message); } };
   $("#acctExport").onclick = async () => {
     try { const j = await api("/export"); const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([JSON.stringify(j, null, 2)], { type: "application/json" }));
@@ -200,6 +220,10 @@ addEventListener("pagehide", () => tick());
   if (!API) return;                                 // accounts not configured for this copy of the app
   try { await fetch(API + "/v1/health", { cache: "no-store" }).then(r => { if (!r.ok) throw 0; }); } catch { return; }   // server unreachable: stay hidden
   render();
+  if (location.hash === "#signin") {                // sent here from the pricing page
+    history.replaceState(null, "", location.pathname + location.search);
+    if (!session) { sessionStorage.setItem("cm.after", "pricing"); paintAuth(); dlg.showModal(); dlg.querySelector("#acctEmail")?.focus(); }
+  }
   if (!session) return;
   setState("syncing"); startLoop();
   try {
