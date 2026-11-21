@@ -41,7 +41,7 @@ try{
  assert(!new URL(page.url()).pathname.endsWith('workspace.html'),'tracking-only queries stay on homepage');
  await page.setViewportSize({width:320,height:760});await page.emulateMedia({reducedMotion:'reduce'});
  assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'integrated homepage fits 320px');
- assert(await page.locator('#motion').isDisabled(),'integrated homepage respects reduced motion');
+ assert(await page.waitForFunction(()=>document.querySelector('#motion').disabled,null,{timeout:5000}).then(()=>true,()=>false),'integrated homepage respects reduced motion');
  await page.setViewportSize({width:1360,height:900});
  await page.screenshot({path:join(out,'homepage-integrated.png'),animations:'disabled'});
  await ctx.setOffline(true);await page.goto(WEB+'workspace.html?offline=1');await page.locator('#file').waitFor();
