@@ -69,7 +69,7 @@ YTDLP = None   # resolved on first download (kept for anything that imported the
 # Captions use the bundled Montserrat Black (OFL) so output looks the same on macOS, Windows, Linux and the web app.
 FONT_DIR = str(next((d for d in (HERE / "docs" / "fonts", HERE / "fonts") if (d / "Montserrat-Black.ttf").exists()),
                     HERE / "fonts"))
-VERSION = "1.8.4"            # shown in the app; the desktop app compares it with the latest GitHub release
+VERSION = "1.9.0"            # shown in the app; the desktop app compares it with the latest GitHub release
 CAP_FONT = "Montserrat Black"   # the family name stored inside Montserrat-Black.ttf (libass matches on it)
 # Other scripts use the matching Noto Sans Black (OFL), fetched the first time a clip needs it. The web app reads this
 # table from formula.json, so both engines pick the same font. Montserrat covers Latin (every European accent),
